@@ -1,6 +1,6 @@
 'use strict';
 
-const { query } = require('../models/db');
+const { prisma } = require('../lib/prisma');
 
 /**
  * GET /api/health
@@ -11,9 +11,9 @@ const getHealthStatus = async (req, res) => {
   let dbTime   = null;
 
   try {
-    const result = await query('SELECT NOW() AS db_time');
+    const result = await prisma.$queryRaw`SELECT NOW() AS db_time`;
     dbStatus = 'connected';
-    dbTime   = result.rows[0].db_time;
+    dbTime   = result[0].db_time;
   } catch (err) {
     console.error('[Health] DB ping failed:', err.message);
   }
