@@ -1,55 +1,10 @@
-const { prisma } = require('../lib/prisma');
+const prisma = require('../lib/prisma');
 
-const prismaEmployee = prisma.employee;
-
-// const PUBLIC_EMPLOYEE_SELECT = {
-//     username: true, // Get the username for the corresponding user through UserId
-//     email: true,
-//     jobTitle: true,
-//     // wageRate: true,
-//     createdAt: true,
-//     updatedAt: true,
-// };
-
-const createEmployee = async (employeeData) => {
-    return await prismaEmployee.create({
-        data: employeeData,
-        // select: PUBLIC_EMPLOYEE_SELECT,
-    });
-}
-
-const getAllEmployees = async () => {
-    return await prismaEmployee.findMany({
-        // select: PUBLIC_EMPLOYEE_SELECT,
-    });
-}
-
-const getEmployeeByField = async (field, value) => {
-    return await prismaEmployee.findUnique({
-        where: { [field]: value },
-        // select: PUBLIC_EMPLOYEE_SELECT,
-    });
-}
-
-const updateEmployee = async (id, updateData) => {
-    return await prismaEmployee.update({
-        where: { id },
-        data: updateData,
-        // select: PUBLIC_EMPLOYEE_SELECT,
-    });
-}
-
-const deleteEmployee = async (id) => {
-    return await prismaEmployee.delete({
-        where: { id },
-        // select: PUBLIC_EMPLOYEE_SELECT,
-    });
-}
-
-module.exports = {
-    createEmployee,
-    getAllEmployees,
-    getEmployeeByField,
-    updateEmployee,
-    deleteEmployee,
-}
+const PUBLIC_EMPLOYEE_SELECT = {
+    id: true,
+    name: true,
+    email: true,
+    position: true,
+    createdAt: true,
+    updatedAt: true,
+};
