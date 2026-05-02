@@ -24,10 +24,6 @@ const getHealthStatus = async (req, res) => {
     status:    dbStatus === 'connected' ? 'ok' : 'degraded',
     service:   'ProPackers WMS API',
     timestamp: new Date().toISOString(),
-    database: {
-      status: dbStatus,
-      serverTime: dbTime,
-    },
   });
 };
 
