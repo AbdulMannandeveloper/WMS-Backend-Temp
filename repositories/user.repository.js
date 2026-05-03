@@ -32,7 +32,7 @@ const getAllUsers = async () => {
 const getUserByField = async (field, value) => {
     return await prismaUser.findUnique({
         where: { [field]: value },
-        // select omitted intentionally — passwordHash needed by auth logic
+        select: PUBLIC_USER_SELECT,
     });
 }
 
