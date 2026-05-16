@@ -32,6 +32,32 @@ const getStockLevelByField = async (req, res) => {
   }
 };
 
+const getStockLevelByProductId = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const stockLevel = await stockLevelLogic.getStockLevelByField('productId', productId);
+    if (!stockLevel) {
+      return res.status(404).json({ error: 'Stock level not found.' });
+    }
+    res.status(200).json(stockLevel);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+const getStockLevelByLocationId = async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const stockLevel = await stockLevelLogic.getStockLevelByField('locationId', locationId);
+    if (!stockLevel) {
+      return res.status(404).json({ error: 'Stock level not found.' });
+    }
+    res.status(200).json(stockLevel);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 const updateStockLevel = async (req, res) => {
   try {
     const { id } = req.params;
@@ -77,6 +103,8 @@ module.exports = {
   createStockLevel,
   getAllStockLevels,
   getStockLevelByField,
+  getStockLevelByProductId,
+  getStockLevelByLocationId,
   updateStockLevel,
   updateStockLevelByProductAndLocation,
   deleteStockLevel
