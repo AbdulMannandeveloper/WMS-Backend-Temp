@@ -1,17 +1,22 @@
-const prisma = require('../lib/prisma');
+const { prisma } = require('../lib/prisma');
 
 const prismaUser = prisma.user;
 
 const PUBLIC_USER_SELECT = {
     id: true,
-    name: true,
+    firstName: true,
+    lastName: true,
+    username: true,
     email: true,
+    role: true,
+    isActive: true,
     createdAt: true,
     updatedAt: true,
 };
 
 
 const createUser = async (userData) => {
+    userData.isActive = false;
     return await prismaUser.create({
         data: userData,
         select: PUBLIC_USER_SELECT,
@@ -27,7 +32,7 @@ const getAllUsers = async () => {
 const getUserByField = async (field, value) => {
     return await prismaUser.findUnique({
         where: { [field]: value },
-        select: PUBLIC_USER_SELECT,
+        // select: PUBLIC_USER_SELECT,
     });
 }
 
