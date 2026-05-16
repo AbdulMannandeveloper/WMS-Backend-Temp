@@ -136,6 +136,25 @@ model Expense {
   @@map("expenses")
 }
 
+model Shift {
+  id               String   @id @default(uuid()) @db.Uuid
+  name             String   
+  startTime        DateTime @db.Time // e.g., 08:00:00
+  endTime          DateTime @db.Time // e.g., 17:00:00
+  gracePeriodMins  Int      @default(10) 
+
+  @@map("shifts")
+}
+
+model Holiday {
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  startDate  DateTime @db.Date // e.g., 2024-12-25
+  endDate    DateTime @db.Date 
+
+  @@map("holidays")
+}
+
 model EmployeeAttendanceLog {
   id              String    @id @default(uuid()) @db.Uuid
   userId          String    @map("user_id") @db.Uuid
@@ -301,3 +320,5 @@ enum UserRole {
   employee
   client
 }
+
+ 

@@ -9,12 +9,15 @@ const createClient = async (clientData) => {
 }
 
 const getAllClients = async () => {
-    return await prismaClient.findMany();
+    return await prismaClient.findMany({
+        // select: PUBLIC_CLIENT_SELECT,
+    });
 }
 
 const getClientByField = async (field, value) => {
     return await prismaClient.findUnique({
         where: { [field]: value },
+        // select: PUBLIC_CLIENT_SELECT,
     });
 }
 
@@ -22,12 +25,14 @@ const updateClient = async (id, updateData) => {
     return await prismaClient.update({
         where: { id },
         data: updateData,
+        // select: PUBLIC_CLIENT_SELECT,
     });
 }
 
 const deleteClient = async (id) => {
     return await prismaClient.delete({
         where: { id },
+        // select: PUBLIC_CLIENT_SELECT,
     });
 }
 

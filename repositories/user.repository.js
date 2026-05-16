@@ -32,7 +32,7 @@ const getAllUsers = async () => {
 const getUserByField = async (field, value) => {
     return await prismaUser.findUnique({
         where: { [field]: value },
-        select: PUBLIC_USER_SELECT,
+        // select: PUBLIC_USER_SELECT,
     });
 }
 
