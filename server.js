@@ -1,7 +1,3 @@
-'use strict';
-
-require('dotenv').config(); // must be first — loads .env before any other module reads process.env
-
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
