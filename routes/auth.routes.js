@@ -3,6 +3,7 @@ const express = require('express');
 const {
 	loginUser,
 	verifyOTP,
+	setupPasswordPreview,
 	requestAdminSignupOtp,
 	inviteUserByAdmin,
 	setupPasswordWithToken,
@@ -30,6 +31,7 @@ router.post('/forgot-password', forgotPassword);
 
 // US-005, US-009: Set password via invitation token (initial setup AND password reset)
 router.post('/setup-password', setupPasswordWithToken);
+router.get('/setup-password/preview', setupPasswordPreview);
 
 // US-008: Admin triggers a reset-password email for a specific user
 // US-009: User completes password reset via the secure link (reuses /setup-password)
