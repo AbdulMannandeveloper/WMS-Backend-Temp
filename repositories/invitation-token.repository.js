@@ -36,6 +36,31 @@ const getValidTokenByHash = async (tokenHash) => {
   });
 };
 
+const getValidTokenByHashWithUser = async (tokenHash) => {
+  return prismaInvitationToken.findFirst({
+    where: {
+      tokenHash,
+      usedAt: null,
+      expiresAt: {
+        gt: new Date(),
+      },
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          username: true,
+          email: true,
+          role: true,
+          isActive: true,
+        },
+      },
+    },
+  });
+};
+
 const markTokenUsed = async (id) => {
   return prismaInvitationToken.update({
     where: { id },
@@ -49,5 +74,6 @@ module.exports = {
   createInvitationToken,
   invalidateUnusedUserTokens,
   getValidTokenByHash,
+  getValidTokenByHashWithUser,
   markTokenUsed,
 };

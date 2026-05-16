@@ -18,6 +18,15 @@ const verifyOTP = async (req, res) => {
     }
 };
 
+const setupPasswordPreview = async (req, res) => {
+    try {
+        const result = await authLogic.getSetupPasswordPreview(req.query);
+        res.status(200).json(result);
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+};
+
 const requestAdminSignupOtp = async (req, res) => {
     try {
         // US-001, US-002, US-003, US-005: First admin registration with invitation link
@@ -93,6 +102,7 @@ const forgotPassword = async (req, res) => {
 module.exports = {
     loginUser,
     verifyOTP,
+    setupPasswordPreview,
     requestAdminSignupOtp,
     inviteUserByAdmin,
     setupPasswordWithToken,

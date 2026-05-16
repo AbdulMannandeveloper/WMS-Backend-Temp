@@ -19,13 +19,13 @@ const createUser = async (userData) => {
     userData.isActive = false;
     return await prismaUser.create({
         data: userData,
-        select: PUBLIC_USER_SELECT,
+        // select: PUBLIC_USER_SELECT,
     });
 }
 
 const getAllUsers = async () => {
     return await prismaUser.findMany({
-        select: PUBLIC_USER_SELECT,
+        // select: PUBLIC_USER_SELECT,
     });
 }
 
@@ -40,14 +40,14 @@ const updateUser = async (id, updateData) => {
     return await prismaUser.update({
         where: { id },
         data: updateData,
-        select: PUBLIC_USER_SELECT,
+        // select: PUBLIC_USER_SELECT,
     });
 }
 
 const deleteUser = async (id) => {
     return await prismaUser.delete({
         where: { id },
-        select: PUBLIC_USER_SELECT,
+        // select: PUBLIC_USER_SELECT,
     });
 }
 
