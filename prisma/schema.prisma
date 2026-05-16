@@ -51,10 +51,10 @@ model Employee {
   id                      String     @id @default(uuid()) @db.Uuid
   userId                  String     @unique @map("user_id") @db.Uuid
   employeeUniqueNumber    String     @unique @default(dbgenerated()) @map("employee_unique_number") @db.VarChar(30)
-  jobTitle                String     @map("job_title") @db.VarChar(120)
-  nationalInsuranceNumber String     @unique @map("national_insurance_number") @db.VarChar(20)
-  dateOfBirth             DateTime   @map("date_of_birth") @db.Date
-  wageRate                Decimal    @map("wage_rate") @db.Decimal(10, 2)
+  jobTitle                String?    @map("job_title") @db.VarChar(120)
+  nationalInsuranceNumber String?    @unique @map("national_insurance_number") @db.VarChar(20)
+  dateOfBirth             DateTime?  @map("date_of_birth") @db.Date
+  wageRate                Decimal?   @map("wage_rate") @db.Decimal(10, 2)
   address                 String?
   user                    User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   shipments               Shipment[]
@@ -302,10 +302,10 @@ model OtpVerification {
 }
 
 model InvitationToken {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  tokenHash String   @unique @map("token_hash") @db.Text
-  expiresAt DateTime @map("expires_at") @db.Timestamp(6)
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.Text
+  expiresAt DateTime  @map("expires_at") @db.Timestamp(6)
   usedAt    DateTime? @map("used_at") @db.Timestamp(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

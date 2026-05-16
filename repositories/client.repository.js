@@ -2,20 +2,9 @@ const { prisma } = require('../lib/prisma');
 
 const prismaClient = prisma.client;
 
-// const PUBLIC_CLIENT_SELECT = {
-//     clientUniqueNumber: true,
-//     name: true,
-//     companyName: true,
-//     email: true,
-//     phone: true,
-//     createdAt: true,
-//     updatedAt: true,
-// };
-
 const createClient = async (clientData) => {
     return await prismaClient.create({
         data: clientData,
-        // select: PUBLIC_CLIENT_SELECT,
     });
 }
 

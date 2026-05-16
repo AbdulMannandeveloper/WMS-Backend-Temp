@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -18,6 +19,9 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
+
+// Serve static files from public directory
+app.use(express.static('public'));
 
 app.get('/', (req, res) => {
 	res.status(200).json({

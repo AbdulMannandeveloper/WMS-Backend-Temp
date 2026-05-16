@@ -32,7 +32,27 @@ const inviteEmailTemplate = ({ setupUrl, expiresHours }) => {
   return { subject, text, html };
 };
 
+const resetPasswordEmailTemplate = ({ setupUrl, expiresHours }) => {
+  const subject = 'Reset Your ProPackers Password';
+  const text = `A password reset was requested for your account. Reset your password here: ${setupUrl}. This link expires in ${expiresHours} hours. If you did not request this, please ignore this email.`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px;">Reset Your Password</h2>
+      <p style="margin: 0 0 16px;">An administrator has requested a password reset for your account. Click below to choose a new password.</p>
+      <p style="margin: 0 0 20px;">
+        <a href="${setupUrl}" style="background: #b45309; color: #ffffff; text-decoration: none; padding: 10px 16px; border-radius: 6px; display: inline-block;">Reset Password</a>
+      </p>
+      <p style="margin: 0 0 8px;">This link expires in <strong>${expiresHours} hours</strong>.</p>
+      <p style="margin: 0 0 8px; color: #6b7280;">If the button does not work, paste this URL in your browser: ${setupUrl}</p>
+      <p style="margin: 0; color: #6b7280;">If you did not request a password reset, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  return { subject, text, html };
+};
+
 module.exports = {
   otpEmailTemplate,
   inviteEmailTemplate,
+  resetPasswordEmailTemplate,
 };

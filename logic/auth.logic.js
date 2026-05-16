@@ -8,6 +8,7 @@ const { sendMail } = require("../utils/mailer");
 const {
   otpEmailTemplate,
   inviteEmailTemplate,
+  resetPasswordEmailTemplate,
 } = require("../utils/emailTemplates");
 
 const SALT_ROUNDS = 10;
@@ -83,50 +84,75 @@ const authenticateUser = async (identifier, password) => {
 };
 
 const requestAdminSignupOtp = async (payload) => {
-  const { firstName, lastName, username, email, password } = payload;
+  const { firstName, lastName, username, email } = payload;
 
-  if (!firstName || !lastName || !email || !password) {
-    throw new Error("First name, last name, email, and password are required.");
+  // US-001 & US-002: Ensure only the first user can register as admin
+  const existingUsers = await userRepository.getAllUsers();
+  if (existingUsers.length > 0) {
+    throw new Error("Admin registration is no longer available. An admin account already exists.");
+  }
+
+  if (!firstName || !lastName || !email) {
+    throw new Error("First name, last name, and email are required.");
   }
 
   if (!/\S+@\S+\.\S+/.test(email)) {
     throw new Error("Invalid email format");
   }
 
-  if (password.length < 6) {
-    throw new Error("Password must be at least 6 characters long");
+  // Check if email already used (should not happen since DB is empty from check above, but defensive)
+  let user = await userRepository.getUserByField("email", email);
+  if (user) {
+    throw new Error("Email already registered. Please use a different email.");
   }
 
-  // Strict rule: only one admin signup path
-  const users = await userRepository.getAllUsers();
-  const adminExists = users.some((u) => u.role === "admin");
-  if (adminExists) {
-    throw new Error("Admin already exists.");
-  }
-
-  // Prevent collisions with existing accounts
-  const existingByEmail = await userRepository.getUserByField("email", email);
-  if (existingByEmail) {
-    throw new Error("A user with this email already exists.");
-  }
-
-  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-
-  const user = await userRepository.createUser({
+  // US-003: First admin gets invitation link flow - no password yet, will be set via setup link
+  user = await userRepository.createUser({
     firstName,
     lastName,
     username,
     email,
-    passwordHash,
+    passwordHash: null,
     role: "admin",
     isActive: false,
   });
 
+  if (!user) {
+    throw new Error("Failed to create user");
+  }
+
   try {
-    await createOtpAndSendEmail(user.id, email);
+    // Generate invitation token instead of OTP (US-003, US-005)
+    const plainToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashValue(plainToken);
+    const expiresAt = new Date(Date.now() + INVITE_EXPIRY_HOURS * 60 * 60 * 1000);
+
+    await invitationTokenRepository.createInvitationToken({
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+    });
+
+    const setupUrl = `${APP_BASE_URL}/setup-password?token=${plainToken}`;
+    const emailContent = inviteEmailTemplate({
+      setupUrl,
+      expiresHours: INVITE_EXPIRY_HOURS,
+    });
+
+    const sent = await sendMail({
+      to: email,
+      subject: emailContent.subject,
+      html: emailContent.html,
+      text: emailContent.text,
+    });
+
+    if (!sent) {
+      await userRepository.deleteUser(user.id).catch(() => null);
+      throw new Error("Failed to send invitation email. User creation rolled back.");
+    }
   } catch (error) {
     await userRepository.deleteUser(user.id).catch(() => null);
-    throw new Error(`Failed to send OTP email. ${error.message}`);
+    throw new Error(`Failed to send invitation email. ${error.message}`);
   }
 
   return { userId: user.id, email: user.email };
@@ -196,9 +222,11 @@ const inviteUserByAdmin = async ({
     );
   }
 
-  if (!["employee", "client"].includes(role)) {
+  // US-004: Allow creating employees, clients, AND admins (with validation)
+  const validRoles = ["employee", "client", "admin"];
+  if (!validRoles.includes(role)) {
     throw new Error(
-      "Role must be either employee or client for invited users.",
+      "Role must be employee, client, or admin.",
     );
   }
 
@@ -292,6 +320,115 @@ const setupPasswordWithToken = async ({ token, password }) => {
   return { completed: true, userId: tokenRecord.userId };
 };
 
+
+const resetPasswordForUser = async ({ adminId, userId }) => {
+  if (!adminId || !userId) {
+    throw new Error("adminId and userId are required.");
+  }
+
+  // Validate the requesting admin
+  const admin = await userRepository.getUserByField("id", adminId);
+  if (!admin || admin.role !== "admin" || !admin.isActive) {
+    throw new Error("Only an active admin can trigger a password reset.");
+  }
+
+  // Find the target user
+  const targetUser = await userRepository.getUserByField("id", userId);
+  if (!targetUser) {
+    throw new Error("Target user not found.");
+  }
+
+  // Invalidate any existing unused tokens for the user
+  await invitationTokenRepository.invalidateUnusedUserTokens(targetUser.id);
+
+  // Create a new reset token
+  const plainToken = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashValue(plainToken);
+  const expiresAt = new Date(Date.now() + INVITE_EXPIRY_HOURS * 60 * 60 * 1000);
+
+  await invitationTokenRepository.createInvitationToken({
+    userId: targetUser.id,
+    tokenHash,
+    expiresAt,
+  });
+
+  const setupUrl = `${APP_BASE_URL}/setup-password?token=${plainToken}`;
+  const emailContent = resetPasswordEmailTemplate({
+    setupUrl,
+    expiresHours: INVITE_EXPIRY_HOURS,
+  });
+
+  const sent = await sendMail({
+    to: targetUser.email,
+    subject: emailContent.subject,
+    html: emailContent.html,
+    text: emailContent.text,
+  });
+
+  if (!sent) {
+    throw new Error("Failed to send password reset email.");
+  }
+
+  return { reset: true, userId: targetUser.id, email: targetUser.email };
+};
+
+
+/**
+ * US-009: Self-service "Forgot Password" flow.
+ * User provides their email → server sends a fresh reset link.
+ *
+ * Security note: We always return the same success response whether
+ * the email exists or not. This prevents email enumeration attacks
+ * (an attacker probing which emails are registered in the system).
+ */
+const forgotPassword = async ({ email }) => {
+  if (!email) {
+    throw new Error("Email is required.");
+  }
+
+  if (!/\S+@\S+\.\S+/.test(email)) {
+    throw new Error("Invalid email format.");
+  }
+
+  // Look up the user — but do NOT reveal whether they exist
+  const user = await userRepository.getUserByField("email", email);
+
+  // Silently succeed if the user doesn't exist (prevents enumeration)
+  if (!user) {
+    return { sent: true };
+  }
+
+  // Invalidate any old unused tokens so stale links stop working
+  await invitationTokenRepository.invalidateUnusedUserTokens(user.id);
+
+  // Generate a fresh token
+  const plainToken = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashValue(plainToken);
+  const expiresAt = new Date(Date.now() + INVITE_EXPIRY_HOURS * 60 * 60 * 1000);
+
+  await invitationTokenRepository.createInvitationToken({
+    userId: user.id,
+    tokenHash,
+    expiresAt,
+  });
+
+  const setupUrl = `${APP_BASE_URL}/setup-password?token=${plainToken}`;
+  const emailContent = resetPasswordEmailTemplate({
+    setupUrl,
+    expiresHours: INVITE_EXPIRY_HOURS,
+  });
+
+  await sendMail({
+    to: user.email,
+    subject: emailContent.subject,
+    html: emailContent.html,
+    text: emailContent.text,
+  });
+
+  // Always return sent: true — do NOT reveal email-not-found here
+  return { sent: true };
+};
+
 module.exports = {
   authenticateUser,
   verifyOTP,
@@ -299,4 +436,6 @@ module.exports = {
   verifyAdminSignupOtp,
   inviteUserByAdmin,
   setupPasswordWithToken,
+  resetPasswordForUser,
+  forgotPassword,
 };

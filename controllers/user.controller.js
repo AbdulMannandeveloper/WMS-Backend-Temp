@@ -1,24 +1,16 @@
 const userLogic = require('../logic/user.logic');
 
-const registerFirstUser = async (req, res) => {
-    try {
-        const result = await userLogic.registerFirstUser(req.body);
-        res.status(201).json(result);
-    } catch (err) {
-        res.status(400).json({ error: err.message });
-    }
-};
-
-const addNewUser = async (req, res) => {
-    try {
-        // Use authenticated user id, or allow Postman/testing via x-user-id header.
-        const loggedInUserId = (req.user && req.user.id) || req.header('x-user-id');
-        const result = await userLogic.addNewUser({ ...req.body, adminId: loggedInUserId });
-        res.status(201).json(result);
-    } catch (err) {
-        res.status(400).json({ error: err.message });
-    }
-};
+// DEPRECATED: User creation moved to /auth/admin/users/invite endpoint
+// Kept for backward compatibility - redirect traffic to auth endpoint
+// const addNewUser = async (req, res) => {
+//     try {
+//         const loggedInUserId = (req.user && req.user.id) || req.header('x-user-id');
+//         const result = await userLogic.addNewUser({ ...req.body, adminId: loggedInUserId });
+//         res.status(201).json(result);
+//     } catch (err) {
+//         res.status(400).json({ error: err.message });
+//     }
+// };
 
 const getAllUsers = async (req, res) => {
     try {
