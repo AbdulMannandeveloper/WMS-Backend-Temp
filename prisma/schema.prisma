@@ -184,16 +184,23 @@ model MonthlyAttendanceSummary {
 }
 
 model WarehouseLocation {
-  id               String              @id @default(uuid()) @db.Uuid
-  locationName     String              @map("location_name") @db.VarChar(150)
-  locationClass    String              @map("location_class") @db.VarChar(20)
-  parentLocationId String?             @map("parent_location_id") @db.Uuid
-  parentLocation   WarehouseLocation?  @relation("WarehouseLocationHierarchy", fields: [parentLocationId], references: [id], onDelete: SetNull)
-  childLocations   WarehouseLocation[] @relation("WarehouseLocationHierarchy")
-  stockLevels      StockLevel[]
-  inventoryEntries InventoryLedger[]
+  id                String               @id @default(uuid()) @db.Uuid
+  locationName      String               @map("location_name") @db.VarChar(150)
+  locationClass     LocationClass        @map("location_class") // Enforced safety
+  materializedPath  String?              @map("materialized_path") @db.VarChar(500)
+  parentLocationId  String?              @map("parent_location_id") @db.Uuid
+  parentLocation    WarehouseLocation?   @relation("WarehouseLocationHierarchy", fields: [parentLocationId], references: [id], onDelete: SetNull)
+  childLocations    WarehouseLocation[]  @relation("WarehouseLocationHierarchy")
+  stockLevels       StockLevel[]
+  inventoryEntries  InventoryLedger[]
 
+  // Performance & Data Integrity
   @@index([parentLocationId], map: "idx_warehouse_parent_location")
+  @@index([materializedPath], map: "idx_warehouse_materialized_path")
+  
+  // Guarantees you can't duplicate "Bin 1" inside the exact same Shelf
+  @@unique([parentLocationId, locationName], map: "uidx_parent_location_name")
+  
   @@map("warehouse_locations")
 }
 
@@ -321,4 +328,13 @@ enum UserRole {
   client
 }
 
- 
+enum LocationClass {
+  ZONE
+  AISLE
+  BAY
+  SHELF
+  BIN
+  STAGING
+  RECEIVING
+  SHIPPING
+}
