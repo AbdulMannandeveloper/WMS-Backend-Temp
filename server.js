@@ -7,6 +7,7 @@ const { connectDB } = require('./lib/prisma');
 
 const userRoutes = require('./routes/user.routes');
 const authRoutes = require('./routes/auth.routes');
+const clientRoutes = require('./routes/client.routes');
 const serviceRoutes = require('./routes/service.routes');
 const productRoutes = require('./routes/product.routes');
 const stockLevelRoutes = require('./routes/stock_level.routes');
@@ -32,6 +33,7 @@ app.get('/', (req, res) => {
 
 app.use('/api/users', userRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/clients', clientRoutes);
 app.use('/api/services', serviceRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/stock', stockLevelRoutes);
