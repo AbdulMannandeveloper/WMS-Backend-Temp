@@ -21,6 +21,13 @@ const getClientByField = async (field, value) => {
     });
 }
 
+const getClientById = async (id) => {
+    return await prismaClient.findUnique({
+        where: { id },
+        // select: PUBLIC_CLIENT_SELECT,
+    });
+}
+
 const updateClient = async (id, updateData) => {
     return await prismaClient.update({
         where: { id },
@@ -40,6 +47,7 @@ module.exports = {
     createClient,
     getAllClients,
     getClientByField,
+    getClientById,
     updateClient,
     deleteClient,
 }

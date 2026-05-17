@@ -31,4 +31,22 @@ const getClientById = async (req, res) => {
   }
 };
 
-module.exports = { addClient, getAllClients, getClientById };
+const updateClient = async (req, res) => {
+  try {
+    const updated = await clientLogic.updateClient(req.params.id, req.body);
+    res.status(200).json(updated);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+const deleteClient = async (req, res) => {
+  try {
+    await clientLogic.deleteClient(req.params.id);
+    res.status(200).json({ message: 'Client deleted successfully.' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+module.exports = { addClient, getAllClients, getClientById, updateClient, deleteClient };

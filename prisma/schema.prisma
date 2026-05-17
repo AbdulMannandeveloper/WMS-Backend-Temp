@@ -74,14 +74,15 @@ model Service {
 }
 
 model ClientService {
-  clientId     String  @map("client_id") @db.Uuid
-  serviceId    String  @map("service_id") @db.Uuid
-  chargedPrice Decimal @map("charged_price") @db.Decimal(12, 2)
-  unit         String  @db.VarChar(30)
-  client       Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  service      Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  id           String   @id @default(uuid()) @db.Uuid
+  clientId     String   @map("client_id") @db.Uuid
+  serviceId    String   @map("service_id") @db.Uuid
+  chargedPrice Decimal  @map("charged_price") @db.Decimal(12, 2)
+  unit         String   @db.VarChar(30)
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  service      Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
-  @@id([clientId, serviceId])
+  @@unique([clientId, serviceId], map: "uq_clients_services_pair")
   @@index([serviceId], map: "idx_clients_services_service_id")
   @@map("clients_services")
 }
