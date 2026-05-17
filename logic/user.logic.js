@@ -100,7 +100,7 @@ const completeUserRegistration = async (email, registrationData) => {
     registrationData.passwordHash = passwordHash;
     registrationData.isActive = true; // Activate the user account
 
-    return await userRepository.updateUser(email, { registrationData });
+    return await userRepository.updateUser(user.id, registrationData);
 };
 
 const getAllUsers = async () => {
@@ -111,8 +111,8 @@ const getUserByEmail = async (email) => {
     return await userRepository.getUserByField('email', email);
 };
 
-const updateUser = async (email, updateData) => {
-    const user = await userRepository.getUserByField('email', email);
+const updateUser = async (id, updateData) => {
+    const user = await userRepository.getUserByField('id', id);
     if (!user) {
         throw new Error("User not found");
     }
@@ -124,8 +124,8 @@ const updateUser = async (email, updateData) => {
     return await userRepository.updateUser(user.id, updateData);
 };
 
-const deleteUser = async (email) => {
-    const user = await userRepository.getUserByField('email', email);
+const deleteUser = async (id) => {
+    const user = await userRepository.getUserByField('id', id);
     if (!user) {
         throw new Error("User not found");
     }

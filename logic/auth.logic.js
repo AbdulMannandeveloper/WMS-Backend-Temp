@@ -203,7 +203,25 @@ const verifyOTP = async (userId, otp) => {
     throw new Error("User not found");
   }
 
-  return verifyAdminSignupOtp({ email: user.email, otp });
+  const result = await verifyAdminSignupOtp({ email: user.email, otp });
+
+  if (!result || !result.verified) {
+    return result;
+  }
+
+  // return user info along with verification result
+  const updatedUser = await userRepository.getUserByField('id', result.userId);
+
+  return {
+    verified: true,
+    userId: updatedUser.id,
+    firstName: updatedUser.firstName,
+    lastName: updatedUser.lastName,
+    username: updatedUser.username,
+    email: updatedUser.email,
+    role: updatedUser.role,
+    isActive: updatedUser.isActive,
+  };
 };
 
 
@@ -318,6 +336,30 @@ const setupPasswordWithToken = async ({ token, password }) => {
   await invitationTokenRepository.markTokenUsed(tokenRecord.id);
 
   return { completed: true, userId: tokenRecord.userId };
+};
+
+const getSetupPasswordPreview = async ({ token }) => {
+  if (!token) {
+    throw new Error('Missing setup token.');
+  }
+
+  const tokenHash = hashValue(token);
+  const tokenRecord = await invitationTokenRepository.getValidTokenByHashWithUser(tokenHash);
+
+  if (!tokenRecord || !tokenRecord.user) {
+    throw new Error('Invalid or expired setup token.');
+  }
+
+  const { user } = tokenRecord;
+
+  return {
+    userId: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+  };
 };
 
 
@@ -438,4 +480,5 @@ module.exports = {
   setupPasswordWithToken,
   resetPasswordForUser,
   forgotPassword,
+  getSetupPasswordPreview,
 };
