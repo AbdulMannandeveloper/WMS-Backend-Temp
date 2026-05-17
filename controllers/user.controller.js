@@ -22,8 +22,15 @@ const registerFirstUser = async (req, res) => {
 
 const addNewUser = async (req, res) => {
     try {
-        // Use authenticated user id, or allow Postman/testing via x-user-id header.
-        const loggedInUserId = (req.user && req.user.id) || req.header('x-user-id');
+        // Use authenticated user id, or allow Postman/testing via x-user-id / Authorization header.
+        const authHeader = req.header('authorization') || '';
+        const bearerUserId = authHeader.toLowerCase().startsWith('token ')
+            ? authHeader.slice(6).trim()
+            : null;
+        const loggedInUserId =
+            (req.user && req.user.id) ||
+            req.header('x-user-id') ||
+            bearerUserId;
         const result = await userLogic.addNewUser({ ...req.body, adminId: loggedInUserId });
         res.status(201).json(result);
     } catch (err) {

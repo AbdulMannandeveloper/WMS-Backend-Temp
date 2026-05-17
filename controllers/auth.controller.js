@@ -76,7 +76,17 @@ const setupPasswordWithToken = async (req, res) => {
 // US-008: Admin triggers a reset-password email for a specific user
 const resetPasswordForUser = async (req, res) => {
     try {
-        const result = await authLogic.resetPasswordForUser(req.body);
+        const authHeader = req.header('authorization') || '';
+        const bearerUserId = authHeader.toLowerCase().startsWith('token ')
+            ? authHeader.slice(6).trim()
+            : null;
+        const adminId =
+            req.body.adminId ||
+            (req.user && req.user.id) ||
+            req.header('x-user-id') ||
+            bearerUserId;
+
+        const result = await authLogic.resetPasswordForUser({ ...req.body, adminId });
         res.status(200).json({ message: 'Password reset email sent successfully.', ...result });
     } catch (err) {
         res.status(400).json({ error: err.message });
