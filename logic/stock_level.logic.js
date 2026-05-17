@@ -1,6 +1,6 @@
 const stockLevelRepository = require("../repositories/stock_level.repository");
 const productRepository = require("../repositories/product.repository");
-// const locationRepository = require('../repositories/location.repository');
+const warehosueLocationRepository = require("../repositories/warehouse_location.repository");
 
 const createStockLevel = async (stockLevelData) => {
   if (!stockLevelData.productId || !stockLevelData.locationId) {
@@ -16,16 +16,14 @@ const createStockLevel = async (stockLevelData) => {
     throw new Error("Product not found.");
   }
 
-  // --------------------------------------------------------------------------
-  // Location logic is currently commented out to avoid circular dependency issues.
-  // --------------------------------------------------------------------------
-
-  //   const location = await locationRepository.getLocationById(stockLevelData.locationId);
-  //   if (!location) {
-  //     throw new Error('Location not found.');
-  //   }
-
-  // --------------------------------------------------------------------------
+  const location =
+    await warehouseLocationRepository.getWarehouseLocationByField(
+      "locationId",
+      stockLevelData.locationId,
+    );
+  if (!location) {
+    throw new Error("Location not found.");
+  }
 
   if (stockLevelData.currentQuantity < 0) {
     throw new Error("Current quantity cannot be negative.");
@@ -43,13 +41,6 @@ const getStockLevelByField = async (field, value) => {
 };
 
 const updateStockLevel = async (id, updateData) => {
-  if (
-    updateData.currentQuantity !== undefined &&
-    updateData.currentQuantity < 0
-  ) {
-    throw new Error("Current quantity cannot be negative.");
-  }
-
   // If productId or locationId is being updated, validate them
   if (updateData.productId) {
     const product = await productRepository.getProductById(
@@ -60,28 +51,40 @@ const updateStockLevel = async (id, updateData) => {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // Location logic is currently commented out to avoid circular dependency issues.
-  // --------------------------------------------------------------------------
+  if (updateData.locationId) {
+    const location =
+      await warehouseLocationRepository.getWarehouseLocationByField(
+        "locationId",
+        updateData.locationId,
+      );
+    if (!location) {
+      throw new Error("Location not found.");
+    }
+  }
 
-  // if (updateData.locationId) {
-  //   const location = await locationRepository.getLocationById(updateData.locationId);
-  //   if (!location) {
-  //     throw new Error('Location not found.');
-  //   }
-  // }
+  // If quantityToChange is provided, calculate the new currentQuantity
+  const currentStockLevel = await stockLevelRepository.getStockLevelById(id);
+  if (updateData.quantityToChange) {
+    updateData.currentQuantity =
+      currentStockLevel.currentQuantity + updateData.quantityToChange;
+    if (updateData.currentQuantity > 0) {
+      updateData.arrivedTodayQuantity += updateData.quantityToChange;
+    }
+    delete updateData.quantityToChange;
+  }
 
-  // --------------------------------------------------------------------------
+  if (!updateData.currentQuantity && updateData.currentQuantity < 0) {
+    throw new Error("Not enough stock available to fulfill the request.");
+  }
 
   // Logic to notify/send alerts if stock level falls below the threshold
-  const updatedStockLevel = await stockLevelRepository.getStockLevelById(id);
   if (
     updateData.currentQuantity !== undefined &&
-    updateData.currentQuantity < updatedStockLevel.threshold
+    updateData.currentQuantity < currentStockLevel.threshold
   ) {
     // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
     console.log(
-      `Stock level for product ${updatedStockLevel.productId} at location ${updatedStockLevel.locationId} is below threshold.`,
+      `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
     );
   }
 
@@ -93,12 +96,53 @@ const updateStockLevelByProductAndLocation = async (
   locationId,
   updateData,
 ) => {
+  // If productId or locationId is being updated, validate them
+  if (updateData.productId) {
+    const product = await productRepository.getProductById(
+      updateData.productId,
+    );
+    if (!product) {
+      throw new Error("Product not found.");
+    }
+  }
+
+  if (updateData.locationId) {
+    const location =
+      await warehouseLocationRepository.getWarehouseLocationByField(
+        "locationId",
+        updateData.locationId,
+      );
+    if (!location) {
+      throw new Error("Location not found.");
+    }
+  }
+  
+  // If quantityToChange is provided, calculate the new currentQuantity
+  const currentStockLevel = await stockLevelRepository.getStockLevelById(id);
+  if (updateData.quantityToChange) {
+    updateData.currentQuantity =
+      currentStockLevel.currentQuantity + updateData.quantityToChange;
+    if (updateData.currentQuantity > 0) {
+      updateData.arrivedTodayQuantity += updateData.quantityToChange;
+    }
+    delete updateData.quantityToChange;
+  }
+
+  if (!updateData.currentQuantity && updateData.currentQuantity < 0) {
+    throw new Error("Not enough stock available to fulfill the request.");
+  }
+
+  // Logic to notify/send alerts if stock level falls below the threshold
   if (
     updateData.currentQuantity !== undefined &&
-    updateData.currentQuantity < 0
+    updateData.currentQuantity < currentStockLevel.threshold
   ) {
-    throw new Error("Current quantity cannot be negative.");
+    // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
+    console.log(
+      `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
+    );
   }
+
   return await stockLevelRepository.updateStockLevelByProductAndLocation(
     productId,
     locationId,
