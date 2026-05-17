@@ -12,6 +12,7 @@ const productRoutes = require('./routes/product.routes');
 const stockLevelRoutes = require('./routes/stock_level.routes');
 const shiftRoutes = require('./routes/shift.routes');
 const holidayRoutes = require('./routes/holiday.routes');
+const warehouseLocationRoutes = require('./routes/warehouse_location.routes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -37,6 +38,7 @@ app.use('/api/products', productRoutes);
 app.use('/api/stock', stockLevelRoutes);
 app.use('/api/shifts', shiftRoutes);
 app.use('/api/holidays', holidayRoutes);
+app.use('/api/warehouse-locations', warehouseLocationRoutes);
 
 app.use((req, res) => {
 	res.status(404).json({

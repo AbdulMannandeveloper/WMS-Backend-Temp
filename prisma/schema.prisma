@@ -187,7 +187,7 @@ model WarehouseLocation {
   id                String               @id @default(uuid()) @db.Uuid
   locationName      String               @map("location_name") @db.VarChar(150)
   locationClass     LocationClass        @map("location_class") // Enforced safety
-  materializedPath  String?              @map("materialized_path") @db.VarChar(500)
+  materializedPath  String?              @map("materialized_path") @db.VarChar(500)  // Example value: "zone-a/aisle-2/shelf-3"
   parentLocationId  String?              @map("parent_location_id") @db.Uuid
   parentLocation    WarehouseLocation?   @relation("WarehouseLocationHierarchy", fields: [parentLocationId], references: [id], onDelete: SetNull)
   childLocations    WarehouseLocation[]  @relation("WarehouseLocationHierarchy")
