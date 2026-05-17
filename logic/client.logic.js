@@ -147,8 +147,55 @@ const getClientById = async (clientId) => {
   return client;
 };
 
+/**
+ * Update client details.
+ */
+const updateClient = async (clientId, updateData) => {
+  if (!clientId) {
+    throw new Error('clientId is required.');
+  }
+
+  const client = await clientRepository.getClientByField('id', clientId);
+  if (!client) {
+    throw new Error('Client not found.');
+  }
+
+  // Update allowed fields
+  const allowedFields = ['companyName', 'contactName', 'email', 'mobile', 'address'];
+  const dataToUpdate = {};
+  for (const field of allowedFields) {
+    if (field in updateData) {
+      dataToUpdate[field] = updateData[field];
+    }
+  }
+
+  if (Object.keys(dataToUpdate).length === 0) {
+    return client;
+  }
+
+  return await clientRepository.updateClient(clientId, dataToUpdate);
+};
+
+/**
+ * Delete client record.
+ */
+const deleteClient = async (clientId) => {
+  if (!clientId) {
+    throw new Error('clientId is required.');
+  }
+
+  const client = await clientRepository.getClientByField('id', clientId);
+  if (!client) {
+    throw new Error('Client not found.');
+  }
+
+  return await clientRepository.deleteClient(clientId);
+};
+
 module.exports = {
   addClient,
   getAllClients,
   getClientById,
+  updateClient,
+  deleteClient,
 };
