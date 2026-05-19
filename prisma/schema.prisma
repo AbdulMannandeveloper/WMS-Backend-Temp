@@ -350,19 +350,12 @@ enum UserRole {
 enum LocationClass {
   ZONE
   AISLE
-  BAY
   SHELF
   BIN
-  STAGING
-  RECEIVING
-  SHIPPING
 }
 
 enum InventoryMovementType {
-  RECEIVING      // Items arriving from a supplier
-  PUTAWAY        // Items moving from receiving dock to a storage bin
+  CHECKIN      // Items arriving from a supplier
   INTERNAL_MOVE  // Items moving between storage bins
-  PICKING        // Items picked for a customer order
-  SHIPMENT       // Items leaving the building
-  ADJUSTMENT     // Stock loss, damage, or stocktake correction
+  CHECKOUT       // Items leaving the building
 }

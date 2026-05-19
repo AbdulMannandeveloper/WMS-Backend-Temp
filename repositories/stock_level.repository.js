@@ -18,6 +18,15 @@ const getStockLevelByField = async (field, value) => {
   });
 };
 
+const getStockLevelByProductAndLocation = async (productId, locationId) => {
+  return await prismaStockLevel.findUnique({
+    where: {
+      productId: productId,
+      locationId: locationId,
+    },
+  });
+};
+
 const updateStockLevel = async (id, updateData) => {
   return await prismaStockLevel.update({
     where: { id },
@@ -45,6 +54,7 @@ module.exports = {
   createStockLevel,
   getAllStockLevels,
   getStockLevelByField,
+  getStockLevelByProductAndLocation,
   updateStockLevel,
   updateStockLevelByProductAndLocation,
   deleteStockLevel,
