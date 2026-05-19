@@ -1,4 +1,5 @@
 const express = require("express");
+const { authorizeRoles } = require("../middlewares/authorize");
 const {
   createService,
   getAllServices,
@@ -9,10 +10,10 @@ const {
 
 const router = express.Router();
 
-router.post("/", createService);
-router.get("/", getAllServices);
-router.get("/:id", getServiceById);
-router.put("/:id", updateService);
-router.delete("/:id", deleteService);
+router.post("/", authorizeRoles('admin'), createService);
+router.get("/", authorizeRoles('admin'), getAllServices);
+router.get("/:id", authorizeRoles('admin'), getServiceById);
+router.put("/:id", authorizeRoles('admin'), updateService);
+router.delete("/:id", authorizeRoles('admin'), deleteService);
 
 module.exports = router;

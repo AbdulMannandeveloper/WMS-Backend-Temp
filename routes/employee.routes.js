@@ -4,12 +4,12 @@ const { addEmployee, getAllEmployees, getEmployeeById } = require('../controller
 const router = express.Router();
 
 // Admin adds a new employee; invitation email sent automatically
-router.post('/', addEmployee);
+router.post('/', authorizeRoles('admin'), addEmployee);
 
 // List all employees
-router.get('/', getAllEmployees);
+router.get('/', authorizeRoles('admin'), getAllEmployees);
 
 // Get a single employee by ID
-router.get('/:id', getEmployeeById);
+router.get('/:id', authorizeRoles('admin', 'employee'), getEmployeeById);
 
 module.exports = router;
