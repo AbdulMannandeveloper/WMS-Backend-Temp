@@ -1,4 +1,5 @@
 const express = require('express');
+const { authorizeRoles } = require('../middlewares/authorize');
 
 const {
 	loginUser,
@@ -24,7 +25,7 @@ router.post('/admin-signup/request-otp', requestAdminSignupOtp);
 // router.post('/admin-signup/verify-otp', verifyAdminSignupOtp);
 
 // US-004, US-005: Admin invites employees, clients, or other admins
-router.post('/admin/users/invite', inviteUserByAdmin);
+router.post('/admin/users/invite', authorizeRoles('admin'), inviteUserByAdmin);
 
 // US-009: Self-service — user requests a fresh password reset link by email
 router.post('/forgot-password', forgotPassword);
@@ -35,6 +36,6 @@ router.get('/setup-password/preview', setupPasswordPreview);
 
 // US-008: Admin triggers a reset-password email for a specific user
 // US-009: User completes password reset via the secure link (reuses /setup-password)
-router.post('/admin/users/reset-password', resetPasswordForUser);
+router.post('/admin/users/reset-password', authorizeRoles('admin'), resetPasswordForUser);
 
 module.exports = router;
