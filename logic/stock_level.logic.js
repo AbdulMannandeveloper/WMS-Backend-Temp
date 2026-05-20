@@ -25,8 +25,11 @@ const createStockLevel = async (stockLevelData) => {
     throw new Error("Location not found.");
   }
 
-  if (stockLevelData.currentQuantity < 0) {
-    throw new Error("Current quantity cannot be negative.");
+  if (stockLevelData.currentQuantity) {
+    if (stockLevelData.currentQuantity < 0) {
+      throw new Error("Current quantity cannot be negative.");
+    }
+    stockLevelData.arrivedTodayQuantity = stockLevelData.currentQuantity;
   }
 
   return await stockLevelRepository.createStockLevel(stockLevelData);
@@ -38,6 +41,13 @@ const getAllStockLevels = async () => {
 
 const getStockLevelByField = async (field, value) => {
   return await stockLevelRepository.getStockLevelByField(field, value);
+};
+
+const getStockLevelByProductAndLocation = async (productId, locationId) => {
+  return await stockLevelRepository.getStockLevelByProductAndLocation(
+    productId,
+    locationId,
+  );
 };
 
 const updateStockLevel = async (id, updateData) => {
@@ -62,8 +72,8 @@ const updateStockLevel = async (id, updateData) => {
     }
   }
 
-  // If quantityToChange is provided, calculate the new currentQuantity
   const currentStockLevel = await stockLevelRepository.getStockLevelById(id);
+  // If quantityToChange is provided, calculate the new currentQuantity
   if (updateData.quantityToChange) {
     updateData.currentQuantity =
       currentStockLevel.currentQuantity + updateData.quantityToChange;
@@ -72,20 +82,26 @@ const updateStockLevel = async (id, updateData) => {
     }
     delete updateData.quantityToChange;
   }
+  // If currentQuantity is being updated directly, validate it and adjust arrivedTodayQuantity if necessary
+  if (updateData.currentQuantity !== undefined) {
+    // Validate that the new currentQuantity is not negative
+    if (updateData.currentQuantity < 0) {
+      throw new Error("Not enough stock available to fulfill the request.");
+    }
 
-  if (!updateData.currentQuantity && updateData.currentQuantity < 0) {
-    throw new Error("Not enough stock available to fulfill the request.");
-  }
+    // Logic to notify/send alerts if stock level falls below the threshold
+    if (updateData.currentQuantity < currentStockLevel.threshold) {
+      // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
+      console.log(
+        `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
+      );
+    }
 
-  // Logic to notify/send alerts if stock level falls below the threshold
-  if (
-    updateData.currentQuantity !== undefined &&
-    updateData.currentQuantity < currentStockLevel.threshold
-  ) {
-    // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
-    console.log(
-      `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
-    );
+    // If currentQuantity is being updated directly, we might want to adjust arrivedTodayQuantity accordingly
+    if (updateData.currentQuantity > currentStockLevel.currentQuantity) {
+      updateData.arrivedTodayQuantity +=
+        updateData.currentQuantity - currentStockLevel.currentQuantity;
+    }
   }
 
   return await stockLevelRepository.updateStockLevel(id, updateData);
@@ -116,9 +132,13 @@ const updateStockLevelByProductAndLocation = async (
       throw new Error("Location not found.");
     }
   }
-  
+
+  const currentStockLevel =
+    await stockLevelRepository.getStockLevelByProductAndLocation(
+      productId,
+      locationId,
+    );
   // If quantityToChange is provided, calculate the new currentQuantity
-  const currentStockLevel = await stockLevelRepository.getStockLevelById(id);
   if (updateData.quantityToChange) {
     updateData.currentQuantity =
       currentStockLevel.currentQuantity + updateData.quantityToChange;
@@ -127,20 +147,26 @@ const updateStockLevelByProductAndLocation = async (
     }
     delete updateData.quantityToChange;
   }
+  // If currentQuantity is being updated directly, validate it and adjust arrivedTodayQuantity if necessary
+  if (updateData.currentQuantity !== undefined) {
+    // Validate that the new currentQuantity is not negative
+    if (updateData.currentQuantity < 0) {
+      throw new Error("Not enough stock available to fulfill the request.");
+    }
 
-  if (!updateData.currentQuantity && updateData.currentQuantity < 0) {
-    throw new Error("Not enough stock available to fulfill the request.");
-  }
+    // Logic to notify/send alerts if stock level falls below the threshold
+    if (updateData.currentQuantity < currentStockLevel.threshold) {
+      // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
+      console.log(
+        `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
+      );
+    }
 
-  // Logic to notify/send alerts if stock level falls below the threshold
-  if (
-    updateData.currentQuantity !== undefined &&
-    updateData.currentQuantity < currentStockLevel.threshold
-  ) {
-    // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
-    console.log(
-      `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
-    );
+    // If currentQuantity is being updated directly, we might want to adjust arrivedTodayQuantity accordingly
+    if (updateData.currentQuantity > currentStockLevel.currentQuantity) {
+      updateData.arrivedTodayQuantity +=
+        updateData.currentQuantity - currentStockLevel.currentQuantity;
+    }
   }
 
   return await stockLevelRepository.updateStockLevelByProductAndLocation(
@@ -158,6 +184,7 @@ module.exports = {
   createStockLevel,
   getAllStockLevels,
   getStockLevelByField,
+  getStockLevelByProductAndLocation,
   updateStockLevel,
   updateStockLevelByProductAndLocation,
   deleteStockLevel,
