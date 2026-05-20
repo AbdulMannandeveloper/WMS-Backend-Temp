@@ -6,5 +6,6 @@ const router = express.Router();
 router.post('/', authorizeRoles('admin', 'employee'), inventoryLedgerController.createInventoryLedgerEntry);
 router.get('/', authorizeRoles('admin', 'employee'), inventoryLedgerController.getAllInventoryLedgers);
 router.get('/:field/:value', authorizeRoles('admin', 'employee'), inventoryLedgerController.getInventoryLedgerByField);
+router.get('/client/:clientId', authorizeRoles('admin', 'employee'), inventoryLedgerController.getInventoryLedgerByClientId);
 
 module.exports = router;

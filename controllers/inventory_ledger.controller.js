@@ -38,8 +38,20 @@ const getInventoryLedgerByField = async (req, res) => {
   }
 };
 
+const getInventoryLedgerByClientId = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const ledgers =
+      await inventoryLedgerLogic.getInventoryLedgerByClientId(clientId);
+    res.status(200).json(ledgers);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
 module.exports = {
   createInventoryLedgerEntry,
   getAllInventoryLedgers,
   getInventoryLedgerByField,
+  getInventoryLedgerByClientId,
 };

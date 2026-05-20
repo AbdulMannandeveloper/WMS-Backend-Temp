@@ -12,7 +12,7 @@ const getAllInventoryLedgers = async () => {
 };
 
 const getInventoryLedgerByField = async (field, value) => {
-  return await prismaInventoryLedger.findUnique({
+  return await prismaInventoryLedger.findMany({
     where: { [field]: value },
   });
 };

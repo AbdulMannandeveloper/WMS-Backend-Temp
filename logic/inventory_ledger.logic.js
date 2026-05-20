@@ -1,6 +1,7 @@
 const inventoryLedgerRepository = require("../repositories/inventory_ledger.repository");
 const productRepository = require("../repositories/product.repository");
 const locationRepository = require("../repositories/location.repository");
+const userRepository = require("../repositories/user.repository");
 
 const stockLevelLogic = require("./stock_level.logic");
 
@@ -103,22 +104,101 @@ const createInventoryLedger = async (newData) => {
   const stockAdjusted = await adjustStockLevels(inventoryLedgerEntry);
 
   if (!stockAdjusted) {
-    await inventoryLedgerRepository.deleteInventoryLedger(inventoryLedgerEntry.id); // Rollback the ledger entry if stock adjustment fails
-    throw new Error("Failed to adjust stock levels based on the inventory ledger entry.");
+    await inventoryLedgerRepository.deleteInventoryLedger(
+      inventoryLedgerEntry.id,
+    ); // Rollback the ledger entry if stock adjustment fails
+    throw new Error(
+      "Failed to adjust stock levels based on the inventory ledger entry.",
+    );
   }
-  
+
   return inventoryLedgerEntry;
 };
 
 const getAllInventoryLedgers = async () => {
-  return await inventoryLedgerRepository.getAllInventoryLedgers();
+  const ledgers = await inventoryLedgerRepository.getAllInventoryLedgers();
+
+  // Enrich ledger entries with product, location, and user details
+  await enrichLedgerEntriesWithProductDetails(ledgers);
+  await enrichLedgerEntriesWithLocationDetails(ledgers);
+  await enrichLedgerEntriesWithUserDetails(ledgers);
 };
 
 const getInventoryLedgerByField = async (field, value) => {
-  return await inventoryLedgerRepository.getInventoryLedgerByField(
+  const ledgers = await inventoryLedgerRepository.getInventoryLedgerByField(
     field,
     value,
   );
+
+  // Enrich ledger entries with product, location, and user details
+  await enrichLedgerEntriesWithProductDetails(ledgers);
+  await enrichLedgerEntriesWithLocationDetails(ledgers);
+  await enrichLedgerEntriesWithUserDetails(ledgers);
+
+  // Enrich ledger entries with client details (e.g., name - via product)
+  for (const ledger of ledgers) {
+    const product = await productRepository.getProductByField(
+      "id",
+      ledger.productId,
+    );
+    const client = product
+      ? await clientRepository.getClientByField("id", product.clientId)
+      : null;
+    ledger.clientId = product ? product.clientId : null;
+    ledger.clientName = client ? client.name : "Unknown Client";
+  }
+
+  return ledgers;
+};
+
+// Function to get inventory ledger entries for a specific client (clientId is referenced in the product table)
+const getInventoryLedgersByClientId = async (clientId) => {
+  // Get all products for the client
+  const clientProducts = await productRepository.getProductsByField(
+    "clientId",
+    clientId,
+  );
+  const clientProductIds = clientProducts.map((product) => product.id);
+
+  // Get all inventory ledger entries for those products
+  const inventoryLedgers =
+    await inventoryLedgerRepository.getInventoryLedgerByField("productId", {
+      in: clientProductIds,
+    });
+
+  // Enrich ledger entries with product details
+  for (const ledger of inventoryLedgers) {
+    const product = clientProducts.find((p) => p.id === ledger.productId);
+    ledger.productName = product ? product.name : "Unknown Product";
+  }
+
+  // Enrich ledger entries with location details
+  for (const ledger of inventoryLedgers) {
+    if (ledger.fromLocationId) {
+      const fromLocation = await locationRepository.getLocationByField(
+        "id",
+        ledger.fromLocationId,
+      );
+      ledger.fromLocationName = fromLocation
+        ? fromLocation.name
+        : "Unknown Location";
+    }
+    if (ledger.toLocationId) {
+      const toLocation = await locationRepository.getLocationByField(
+        "id",
+        ledger.toLocationId,
+      );
+      ledger.toLocationName = toLocation ? toLocation.name : "Unknown Location";
+    }
+  }
+
+  // Enrich ledger entries with user details
+  for (const ledger of inventoryLedgers) {
+    const user = await userRepository.getUserByField("id", ledger.userId);
+    ledger.userName = user ? user.name : "Unknown User";
+  }
+
+  return inventoryLedgers;
 };
 
 // const updateInventoryLedger = async (id, updateData) => {
@@ -129,8 +209,52 @@ const getInventoryLedgerByField = async (field, value) => {
 //   return await inventoryLedgerRepository.deleteInventoryLedger(id);
 // };
 
-
 // -------------------------------------------Helper Functions-----------------------------------------------
+
+// Helper function to enrich inventory ledger entries with product details
+const enrichLedgerEntriesWithProductDetails = async (ledgers) => {
+  for (const ledger of ledgers) {
+    const product = await productRepository.getProductByField(
+      "id",
+      ledger.productId,
+    );
+    ledger.productName = product ? product.name : "Unknown Product";
+  }
+  return ledgers;
+};
+
+// Helper function to enrich inventory ledger entries with location details
+const enrichLedgerEntriesWithLocationDetails = async (ledgers) => {
+  for (const ledger of ledgers) {
+    if (ledger.fromLocationId) {
+      const fromLocation = await locationRepository.getLocationByField(
+        "id",
+        ledger.fromLocationId,
+      );
+      ledger.fromLocationName = fromLocation
+        ? fromLocation.name
+        : "Unknown Location";
+    }
+    if (ledger.toLocationId) {
+      const toLocation = await locationRepository.getLocationByField(
+        "id",
+        ledger.toLocationId,
+      );
+      ledger.toLocationName = toLocation ? toLocation.name : "Unknown Location";
+    }
+  }
+  return ledgers;
+};
+
+// Helper function to enrich inventory ledger entries with user details
+const enrichLedgerEntriesWithUserDetails = async (ledgers) => {
+  for (const ledger of ledgers) {
+    const user = await userRepository.getUserByField("id", ledger.userId);
+    ledger.userName = user ? user.name : "Unknown User";
+  }
+  return ledgers;
+};
+
 // Function to adjust stock levels based on inventory ledger entries (this would be called after creating a ledger entry)
 const adjustStockLevels = async (ledgerEntry) => {
   let toStockLevel = null;
@@ -155,7 +279,9 @@ const adjustStockLevels = async (ledgerEntry) => {
       await stockLevelLogic.updateStockLevelByProductAndLocation(
         ledgerEntry.productId,
         ledgerEntry.toLocationId,
-        { currentQuantity: toStockLevel.currentQuantity + ledgerEntry.quantity }
+        {
+          currentQuantity: toStockLevel.currentQuantity + ledgerEntry.quantity,
+        },
       );
       return;
     }
@@ -172,7 +298,10 @@ const adjustStockLevels = async (ledgerEntry) => {
       await stockLevelLogic.updateStockLevelByProductAndLocation(
         ledgerEntry.productId,
         ledgerEntry.fromLocationId,
-        { currentQuantity: fromStockLevel.currentQuantity - ledgerEntry.quantity }
+        {
+          currentQuantity:
+            fromStockLevel.currentQuantity - ledgerEntry.quantity,
+        },
       );
     } else {
       throw new Error(`Stock not found at the specified from location.`);
@@ -206,6 +335,7 @@ module.exports = {
   createInventoryLedger,
   getAllInventoryLedgers,
   getInventoryLedgerByField,
+  getInventoryLedgersByClientId,
   //   updateInventoryLedger,
   //   deleteInventoryLedger,
 };
