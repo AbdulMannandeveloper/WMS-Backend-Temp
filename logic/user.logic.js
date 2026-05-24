@@ -121,6 +121,14 @@ const updateUser = async (id, updateData) => {
         throw new Error("Invalid email format");
     }
 
+    // Prevent changing active state for users who haven't completed password setup
+    if (Object.prototype.hasOwnProperty.call(updateData, 'isActive')) {
+        // If user has no passwordHash (not yet set), disallow toggling active state
+        if (!user.passwordHash) {
+            throw new Error('Cannot change active state until user has completed password setup.');
+        }
+    }
+
     return await userRepository.updateUser(user.id, updateData);
 };
 

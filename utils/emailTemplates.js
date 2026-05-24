@@ -1,5 +1,5 @@
 const otpEmailTemplate = ({ otp, expiresMinutes }) => {
-  const subject = 'Your ProPackers verification code';
+  const subject = 'Your ProPackers UK verification code';
   const text = `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes.`;
   const html = `
     <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
@@ -15,7 +15,7 @@ const otpEmailTemplate = ({ otp, expiresMinutes }) => {
 };
 
 const inviteEmailTemplate = ({ setupUrl, expiresHours }) => {
-  const subject = 'Set Your ProPackers Account Password';
+  const subject = 'Set Your ProPackers UK Account Password';
   const text = `Your account has been created. Set your password here: ${setupUrl}. This link expires in ${expiresHours} hours.`;
   const html = `
     <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
@@ -33,7 +33,7 @@ const inviteEmailTemplate = ({ setupUrl, expiresHours }) => {
 };
 
 const resetPasswordEmailTemplate = ({ setupUrl, expiresHours }) => {
-  const subject = 'Reset Your ProPackers Password';
+  const subject = 'Reset Your ProPackers UK Password';
   const text = `A password reset was requested for your account. Reset your password here: ${setupUrl}. This link expires in ${expiresHours} hours. If you did not request this, please ignore this email.`;
   const html = `
     <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">

@@ -5,7 +5,7 @@ const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
 const SMTP_SECURE = String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true';
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
-const MAIL_FROM = process.env.MAIL_FROM || 'no-reply@propackers.local';
+const MAIL_FROM = process.env.MAIL_FROM || 'no-reply@propackersuk.local';
 
 let transporter;
 
