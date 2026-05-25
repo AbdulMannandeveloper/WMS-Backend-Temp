@@ -9,12 +9,51 @@ const createWarehouseLocation = async (locationData) => {
 };
 
 const getAllWarehouseLocations = async () => {
-  return await prismaWarehouseLocation.findMany();
+  return await prismaWarehouseLocation.findMany({
+    include: {
+      locationClass: {
+        include: {
+          parentClass: true,
+        },
+      },
+      parentLocation: true,
+      childLocations: true,
+    },
+  });
 };
 
 const getWarehouseLocationByField = async (field, value) => {
   return await prismaWarehouseLocation.findMany({
     where: { [field]: value },
+  });
+};
+
+const getWarehouseLocationFirstByField = async (field, value) => {
+  return await prismaWarehouseLocation.findFirst({
+    where: { [field]: value },
+    include: {
+      locationClass: {
+        include: {
+          parentClass: true,
+        },
+      },
+      parentLocation: true,
+      childLocations: true,
+    },
+  });
+};
+
+const getWarehouseLocationByParentAndName = async (
+  parentLocationId,
+  locationName,
+  excludeId,
+) => {
+  return await prismaWarehouseLocation.findFirst({
+    where: {
+      parentLocationId,
+      locationName,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
   });
 };
 
@@ -35,6 +74,8 @@ module.exports = {
   createWarehouseLocation,
   getAllWarehouseLocations,
   getWarehouseLocationByField,
+  getWarehouseLocationFirstByField,
+  getWarehouseLocationByParentAndName,
   updateWarehouseLocation,
   deleteWarehouseLocation,
 };

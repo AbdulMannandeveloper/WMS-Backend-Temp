@@ -40,6 +40,7 @@ model Client {
   mobile             String?          @db.VarChar(25)
   address            String?
   user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shipments          Shipment[]
   clientServices     ClientService[]
   products           Product[]
   monthlyInvoices    MonthlyInvoice[]
@@ -74,13 +75,15 @@ model Service {
 }
 
 model ClientService {
-  id           String   @id @default(uuid()) @db.Uuid
-  clientId     String   @map("client_id") @db.Uuid
-  serviceId    String   @map("service_id") @db.Uuid
-  chargedPrice Decimal  @map("charged_price") @db.Decimal(12, 2)
-  unit         String   @db.VarChar(30)
-  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  service      Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  id           String  @id @default(uuid()) @db.Uuid
+  clientId     String  @map("client_id") @db.Uuid
+  serviceId    String  @map("service_id") @db.Uuid
+  chargedPrice Decimal @map("charged_price") @db.Decimal(12, 2)
+  unit         String  @db.VarChar(30)
+
+  client       Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  service      Service           @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  invoiceLines InvoiceLineItem[]
 
   @@unique([clientId, serviceId], map: "uq_clients_services_pair")
   @@index([serviceId], map: "idx_clients_services_service_id")
@@ -90,23 +93,35 @@ model ClientService {
 model Shipment {
   id               String                   @id @default(uuid()) @db.Uuid
   employeeId       String                   @map("employee_id") @db.Uuid
-  shipmentType     String                   @map("shipment_type") @db.VarChar(20)
-  packagingType    String                   @map("packaging_type") @db.VarChar(20)
+  clientId         String                   @map("client_id") @db.Uuid
+  shipmentType     String                   @map("shipment_type") @db.VarChar(30)
+  packagingType    String                   @map("packaging_type") @db.VarChar(30)
   courierName      String                   @map("courier_name") @db.VarChar(120)
   createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  /////////////////////////////////////////////////////////////////
+  // Shipment ka rate
+  ////////////////////////////////////////////////////////
+  // Relations
   employee         Employee                 @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  client           Client                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
   shipmentServices ShipmentServiceMapping[]
+  shipmentItems    ShipmentItem[]
 
   @@index([employeeId, createdAt], map: "idx_shipments_employee_created_at")
+  @@index([clientId, createdAt], map: "idx_shipments_client_created_at")
   @@map("shipments")
 }
 
 model ShipmentServiceMapping {
-  id         String   @id @default(uuid()) @db.Uuid
-  shipmentId String   @map("shipment_id") @db.Uuid
-  serviceId  String   @map("service_id") @db.Uuid
-  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
-  service    Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  id               String  @id @default(uuid()) @db.Uuid
+  shipmentId       String  @map("shipment_id") @db.Uuid
+  serviceId        String  @map("service_id") @db.Uuid
+  quantity         Decimal @db.Decimal(10, 2)
+  appliedUnitPrice Decimal @map("applied_unit_price") @db.Decimal(14, 2) // Client's specific rate at this exact moment
+
+  // Relations
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
 
   @@unique([shipmentId, serviceId], map: "uq_shipments_services_pair")
   @@index([shipmentId], map: "idx_shipments_services_shipment_id")
@@ -138,20 +153,20 @@ model Expense {
 }
 
 model Shift {
-  id               String   @id @default(uuid()) @db.Uuid
-  name             String   
-  startTime        DateTime @db.Time // e.g., 08:00:00
-  endTime          DateTime @db.Time // e.g., 17:00:00
-  gracePeriodMins  Int      @default(10) 
+  id              String   @id @default(uuid()) @db.Uuid
+  name            String
+  startTime       DateTime @db.Time // e.g., 08:00:00
+  endTime         DateTime @db.Time // e.g., 17:00:00
+  gracePeriodMins Int      @default(10)
 
   @@map("shifts")
 }
 
 model Holiday {
-  id         String   @id @default(uuid()) @db.Uuid
-  name       String
-  startDate  DateTime @db.Date // e.g., 2024-12-25
-  endDate    DateTime @db.Date 
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  startDate DateTime @db.Date // e.g., 2024-12-25
+  endDate   DateTime @db.Date
 
   @@map("holidays")
 }
@@ -185,47 +200,65 @@ model MonthlyAttendanceSummary {
 }
 
 model WarehouseLocation {
-  id                String               @id @default(uuid()) @db.Uuid
-  locationName      String               @map("location_name") @db.VarChar(150)
-  locationClass     LocationClass        @map("location_class") // Enforced safety
-  materializedPath  String?              @map("materialized_path") @db.VarChar(500)  // Example value: "zone-a/aisle-2/shelf-3"
-  parentLocationId  String?              @map("parent_location_id") @db.Uuid
+  id               String  @id @default(uuid()) @db.Uuid
+  locationName     String  @map("location_name") @db.VarChar(150)
+  locationClassId  String  @map("location_class_id") @db.Uuid
+  materializedPath String? @map("materialized_path") @db.VarChar(500) // Example value: "zone-a/aisle-2/shelf-3"
+  parentLocationId String? @map("parent_location_id") @db.Uuid
 
   // Hierarchy Relations
-  parentLocation   WarehouseLocation?   @relation("WarehouseLocationHierarchy", fields: [parentLocationId], references: [id], onDelete: SetNull)
-  childLocations   WarehouseLocation[]  @relation("WarehouseLocationHierarchy")
-  
-  // Stock State
-  stockLevels      StockLevel[]
-  
-  // Double-Entry Ledger Relations (Updated)
-  ledgerOutflows   InventoryLedger[]    @relation("LedgerFromLocation")
-  ledgerInflows    InventoryLedger[]    @relation("LedgerToLocation")
+  parentLocation WarehouseLocation?     @relation("WarehouseLocationHierarchy", fields: [parentLocationId], references: [id], onDelete: SetNull)
+  childLocations WarehouseLocation[]    @relation("WarehouseLocationHierarchy")
+  locationClass  WarehouseLocationClass @relation(fields: [locationClassId], references: [id], onDelete: Restrict)
 
-  // Performance & Data Integrity
-  @@index([parentLocationId], map: "idx_warehouse_parent_location")
-  @@index([materializedPath], map: "idx_warehouse_materialized_path")
-  
+  // Stock State
+  stockLevels   StockLevel[]
+  shipmentItems ShipmentItem[]
+
+  // Double-Entry Ledger Relations (Updated)
+  ledgerOutflows InventoryLedger[] @relation("LedgerFromLocation")
+  ledgerInflows  InventoryLedger[] @relation("LedgerToLocation")
+
   // Guarantees you can't duplicate "Bin 1" inside the exact same Shelf
   @@unique([parentLocationId, locationName], map: "uidx_parent_location_name")
-  
+  // Performance & Data Integrity
+  @@index([locationClassId], map: "idx_warehouse_location_class_id")
+  @@index([parentLocationId], map: "idx_warehouse_parent_location")
+  @@index([materializedPath], map: "idx_warehouse_materialized_path")
   @@map("warehouse_locations")
 }
 
+model WarehouseLocationClass {
+  id            String  @id @default(uuid()) @db.Uuid
+  name          String  @unique @map("name") @db.VarChar(80)
+  description   String? @db.VarChar(255)
+  parentClassId String? @map("parent_class_id") @db.Uuid
+
+  parentClass  WarehouseLocationClass?  @relation("WarehouseLocationClassHierarchy", fields: [parentClassId], references: [id], onDelete: SetNull)
+  childClasses WarehouseLocationClass[] @relation("WarehouseLocationClassHierarchy")
+  locations    WarehouseLocation[]
+
+  @@index([parentClassId], map: "idx_warehouse_location_classes_parent_class_id")
+  @@map("warehouse_location_classes")
+}
+
 model Product {
-  id               String            @id @default(uuid()) @db.Uuid
-  clientId         String            @map("client_id") @db.Uuid
-  skuCode          String            @map("sku_code") @db.VarChar(80)
-  barcode          String?           @unique(map: "idx_products_barcode_unique") @db.VarChar(64)
-  productName      String            @map("product_name") @db.VarChar(200)
-  colour           String?           @db.VarChar(50)
-  size             String?           @db.VarChar(50)
-  weight           Decimal?          @db.Decimal(10, 3)
-  thresholdLimit   Int               @default(0) @map("threshold_limit")
-  isDeactivated    Boolean           @default(false) @map("is_deactivated")
+  id             String   @id @default(uuid()) @db.Uuid
+  clientId       String   @map("client_id") @db.Uuid
+  skuCode        String   @map("sku_code") @db.VarChar(80)
+  barcode        String?  @unique(map: "idx_products_barcode_unique") @db.VarChar(64)
+  productName    String   @map("product_name") @db.VarChar(200)
+  colour         String?  @db.VarChar(50)
+  size           String?  @db.VarChar(50)
+  weight         Decimal? @db.Decimal(10, 3)
+  thresholdLimit Int      @default(0) @map("threshold_limit")
+  isDeactivated  Boolean  @default(false) @map("is_deactivated")
+
+  // Relations
   client           Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
   stockLevels      StockLevel[]
   inventoryEntries InventoryLedger[]
+  shipmentItems    ShipmentItem[]
 
   @@unique([clientId, skuCode], map: "uq_products_client_sku")
   @@index([clientId], map: "idx_products_client_id")
@@ -233,10 +266,14 @@ model Product {
 }
 
 model StockLevel {
-  id                   String            @id @default(uuid()) @db.Uuid
-  productId            String            @map("product_id") @db.Uuid
-  locationId           String            @map("location_id") @db.Uuid
-  currentQuantity      Int               @default(0) @map("current_quantity")
+  id         String @id @default(uuid()) @db.Uuid
+  productId  String @map("product_id") @db.Uuid
+  locationId String @map("location_id") @db.Uuid
+
+  // The Split State
+  currentQuantity  Int @default(0) @map("current_quantity") // Total quantity (reserved or not) currently in the warehouse
+  reservedQuantity Int @default(0) @map("reserved_quantity") // Quantity reserved for any shipment order(s)
+
   arrivedTodayQuantity Int               @default(0) @map("arrived_today_quantity")
   product              Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
   location             WarehouseLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
@@ -247,27 +284,43 @@ model StockLevel {
   @@map("stock_levels")
 }
 
-model InventoryLedger {
-  id              String                @id @default(uuid()) @db.Uuid
-  productId       String                @map("product_id") @db.Uuid
-  userId          String                @map("user_id") @db.Uuid
-  movementType    InventoryMovementType @map("movement_type")
-  quantity        Int                   // Always absolute positive value transferred
-  
-  // The Double-Entry System
-  fromLocationId  String?               @map("from_location_id") @db.Uuid
-  toLocationId    String?               @map("to_location_id") @db.Uuid
-  
-  // Auditing & Context
-  referenceId     String?               @map("reference_id") @db.VarChar(100) // Links to Invoice ID, Shipment ID, etc.
-  notes           String?               @db.Text
-  timestamp       DateTime              @default(now()) @db.Timestamptz(6)
+// Table to track physical goods allocated to shipment orders
+model ShipmentItem {
+  id               String @id @default(uuid()) @db.Uuid
+  shipmentId       String @map("shipment_id") @db.Uuid
+  productId        String @map("product_id") @db.Uuid
+  sourceLocationId String @map("source_location_id") @db.Uuid // Where it's reserved from
+  quantity         Int
 
   // Relations
-  product         Product               @relation(fields: [productId], references: [id], onDelete: Restrict)
-  user            User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
-  fromLocation    WarehouseLocation?    @relation("LedgerFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
-  toLocation      WarehouseLocation?    @relation("LedgerToLocation", fields: [toLocationId], references: [id], onDelete: Restrict)
+  shipment       Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  product        Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  sourceLocation WarehouseLocation @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
+
+  @@map("shipment_items")
+}
+
+model InventoryLedger {
+  id           String                @id @default(uuid()) @db.Uuid
+  productId    String                @map("product_id") @db.Uuid
+  userId       String                @map("user_id") @db.Uuid
+  movementType InventoryMovementType @map("movement_type")
+  quantity     Int // Always absolute positive value transferred
+
+  // The Double-Entry System
+  fromLocationId String? @map("from_location_id") @db.Uuid
+  toLocationId   String? @map("to_location_id") @db.Uuid
+
+  // Auditing & Context
+  referenceId String?  @map("reference_id") @db.VarChar(100) // Links to Invoice ID, Shipment ID, etc.
+  notes       String?  @db.Text
+  timestamp   DateTime @default(now()) @db.Timestamptz(6)
+
+  // Relations
+  product      Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  user         User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  fromLocation WarehouseLocation? @relation("LedgerFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation   WarehouseLocation? @relation("LedgerToLocation", fields: [toLocationId], references: [id], onDelete: Restrict)
 
   // Optimized Indices for Warehouse Operations
   @@index([productId, timestamp])
@@ -287,16 +340,45 @@ model ProfitLossLog {
 }
 
 model MonthlyInvoice {
-  id                String  @id @default(uuid()) @db.Uuid
-  clientId          String  @map("client_id") @db.Uuid
-  totalAmount       Decimal @map("total_amount") @db.Decimal(14, 2)
-  additionalCharges Decimal @default(0) @map("additional_charges") @db.Decimal(14, 2)
-  status            String  @db.VarChar(20)
-  pdfLink           String? @map("pdf_link")
-  client            Client  @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  id       String @id @default(uuid()) @db.Uuid
+  clientId String @map("client_id") @db.Uuid
 
+  // Always normalize this to the 1st of the month in your code (e.g., 2026-05-01)
+  billingPeriod DateTime      @map("billing_period") @db.Date
+  totalAmount   Decimal       @map("total_amount") @db.Decimal(14, 2)
+  status        InvoiceStatus @default(DRAFT)
+  pdfLink       String?       @map("pdf_link")
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  approvedAt    DateTime?     @map("approved_at") @db.Timestamptz(6)
+
+  client    Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  lineItems InvoiceLineItem[]
+
+  @@unique([clientId, billingPeriod], map: "uidx_client_billing_period")
   @@index([clientId, status], map: "idx_monthly_invoices_client_status")
   @@map("monthly_invoices")
+}
+
+model InvoiceLineItem {
+  id            String       @id @default(uuid()) @db.Uuid
+  invoiceId     String       @map("invoice_id") @db.Uuid
+  itemType      LineItemType @map("item_type")
+  dateOfService DateTime     @map("date_of_service") @db.Date
+  description   String       @db.VarChar(255)
+  quantity      Decimal      @db.Decimal(10, 2)
+  unitPrice     Decimal      @map("unit_price") @db.Decimal(14, 2)
+  totalPrice    Decimal      @map("total_price") @db.Decimal(14, 2)
+
+  // Backlink mapping details
+  clientServiceId String? @map("client_service_id") @db.Uuid
+
+  // Relations
+  invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
+  @@map("invoice_line_items")
 }
 
 model PayrollRecord {
@@ -340,22 +422,25 @@ model InvitationToken {
   @@map("invitation_tokens")
 }
 
-
 enum UserRole {
   admin
   employee
   client
 }
 
-enum LocationClass {
-  ZONE
-  AISLE
-  SHELF
-  BIN
+enum InventoryMovementType {
+  CHECKIN // Items arriving from a supplier
+  INTERNAL_MOVE // Items moving between storage bins
+  CHECKOUT // Items leaving the building
 }
 
-enum InventoryMovementType {
-  CHECKIN      // Items arriving from a supplier
-  INTERNAL_MOVE  // Items moving between storage bins
-  CHECKOUT       // Items leaving the building
+enum InvoiceStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
+
+enum LineItemType {
+  AUTOMATED_SERVICE // Logged automatically by operational triggers
+  MANUAL_CHARGE // Added manually by an admin
 }

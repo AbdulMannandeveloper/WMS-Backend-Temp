@@ -1,201 +1,398 @@
-const warehhouseLocationRepository = require("../repositories/warehouse_location.repository");
-
-const LocationClass = {
-  WAREHOUSE,
-  ZONE,
-  AISLE,
-  SHELF,
-};
-
-// const validParentClasses = {
-//   AISLE: ["ZONE"],
-//   BAY: ["AISLE"],
-//   SHELF: ["BAY"],
-//   BIN: ["SHELF"],
-//   STAGING: ["ZONE", "AISLE", "BAY", "SHELF", "BIN"],
-//   RECEIVING: ["ZONE", "AISLE", "BAY", "SHELF", "BIN"],
-//   SHIPPING: ["ZONE", "AISLE", "BAY", "SHELF", "BIN"],
-// };
+const warehouseLocationRepository = require("../repositories/warehouse_location.repository");
+const warehouseLocationClassRepository = require("../repositories/warehouse_location_class.repository");
 
 const createWarehouseLocation = async (locationData) => {
-  // Location class validation
-  if (!locationData.class) {
-    throw new Error("Location class is required");
-  }
-  if (!LocationClass[locationData.class]) {
-    throw new Error("Invalid location class");
+  const locationName = resolveLocationName(locationData);
+  if (!locationName) {
+    throw new Error("Location name is required");
   }
 
-  // Parent location validation
-  if (!locationData.parentLocationId) {
-    if (locationData.class !== "ZONE") {
-      throw new Error("A parent location is required for non-ZONE classes");
-    }
-  }
-  const parentLocation =
-    await warehhouseLocationRepository.getWarehouseLocationByField(
-      "id",
-      locationData.parentLocationId,
-    );
-  if (!parentLocation) {
-    throw new Error("Parent location does not exist");
-  }
-  // else {
-  //   if (
-  //     !validParentClasses[locationData.class]?.includes(parentLocation.class)
-  //   ) {
-  //     throw new Error("Invalid parent location class");
-  //   }
-  // }
+  const locationClass = await resolveLocationClass(locationData);
+  const parentLocationId = locationData.parentLocationId ?? null;
+  const parentLocation = await resolveParentLocation(parentLocationId);
 
-  // Unique name validation within the same parent location
+  validateParentClass(locationClass, parentLocation);
+
   const existingLocation =
-    await warehhouseLocationRepository.getWarehouseLocationByField(
-      "name",
-      locationData.name,
+    await warehouseLocationRepository.getWarehouseLocationByParentAndName(
+      parentLocationId,
+      locationName,
     );
-  if (
-    existingLocation &&
-    existingLocation.parentLocationId === locationData.parentLocationId
-  ) {
+
+  if (existingLocation) {
     throw new Error(
       "A location with the same name already exists under the same parent location",
     );
   }
 
-  // Create materialized path
-  if (LocationClass != "ZONE") {
-    locationData.materializedPath = await createMaterializedPath(
-      locationData.name,
-      parentLocation.materializedPath,
-    );
-  } else {
-    locationData.materializedPath = await createMaterializedPath(
-      locationData.name,
-      null,
-    );
-  }
+  const createData = buildWarehouseLocationPayload(locationData, {
+    locationName,
+    locationClassId: locationClass.id,
+    parentLocationId,
+  });
 
-  return await warehhouseLocationRepository.createWarehouseLocation(
-    locationData,
+  createData.materializedPath = createMaterializedPath(
+    locationName,
+    parentLocation?.materializedPath ?? null,
   );
+
+  return await warehouseLocationRepository.createWarehouseLocation(createData);
 };
 
 const getAllWarehouseLocations = async () => {
-  return await warehhouseLocationRepository.getAllWarehouseLocations();
+  return await warehouseLocationRepository.getAllWarehouseLocations();
 };
 
 const getWarehouseLocationByField = async (field, value) => {
-  return await warehhouseLocationRepository.getWarehouseLocationByField(
+  return await warehouseLocationRepository.getWarehouseLocationByField(
     field,
     value,
   );
 };
 
 const updateWarehouseLocation = async (id, updateData) => {
-  // Location class validation
-  if (updateData.class && !LocationClass[updateData.class]) {
-    throw new Error("Invalid location class");
+  const currentLocation =
+    await warehouseLocationRepository.getWarehouseLocationFirstByField(
+      "id",
+      id,
+    );
+
+  if (!currentLocation) {
+    throw new Error("Warehouse location not found");
   }
 
-  // Parent location validation
-  if (updateData.parentLocationId) {
-    const parentLocation =
-      await warehhouseLocationRepository.getWarehouseLocationByField(
-        "id",
-        updateData.parentLocationId,
-      );
-    if (!parentLocation) {
-      throw new Error("Parent location does not exist");
-    }
-
-    // Create materialized path if parent location is changed if name is not being updated
-    if (!updateData.name) {
-      const currentLocation =
-        await warehhouseLocationRepository.getWarehouseLocationByField(
-          "id",
-          id,
-        );
-      updateData.materializedPath = await createMaterializedPath(
-        currentLocation.name,
-        parentLocation.materializedPath,
-      );
-    }
+  const nextLocationName = resolveLocationName(
+    updateData,
+    currentLocation.locationName,
+  );
+  if (!nextLocationName) {
+    throw new Error("Location name is required");
   }
 
-  // Unique name validation within the same parent location
-  if (updateData.name) {
+  const locationClass = await resolveLocationClass(
+    updateData,
+    currentLocation.locationClassId,
+  );
+
+  const hasParentLocationId = Object.prototype.hasOwnProperty.call(
+    updateData,
+    "parentLocationId",
+  );
+  const nextParentLocationId = hasParentLocationId
+    ? updateData.parentLocationId
+    : currentLocation.parentLocationId;
+  const parentLocation = await resolveParentLocation(nextParentLocationId);
+
+  validateParentClass(locationClass, parentLocation);
+
+  if (
+    nextLocationName !== currentLocation.locationName ||
+    nextParentLocationId !== currentLocation.parentLocationId
+  ) {
     const existingLocation =
-      await warehhouseLocationRepository.getWarehouseLocationByField(
-        "name",
-        updateData.name,
+      await warehouseLocationRepository.getWarehouseLocationByParentAndName(
+        nextParentLocationId,
+        nextLocationName,
+        id,
       );
-    if (
-      existingLocation &&
-      existingLocation.parentLocationId === updateData.parentLocationId
-    ) {
+
+    if (existingLocation) {
       throw new Error(
         "A location with the same name already exists under the same parent location",
       );
     }
-    // Update materialized path if name is changed
-    if (updateData.parentLocationId) {
-      const parentLocation =
-        await warehhouseLocationRepository.getWarehouseLocationByField(
-          "id",
-          updateData.parentLocationId,
-        );
-      updateData.materializedPath = await createMaterializedPath(
-        updateData.name,
-        parentLocation.materializedPath,
-      );
-    } else {
-      const currentLocation =
-        await warehhouseLocationRepository.getWarehouseLocationByField(
-          "id",
-          id,
-        );
-      updateData.materializedPath = await createMaterializedPath(
-        updateData.name,
-        currentLocation.materializedPath.split("/").slice(0, -1).join("/"),
-      );
-    }
   }
 
-  return await warehhouseLocationRepository.updateWarehouseLocation(
+  const updatePayload = buildWarehouseLocationPayload(updateData, {
+    locationName: nextLocationName,
+    locationClassId: locationClass.id,
+    parentLocationId: nextParentLocationId,
+  });
+
+  updatePayload.materializedPath = createMaterializedPath(
+    nextLocationName,
+    parentLocation?.materializedPath ?? null,
+  );
+
+  return await warehouseLocationRepository.updateWarehouseLocation(
     id,
-    updateData,
+    updatePayload,
   );
 };
 
 const deleteWarehouseLocation = async (id) => {
-
-  const locationToDelete =
-    await warehhouseLocationRepository.getWarehouseLocationByField("id", id);
-  
-    // Prevent deletion if location has child locations
-    const childLocations =
-    await warehhouseLocationRepository.getWarehouseLocationByField(
+  const childLocations =
+    await warehouseLocationRepository.getWarehouseLocationByField(
       "parentLocationId",
       id,
     );
+
   if (childLocations && childLocations.length > 0) {
     throw new Error("Cannot delete location with child locations");
   }
 
-  // Prevent deletion if location is referenced in inventory or other tables
-  // TODO: Implement reference checking logic
-  return await warehhouseLocationRepository.deleteWarehouseLocation(id);
+  return await warehouseLocationRepository.deleteWarehouseLocation(id);
 };
 
-// ------------------------------- Supporting local functions -------------------------------
-// Local function to create materializedPath for a location from name and parent location
-const createMaterializedPath = async (locationName, parentLocationPath) => {
-  let name_slug = locationName.toLowerCase().replace(/\s+/g, "-");
+const createWarehouseLocationClass = async (classData) => {
+  const className = normalizeText(classData.name);
+  if (!className) {
+    throw new Error("Location class name is required");
+  }
+
+  const parentClassId = classData.parentClassId ?? null;
+  const parentClass = parentClassId
+    ? await resolveLocationClassById(parentClassId)
+    : null;
+
+  if (parentClassId && !parentClass) {
+    throw new Error("Parent location class does not exist");
+  }
+
+  const existingClass =
+    await warehouseLocationClassRepository.getWarehouseLocationClassFirstByField(
+      "name",
+      className,
+    );
+
+  if (existingClass) {
+    throw new Error("A location class with the same name already exists");
+  }
+
+  if (parentClassId) {
+    await assertNoClassCycle(null, parentClassId);
+  }
+
+  return await warehouseLocationClassRepository.createWarehouseLocationClass({
+    ...classData,
+    name: className,
+    parentClassId,
+  });
+};
+
+const getAllWarehouseLocationClasses = async () => {
+  return await warehouseLocationClassRepository.getAllWarehouseLocationClasses();
+};
+
+const getWarehouseLocationClassByField = async (field, value) => {
+  return await warehouseLocationClassRepository.getWarehouseLocationClassByField(
+    field,
+    value,
+  );
+};
+
+const updateWarehouseLocationClass = async (id, updateData) => {
+  const currentClass =
+    await warehouseLocationClassRepository.getWarehouseLocationClassFirstByField(
+      "id",
+      id,
+    );
+
+  if (!currentClass) {
+    throw new Error("Location class not found");
+  }
+
+  const nextName = updateData.name
+    ? normalizeText(updateData.name)
+    : currentClass.name;
+
+  if (!nextName) {
+    throw new Error("Location class name is required");
+  }
+
+  if (nextName !== currentClass.name) {
+    const existingClass =
+      await warehouseLocationClassRepository.getWarehouseLocationClassFirstByField(
+        "name",
+        nextName,
+      );
+
+    if (existingClass && existingClass.id !== id) {
+      throw new Error("A location class with the same name already exists");
+    }
+  }
+
+  const hasParentClassId = Object.prototype.hasOwnProperty.call(
+    updateData,
+    "parentClassId",
+  );
+  const nextParentClassId = hasParentClassId
+    ? updateData.parentClassId
+    : currentClass.parentClassId;
+
+  if (nextParentClassId === id) {
+    throw new Error("A location class cannot be its own parent");
+  }
+
+  if (nextParentClassId) {
+    await assertNoClassCycle(id, nextParentClassId);
+  }
+
+  return await warehouseLocationClassRepository.updateWarehouseLocationClass(
+    id,
+    {
+      ...updateData,
+      name: nextName,
+      parentClassId: nextParentClassId ?? null,
+    },
+  );
+};
+
+const deleteWarehouseLocationClass = async (id) => {
+  const childClasses =
+    await warehouseLocationClassRepository.getWarehouseLocationClassByField(
+      "parentClassId",
+      id,
+    );
+  const locations = await warehouseLocationRepository.getWarehouseLocationByField(
+    "locationClassId",
+    id,
+  );
+
+  if (childClasses && childClasses.length > 0) {
+    throw new Error("Cannot delete a location class that has child classes");
+  }
+
+  if (locations && locations.length > 0) {
+    throw new Error("Cannot delete a location class that is assigned to locations");
+  }
+
+  return await warehouseLocationClassRepository.deleteWarehouseLocationClass(id);
+};
+
+const resolveLocationName = (payload = {}, fallbackValue) => {
+  const locationName = normalizeText(payload.locationName ?? payload.name ?? fallbackValue);
+  return typeof locationName === "string" && locationName.length > 0
+    ? locationName
+    : "";
+};
+
+const resolveLocationClass = async (payload = {}, fallbackClassId) => {
+  const explicitClassId = payload.locationClassId ?? payload.classId ?? null;
+  if (explicitClassId) {
+    const locationClass = await resolveLocationClassById(explicitClassId);
+    if (!locationClass) {
+      throw new Error("Invalid location class");
+    }
+    return locationClass;
+  }
+
+  if (payload.class) {
+    const locationClass =
+      await warehouseLocationClassRepository.getWarehouseLocationClassFirstByField(
+        "name",
+        payload.class,
+      );
+
+    if (!locationClass) {
+      throw new Error("Invalid location class");
+    }
+
+    return locationClass;
+  }
+
+  if (fallbackClassId) {
+    const locationClass = await resolveLocationClassById(fallbackClassId);
+    if (!locationClass) {
+      throw new Error("Invalid location class");
+    }
+    return locationClass;
+  }
+
+  throw new Error("Location class is required");
+};
+
+const resolveLocationClassById = async (classId) => {
+  return await warehouseLocationClassRepository.getWarehouseLocationClassFirstByField(
+    "id",
+    classId,
+  );
+};
+
+const resolveParentLocation = async (parentLocationId) => {
+  if (!parentLocationId) {
+    return null;
+  }
+
+  const parentLocation =
+    await warehouseLocationRepository.getWarehouseLocationFirstByField(
+      "id",
+      parentLocationId,
+    );
+
+  if (!parentLocation) {
+    throw new Error("Parent location does not exist");
+  }
+
+  return parentLocation;
+};
+
+const validateParentClass = (locationClass, parentLocation) => {
+  if (!locationClass.parentClassId) {
+    if (parentLocation) {
+      throw new Error("A root location class cannot have a parent location");
+    }
+    return;
+  }
+
+  if (!parentLocation) {
+    throw new Error("A parent location is required for this location class");
+  }
+
+  if (parentLocation.locationClassId !== locationClass.parentClassId) {
+    throw new Error("Invalid parent location class");
+  }
+};
+
+const createMaterializedPath = (locationName, parentLocationPath) => {
+  const nameSlug = normalizeText(locationName).toLowerCase().replace(/\s+/g, "-");
+
   if (parentLocationPath) {
-    return `${parentLocationPath}/${name_slug}`;
-  } else {
-    return name_slug;
+    return `${parentLocationPath}/${nameSlug}`;
+  }
+
+  return nameSlug;
+};
+
+const buildWarehouseLocationPayload = (sourceData, normalizedFields) => {
+  const payload = {
+    ...sourceData,
+    ...normalizedFields,
+  };
+
+  delete payload.class;
+  delete payload.classId;
+  delete payload.locationName;
+  delete payload.locationClassId;
+  delete payload.name;
+
+  return payload;
+};
+
+const normalizeText = (value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmedValue = value.trim();
+  return trimmedValue.length > 0 ? trimmedValue : "";
+};
+
+const assertNoClassCycle = async (currentClassId, nextParentClassId) => {
+  let cursor = nextParentClassId;
+
+  while (cursor) {
+    if (cursor === currentClassId) {
+      throw new Error("Location class hierarchy cannot contain a cycle");
+    }
+
+    const parentClass =
+      await warehouseLocationClassRepository.getWarehouseLocationClassFirstByField(
+        "id",
+        cursor,
+      );
+
+    cursor = parentClass?.parentClassId ?? null;
   }
 };
 
@@ -205,4 +402,9 @@ module.exports = {
   getWarehouseLocationByField,
   updateWarehouseLocation,
   deleteWarehouseLocation,
+  createWarehouseLocationClass,
+  getAllWarehouseLocationClasses,
+  getWarehouseLocationClassByField,
+  updateWarehouseLocationClass,
+  deleteWarehouseLocationClass,
 };
