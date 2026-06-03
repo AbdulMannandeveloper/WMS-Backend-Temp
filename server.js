@@ -29,7 +29,7 @@ app.use(express.static('public'));
 
 app.get('/', (req, res) => {
 	res.status(200).json({
-		message: 'ProPackers API is running',
+		message: 'ProPackers UK API is running',
 		version: '1.0.0',
 	});
 });

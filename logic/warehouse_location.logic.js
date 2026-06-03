@@ -1,10 +1,10 @@
-const warehhouseLocationRepository = require("../repositories/warehouse_location.repository");
+const warehouseLocationRepository = require("../repositories/warehouse_location.repository");
 
 const LocationClass = {
-  WAREHOUSE,
-  ZONE,
-  AISLE,
-  SHELF,
+  WAREHOUSE: "WAREHOUSE",
+  ZONE: "ZONE",
+  AISLE: "AISLE",
+  SHELF: "SHELF",
 };
 
 // const validParentClasses = {
@@ -27,18 +27,19 @@ const createWarehouseLocation = async (locationData) => {
   }
 
   // Parent location validation
-  if (!locationData.parentLocationId) {
-    if (locationData.class !== "ZONE") {
-      throw new Error("A parent location is required for non-ZONE classes");
-    }
-  }
-  const parentLocation =
-    await warehhouseLocationRepository.getWarehouseLocationByField(
+  let parentLocation = null;
+  if (locationData.parentLocationId) {
+    parentLocation = await warehouseLocationRepository.getWarehouseLocationByField(
       "id",
       locationData.parentLocationId,
     );
-  if (!parentLocation) {
-    throw new Error("Parent location does not exist");
+    if (!parentLocation) {
+      throw new Error("Parent location does not exist");
+    }
+  } else {
+    if (locationData.class !== "ZONE") {
+      throw new Error("A parent location is required for non-ZONE classes");
+    }
   }
   // else {
   //   if (
@@ -64,10 +65,10 @@ const createWarehouseLocation = async (locationData) => {
   }
 
   // Create materialized path
-  if (LocationClass != "ZONE") {
+  if (locationData.class !== "ZONE") {
     locationData.materializedPath = await createMaterializedPath(
       locationData.name,
-      parentLocation.materializedPath,
+      parentLocation ? parentLocation.materializedPath : null,
     );
   } else {
     locationData.materializedPath = await createMaterializedPath(
@@ -76,17 +77,17 @@ const createWarehouseLocation = async (locationData) => {
     );
   }
 
-  return await warehhouseLocationRepository.createWarehouseLocation(
+  return await warehouseLocationRepository.createWarehouseLocation(
     locationData,
   );
 };
 
 const getAllWarehouseLocations = async () => {
-  return await warehhouseLocationRepository.getAllWarehouseLocations();
+  return await warehouseLocationRepository.getAllWarehouseLocations();
 };
 
 const getWarehouseLocationByField = async (field, value) => {
-  return await warehhouseLocationRepository.getWarehouseLocationByField(
+  return await warehouseLocationRepository.getWarehouseLocationByField(
     field,
     value,
   );
@@ -101,7 +102,7 @@ const updateWarehouseLocation = async (id, updateData) => {
   // Parent location validation
   if (updateData.parentLocationId) {
     const parentLocation =
-      await warehhouseLocationRepository.getWarehouseLocationByField(
+      await warehouseLocationRepository.getWarehouseLocationByField(
         "id",
         updateData.parentLocationId,
       );
@@ -112,7 +113,7 @@ const updateWarehouseLocation = async (id, updateData) => {
     // Create materialized path if parent location is changed if name is not being updated
     if (!updateData.name) {
       const currentLocation =
-        await warehhouseLocationRepository.getWarehouseLocationByField(
+        await warehouseLocationRepository.getWarehouseLocationByField(
           "id",
           id,
         );
@@ -126,7 +127,7 @@ const updateWarehouseLocation = async (id, updateData) => {
   // Unique name validation within the same parent location
   if (updateData.name) {
     const existingLocation =
-      await warehhouseLocationRepository.getWarehouseLocationByField(
+      await warehouseLocationRepository.getWarehouseLocationByField(
         "name",
         updateData.name,
       );
@@ -141,7 +142,7 @@ const updateWarehouseLocation = async (id, updateData) => {
     // Update materialized path if name is changed
     if (updateData.parentLocationId) {
       const parentLocation =
-        await warehhouseLocationRepository.getWarehouseLocationByField(
+        await warehouseLocationRepository.getWarehouseLocationByField(
           "id",
           updateData.parentLocationId,
         );
@@ -151,7 +152,7 @@ const updateWarehouseLocation = async (id, updateData) => {
       );
     } else {
       const currentLocation =
-        await warehhouseLocationRepository.getWarehouseLocationByField(
+        await warehouseLocationRepository.getWarehouseLocationByField(
           "id",
           id,
         );
@@ -171,11 +172,11 @@ const updateWarehouseLocation = async (id, updateData) => {
 const deleteWarehouseLocation = async (id) => {
 
   const locationToDelete =
-    await warehhouseLocationRepository.getWarehouseLocationByField("id", id);
+    await warehouseLocationRepository.getWarehouseLocationByField("id", id);
   
     // Prevent deletion if location has child locations
     const childLocations =
-    await warehhouseLocationRepository.getWarehouseLocationByField(
+    await warehouseLocationRepository.getWarehouseLocationByField(
       "parentLocationId",
       id,
     );
@@ -185,7 +186,7 @@ const deleteWarehouseLocation = async (id) => {
 
   // Prevent deletion if location is referenced in inventory or other tables
   // TODO: Implement reference checking logic
-  return await warehhouseLocationRepository.deleteWarehouseLocation(id);
+  return await warehouseLocationRepository.deleteWarehouseLocation(id);
 };
 
 // ------------------------------- Supporting local functions -------------------------------

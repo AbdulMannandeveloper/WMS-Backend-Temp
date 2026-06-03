@@ -1,7 +1,7 @@
 {
-  "name": "propackers-backend",
+  "name": "propackers-uk-backend",
   "version": "1.0.0",
-  "description": "Backend API for ProPackers",
+  "description": "Backend API for ProPackers UK",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
