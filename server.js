@@ -30,11 +30,11 @@ app.use(morgan("dev"));
 // Serve static files from public directory
 app.use(express.static("public"));
 
-app.get("/", (req, res) => {
-  res.status(200).json({
-    message: "ProPackers API is running",
-    version: "1.0.0",
-  });
+app.get('/', (req, res) => {
+	res.status(200).json({
+		message: 'ProPackers UK API is running',
+		version: '1.0.0',
+	});
 });
 
 app.use("/api/users", userRoutes);

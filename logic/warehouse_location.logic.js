@@ -41,9 +41,11 @@ const createWarehouseLocation = async (locationData) => {
 
 const getAllWarehouseLocations = async () => {
   return await warehouseLocationRepository.getAllWarehouseLocations();
+  return await warehouseLocationRepository.getAllWarehouseLocations();
 };
 
 const getWarehouseLocationByField = async (field, value) => {
+  return await warehouseLocationRepository.getWarehouseLocationByField(
   return await warehouseLocationRepository.getWarehouseLocationByField(
     field,
     value,
