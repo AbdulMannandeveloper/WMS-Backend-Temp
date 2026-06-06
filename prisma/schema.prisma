@@ -75,15 +75,15 @@ model Service {
 }
 
 model ClientService {
-  id           String  @id @default(uuid()) @db.Uuid
-  clientId     String  @map("client_id") @db.Uuid
-  serviceId    String  @map("service_id") @db.Uuid
-  chargedPrice Decimal @map("charged_price") @db.Decimal(12, 2)
-  unit         String  @db.VarChar(30)
+  id                String                    @id @default(uuid()) @db.Uuid
+  clientId          String                    @map("client_id") @db.Uuid
+  serviceId         String                    @map("service_id") @db.Uuid
+  chargedPrice      Decimal                   @map("charged_price") @db.Decimal(12, 2)
+  unit              String                    @db.VarChar(30)
 
-  client       Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  service      Service           @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  invoiceLines InvoiceLineItem[]
+  client            Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  service           Service                   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  invoiceLines      InvoiceLineItem[]
 
   @@unique([clientId, serviceId], map: "uq_clients_services_pair")
   @@index([serviceId], map: "idx_clients_services_service_id")
@@ -95,6 +95,7 @@ model Shipment {
   employeeId       String                   @map("employee_id") @db.Uuid
   clientId         String                   @map("client_id") @db.Uuid
   shipmentType     String                   @map("shipment_type") @db.VarChar(30)
+  status           String                   @default("PENDING")
   packagingType    String                   @map("packaging_type") @db.VarChar(30)
   courierName      String                   @map("courier_name") @db.VarChar(120)
   createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -113,15 +114,15 @@ model Shipment {
 }
 
 model ShipmentServiceMapping {
-  id               String  @id @default(uuid()) @db.Uuid
-  shipmentId       String  @map("shipment_id") @db.Uuid
-  serviceId        String  @map("service_id") @db.Uuid
-  quantity         Decimal @db.Decimal(10, 2)
-  appliedUnitPrice Decimal @map("applied_unit_price") @db.Decimal(14, 2) // Client's specific rate at this exact moment
+  id               String   @id @default(uuid()) @db.Uuid
+  shipmentId       String   @map("shipment_id") @db.Uuid
+  serviceId        String   @map("service_id") @db.Uuid
+  quantity         Decimal  @db.Decimal(10, 2)
+  appliedUnitPrice Decimal  @map("applied_unit_price") @db.Decimal(14, 2) // Client's specific rate at this exact moment
 
   // Relations
-  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
-  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  shipment         Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  service          Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
 
   @@unique([shipmentId, serviceId], map: "uq_shipments_services_pair")
   @@index([shipmentId], map: "idx_shipments_services_shipment_id")
@@ -286,11 +287,12 @@ model StockLevel {
 
 // Table to track physical goods allocated to shipment orders
 model ShipmentItem {
-  id               String @id @default(uuid()) @db.Uuid
-  shipmentId       String @map("shipment_id") @db.Uuid
-  productId        String @map("product_id") @db.Uuid
-  sourceLocationId String @map("source_location_id") @db.Uuid // Where it's reserved from
+  id               String          @id @default(uuid()) @db.Uuid
+  shipmentId       String          @map("shipment_id") @db.Uuid
+  productId        String          @map("product_id") @db.Uuid
+  sourceLocationId String          @map("source_location_id") @db.Uuid // Where it's reserved from
   quantity         Int
+  status           String          @default("PENDING")// Is it "PENDING", "PICKED" or "PACKED"
 
   // Relations
   shipment       Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
@@ -340,12 +342,12 @@ model ProfitLossLog {
 }
 
 model MonthlyInvoice {
-  id       String @id @default(uuid()) @db.Uuid
-  clientId String @map("client_id") @db.Uuid
+  id            String        @id @default(uuid()) @db.Uuid
+  clientId      String        @map("client_id") @db.Uuid
 
   // Always normalize this to the 1st of the month in your code (e.g., 2026-05-01)
   billingPeriod DateTime      @map("billing_period") @db.Date
-  totalAmount   Decimal       @map("total_amount") @db.Decimal(14, 2)
+  totalAmount   Decimal       @map("total_amount") @db.Decimal(14, 2) @default(0.0)
   status        InvoiceStatus @default(DRAFT)
   pdfLink       String?       @map("pdf_link")
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -361,21 +363,21 @@ model MonthlyInvoice {
 }
 
 model InvoiceLineItem {
-  id            String       @id @default(uuid()) @db.Uuid
-  invoiceId     String       @map("invoice_id") @db.Uuid
-  itemType      LineItemType @map("item_type")
-  dateOfService DateTime     @map("date_of_service") @db.Date
-  description   String       @db.VarChar(255)
-  quantity      Decimal      @db.Decimal(10, 2)
-  unitPrice     Decimal      @map("unit_price") @db.Decimal(14, 2)
-  totalPrice    Decimal      @map("total_price") @db.Decimal(14, 2)
+  id              String         @id @default(uuid()) @db.Uuid
+  invoiceId       String         @map("invoice_id") @db.Uuid
+  itemType        LineItemType   @map("item_type")
+  dateOfService   DateTime       @map("date_of_service") @db.Date
+  description     String         @db.VarChar(255)
+  quantity        Decimal        @db.Decimal(10, 2)
+  unitPrice       Decimal        @map("unit_price") @db.Decimal(14, 2)
+  totalPrice      Decimal        @map("total_price") @db.Decimal(14, 2)
 
   // Backlink mapping details
-  clientServiceId String? @map("client_service_id") @db.Uuid
+  clientServiceId String?        @map("client_service_id") @db.Uuid
 
   // Relations
-  invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+  invoice         MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  clientService   ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
   @@map("invoice_line_items")

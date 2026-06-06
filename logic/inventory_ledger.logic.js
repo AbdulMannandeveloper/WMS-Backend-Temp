@@ -1,20 +1,20 @@
 const inventoryLedgerRepository = require("../repositories/inventory_ledger.repository");
 const productRepository = require("../repositories/product.repository");
-const locationRepository = require("../repositories/location.repository");
+const locationRepository = require("../repositories/warehouse_location.repository");
 const userRepository = require("../repositories/user.repository");
 
 const stockLevelLogic = require("./stock_level.logic");
+const shipmentLogic = require("./shipment.logic");
 
 const createInventoryLedger = async (newData) => {
   if (
     !newData.productId ||
     !newData.userId ||
-    !newData.quantity ||
     !newData.movementType ||
     !newData.quantity
   ) {
     throw new Error(
-      "Product ID, user ID, quantity, movement type, and quantity are required to create an inventory ledger entry.",
+      "Product ID, user ID, movement type, and quantity are required to create an inventory ledger entry.",
     );
   }
 
@@ -34,15 +34,33 @@ const createInventoryLedger = async (newData) => {
 
   // Check for reference ID if provided (e.g., for checkin, checkout)
   // Logic to check for reference ID would depend on the movement type and the business rules around it. For example, if it's a checkin movement, you might want to check that the reference ID corresponds to a valid purchase order. If it's a checkout movement, you might want to check that it corresponds to a valid sales order. This validation is important to ensure data integrity and traceability in the inventory system.
-
   // Validate the reference id
-  if (newData.referenceId) {
+  // if (newData.referenceId) {
     // Depending on the movement type, the reference ID could point to different entities (e.g., purchase order for checkin, sales order for checkout)
     // You would need to implement logic to check the reference ID against the appropriate entity based on the movement type. For example:
-    if (newData.movementType === "CHECKIN") {
+    // if (newData.movementType === "CHECKIN") {
       // Check if the reference ID corresponds to a valid purchase order
-    } else if (newData.movementType === "CHECKOUT") {
-      // Check if the reference ID corresponds to a valid sales order
+    // }
+  // }
+
+  if (newData.movementType === "CHECKOUT") {
+    if (!newData.referenceId) {
+      throw new Error(
+        "Reference ID is required for CHECKOUT movements to link the inventory movement to a specific shipment or order.",
+      );
+    }
+    // Check if the reference ID corresponds to a valid shipment
+    const shipment = await shipmentLogic.getShipmentByField(
+      "id",
+      newData.referenceId,
+    );
+    if (!shipment) {
+      throw new Error(`Provided shipment not found.`);
+    }
+    if (shipment.status !== "DISPATCHED") {
+      throw new Error(
+        `Shipment must be in DISPATCHED status to be referenced in a checkout movement.`,
+      );
     }
   }
 
@@ -98,7 +116,8 @@ const createInventoryLedger = async (newData) => {
     }
   }
 
-  const inventoryLedgerEntry = await inventoryLedgerRepository(newData);
+  const inventoryLedgerEntry =
+    await inventoryLedgerRepository.createInventoryLedger(newData);
 
   // Adjust stock levels based on the new ledger entry
   const stockAdjusted = await adjustStockLevels(inventoryLedgerEntry);
@@ -275,6 +294,7 @@ const adjustStockLevels = async (ledgerEntry) => {
   }
 
   const increaseOrCreateToStock = async () => {
+    // If stock exists at the toLocationId, increase it
     if (toStockLevel) {
       await stockLevelLogic.updateStockLevelByProductAndLocation(
         ledgerEntry.productId,
@@ -286,6 +306,7 @@ const adjustStockLevels = async (ledgerEntry) => {
       return;
     }
 
+    // If no stock exists at the toLocationId, create a new stock level entry
     await stockLevelLogic.createStockLevel({
       productId: ledgerEntry.productId,
       locationId: ledgerEntry.toLocationId,
@@ -294,15 +315,52 @@ const adjustStockLevels = async (ledgerEntry) => {
   };
 
   const decreaseFromStock = async () => {
+    // If stock exists at the fromLocationId, decrease it
     if (fromStockLevel) {
-      await stockLevelLogic.updateStockLevelByProductAndLocation(
-        ledgerEntry.productId,
-        ledgerEntry.fromLocationId,
-        {
-          currentQuantity:
-            fromStockLevel.currentQuantity - ledgerEntry.quantity,
-        },
-      );
+      if (fromStockLevel.currentQuantity < ledgerEntry.quantity) {
+        throw new Error(
+          `Insufficient stock at the from location to perform the ${ledgerEntry.movementType} movement.`,
+        );
+      }
+
+      // For CHECKOUT
+      if (ledgerEntry.movementType === "CHECKOUT") {
+        if (fromStockLevel.reservedQuantity < ledgerEntry.quantity) {
+          throw new Error(
+            `Cannot perform the ${ledgerEntry.movementType} movement because the quantity exceeds the reserved stock at the from location.`,
+          );
+        }
+        await stockLevelLogic.updateStockLevelByProductAndLocation(
+          ledgerEntry.productId,
+          ledgerEntry.fromLocationId,
+          {
+            currentQuantity:
+              fromStockLevel.currentQuantity - ledgerEntry.quantity,
+            reservedQuantity:
+              fromStockLevel.reservedQuantity - ledgerEntry.quantity,
+          },
+        );
+      }
+      // For INTERNAL_MOVE
+      else if (ledgerEntry.movementType === "INTERNAL_MOVE") {
+        if (
+          fromStockLevel.currentQuantity - fromStockLevel.reservedQuantity <
+          ledgerEntry.quantity
+        ) {
+          throw new Error(
+            `Cannot perform the ${ledgerEntry.movementType} movement because the quantity exceeds the available stock at the from location.`,
+          );
+        }
+        await stockLevelLogic.updateStockLevelByProductAndLocation(
+          ledgerEntry.productId,
+          ledgerEntry.fromLocationId,
+          {
+            currentQuantity:
+              fromStockLevel.currentQuantity - ledgerEntry.quantity,
+          },
+        );
+      }
+      //
     } else {
       throw new Error(`Stock not found at the specified from location.`);
     }
