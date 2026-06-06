@@ -10,17 +10,18 @@ const getAllClientServices = async () => {
   return await prismaClientService.findMany();
 };
 
-const getClientServiceByClientId = async (clientId) => {
+const getClientServiceByField = async (field, value) => {
   return await prismaClientService.findMany({
     where: {
-      clientId: clientId,
+      [field]: value,
     },
   });
 };
 
-const getClientServiceByServiceId = async (serviceId) => {
+const getClientServiceByClientIdAndServiceId = async (clientId, serviceId) => {
   return await prismaClientService.findMany({
     where: {
+      clientId: clientId,
       serviceId: serviceId,
     },
   });
@@ -42,8 +43,8 @@ const deleteClientService = async (id) => {
 module.exports = {
   createClientServiceEntry,
   getAllClientServices,
-  getClientServiceByClientId,
-  getClientServiceByServiceId,
+  getClientServiceByField,
+  getClientServiceByClientIdAndServiceId,
   updateClientService,
   deleteClientService,
 };

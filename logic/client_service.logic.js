@@ -41,12 +41,15 @@ const getAllClientServices = async () => {
   return await clientServiceRepository.getAllClientServices();
 };
 
-const getClientServicesByClientId = async (clientId) => {
-  return await clientServiceRepository.getClientServiceByClientId(clientId);
+const getClientServicesByField = async (field, value) => {
+  return await clientServiceRepository.getClientServiceByField(field, value);
 };
 
-const getClientServicesByServiceId = async (serviceId) => {
-  return await clientServiceRepository.getClientServiceByServiceId(serviceId);
+const getClientServiceByClientIdAndServiceId = async (clientId, serviceId) => {
+  return await clientServiceRepository.getClientServiceByClientIdAndServiceId(
+    clientId,
+    serviceId,
+  );
 };
 
 const updateClientService = async (id, updateData) => {
@@ -60,8 +63,8 @@ const deleteClientService = async (id) => {
 module.exports = {
   addClientService,
   getAllClientServices,
-  getClientServicesByClientId,
-  getClientServicesByServiceId,
+  getClientServicesByField,
+  getClientServiceByClientIdAndServiceId,
   updateClientService,
   deleteClientService,
 };

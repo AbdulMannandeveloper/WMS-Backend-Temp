@@ -34,16 +34,6 @@ const updateStockLevel = async (id, updateData) => {
   });
 };
 
-const updateStockLevelByProductAndLocation = async ( productId, locationId, updateData ) => {
-  return await prismaStockLevel.updateMany({
-    where: {
-      productId: productId,
-      locationId: locationId,
-    },
-    data: updateData,
-  });
-};
-
 const deleteStockLevel = async (id) => {
   return await prismaStockLevel.delete({
     where: { id },
@@ -56,6 +46,5 @@ module.exports = {
   getStockLevelByField,
   getStockLevelByProductAndLocation,
   updateStockLevel,
-  updateStockLevelByProductAndLocation,
   deleteStockLevel,
 };

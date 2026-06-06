@@ -77,12 +77,9 @@ const updateStockLevel = async (id, updateData) => {
   if (updateData.quantityToChange) {
     updateData.currentQuantity =
       currentStockLevel.currentQuantity + updateData.quantityToChange;
-    if (updateData.currentQuantity > 0) {
-      updateData.arrivedTodayQuantity += updateData.quantityToChange;
-    }
     delete updateData.quantityToChange;
   }
-  // If currentQuantity is being updated directly, validate it and adjust arrivedTodayQuantity if necessary
+  // Validate the currentQuantity and adjust arrivedTodayQuantity if necessary
   if (updateData.currentQuantity !== undefined) {
     // Validate that the new currentQuantity is not negative
     if (updateData.currentQuantity < 0) {
@@ -97,7 +94,7 @@ const updateStockLevel = async (id, updateData) => {
       );
     }
 
-    // If currentQuantity is being updated directly, we might want to adjust arrivedTodayQuantity accordingly
+    // Adjustment of arrivedTodayQuantity if currentQuantity has increased compared to the existing stock level
     if (updateData.currentQuantity > currentStockLevel.currentQuantity) {
       updateData.arrivedTodayQuantity +=
         updateData.currentQuantity - currentStockLevel.currentQuantity;
@@ -112,68 +109,14 @@ const updateStockLevelByProductAndLocation = async (
   locationId,
   updateData,
 ) => {
-  // If productId or locationId is being updated, validate them
-  if (updateData.productId) {
-    const product = await productRepository.getProductById(
-      updateData.productId,
-    );
-    if (!product) {
-      throw new Error("Product not found.");
-    }
-  }
-
-  if (updateData.locationId) {
-    const location =
-      await warehouseLocationRepository.getWarehouseLocationByField(
-        "locationId",
-        updateData.locationId,
-      );
-    if (!location) {
-      throw new Error("Location not found.");
-    }
-  }
-
-  const currentStockLevel =
-    await stockLevelRepository.getStockLevelByProductAndLocation(
-      productId,
-      locationId,
-    );
-  // If quantityToChange is provided, calculate the new currentQuantity
-  if (updateData.quantityToChange) {
-    updateData.currentQuantity =
-      currentStockLevel.currentQuantity + updateData.quantityToChange;
-    if (updateData.currentQuantity > 0) {
-      updateData.arrivedTodayQuantity += updateData.quantityToChange;
-    }
-    delete updateData.quantityToChange;
-  }
-  // If currentQuantity is being updated directly, validate it and adjust arrivedTodayQuantity if necessary
-  if (updateData.currentQuantity !== undefined) {
-    // Validate that the new currentQuantity is not negative
-    if (updateData.currentQuantity < 0) {
-      throw new Error("Not enough stock available to fulfill the request.");
-    }
-
-    // Logic to notify/send alerts if stock level falls below the threshold
-    if (updateData.currentQuantity < currentStockLevel.threshold) {
-      // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
-      console.log(
-        `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
-      );
-    }
-
-    // If currentQuantity is being updated directly, we might want to adjust arrivedTodayQuantity accordingly
-    if (updateData.currentQuantity > currentStockLevel.currentQuantity) {
-      updateData.arrivedTodayQuantity +=
-        updateData.currentQuantity - currentStockLevel.currentQuantity;
-    }
-  }
-
-  return await stockLevelRepository.updateStockLevelByProductAndLocation(
+  const stockLevel = await stockLevelRepository.getStockLevelByProductAndLocation(
     productId,
     locationId,
-    updateData,
   );
+  if (!stockLevel) {
+    throw new Error("Stock level entry not found for the given product and location.");
+  }
+  return await updateStockLevel(stockLevel.id, updateData);
 };
 
 const deleteStockLevel = async (id) => {
