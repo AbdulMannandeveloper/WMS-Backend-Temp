@@ -31,7 +31,8 @@ const createShipment = async (data) => {
     data.status = "PENDING"; // Default status
   }
 
-  const shipment = await shipmentRepositry.createShipment(data);
+  const { shipmentItems, shipmentServices, ...shipmentData } = data;
+  const shipment = await shipmentRepositry.createShipment(shipmentData);
 
   // Handle the creation of ShipmentItems if provided
   if (data.shipmentItems && Array.isArray(data.shipmentItems)) {
@@ -128,8 +129,34 @@ const updateShipment = async (id, data) => {
 };
 
 const deleteShipment = async (id) => {
+  const shipment = await shipmentRepositry.getShipmentByField("id", id);
+  if (!shipment) {
+    throw new Error("Shipment not found.");
+  }
+
+  // Release reserved inventory items if not already dispatched
+  if (shipment.status !== "DISPATCHED") {
+    const shipmentItems = await shipmentItemLogic.getShipmentItemsByField(
+      "shipmentId",
+      id,
+    );
+    for (const item of shipmentItems) {
+      const sourceStock = await stockLevelLogic.getStockLevelByProductAndLocation(
+        item.productId,
+        item.sourceLocationId,
+      );
+      if (sourceStock) {
+        const newReserved = Math.max(0, sourceStock.reservedQuantity - item.quantity);
+        await stockLevelLogic.updateStockLevel(sourceStock.id, {
+          reservedQuantity: newReserved,
+        });
+      }
+    }
+  }
+
   return await shipmentRepositry.deleteShipment(id);
 };
+
 
 module.exports = {
   createShipment,

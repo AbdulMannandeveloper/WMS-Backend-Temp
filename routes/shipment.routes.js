@@ -8,6 +8,7 @@ const { authorizeRoles } = require('../middlewares/authorize');
 // Apply authorization middleware to all shipment routes
 router.use(authorizeRoles('admin', 'employee')); // Only admin and employee can access shipment routes
 
+router.get('/', shipmentController.getAllShipments);
 router.post('/',  shipmentController.createShipment);
 router.get('/field/:field/:value', shipmentController.getShipmentByField);
 router.get('/client/:clientId', shipmentController.getShipmentsByClientId);

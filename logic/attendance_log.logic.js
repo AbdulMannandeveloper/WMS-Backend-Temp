@@ -8,16 +8,19 @@ const createAttendanceLog = async (logData) => {
   }
 
   // ----------------------------------------- DEFAULT SHIFT ASSIGNMENT LOGIC -----------------------------------------
-  const shift = await shiftRepository.getShiftByField("name", "default");
+  const shift = await shiftRepository.getShiftFirstByField("name", "default");
   if (!shift) {
     throw new Error("Shift not found. Please select an existing shift first.");
   }
 
   // Check if the login timestamp is within the shift's grace period and enter relevant status
-  if (
-    new Date(logData.loginTimestamp) <=
-    new Date(shift.startTime.getTime() + shift.gracePeriodMins * 60000)
-  ) {
+  const loginDate = new Date(logData.loginTimestamp);
+  const loginMinutes = loginDate.getUTCHours() * 60 + loginDate.getUTCMinutes();
+
+  const shiftStart = new Date(shift.startTime);
+  const shiftMinutes = shiftStart.getUTCHours() * 60 + shiftStart.getUTCMinutes();
+
+  if (loginMinutes <= shiftMinutes + shift.gracePeriodMins) {
     logData.status = "on-time";
   } else {
     logData.status = "late";
@@ -34,12 +37,16 @@ const getAttendanceLogByUserId = async (id) => {
   return await attendanceLogRepository.getAttendanceLogByField("userId", id);
 };
 
+const getAttendanceLogByField = async (field, value) => {
+  return await attendanceLogRepository.getAttendanceLogByField(field, value);
+};
+
 const updateAttendanceLog = async (id, updateData) => {
   return await attendanceLogRepository.updateAttendanceLog(id, updateData);
 };
 
 const updateLogoutTimestamp = async (id, logoutTimestamp) => {
-  const attendanceLog = await attendanceLogRepository.getAttendanceLogByField(
+  const attendanceLog = await attendanceLogRepository.getAttendanceLogFirstByField(
     "id",
     id,
   );
@@ -65,6 +72,7 @@ module.exports = {
   createAttendanceLog,
   getAllAttendanceLogs,
   getAttendanceLogByUserId,
+  getAttendanceLogByField,
   updateLogoutTimestamp,
   updateAttendanceLog,
   deleteAttendanceLog,

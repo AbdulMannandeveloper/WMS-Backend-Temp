@@ -1,6 +1,6 @@
 const { prisma } = require("../lib/prisma");
 
-const prismaAttendanceLog = prisma.attendanceLog;
+const prismaAttendanceLog = prisma.employeeAttendanceLog;
 
 const createAttendanceLog = async (logData) => {
   return await prismaAttendanceLog.create({ data: logData });
@@ -11,7 +11,11 @@ const getAllAttendanceLogs = async () => {
 };
 
 const getAttendanceLogByField = async (field, value) => {
-  return await prismaAttendanceLog.findUnique({ where: { [field]: value } });
+  return await prismaAttendanceLog.findMany({ where: { [field]: value } });
+};
+
+const getAttendanceLogFirstByField = async (field, value) => {
+  return await prismaAttendanceLog.findFirst({ where: { [field]: value } });
 };
 
 const updateAttendanceLog = async (id, updateData) => {
@@ -26,6 +30,7 @@ module.exports = {
   createAttendanceLog,
   getAllAttendanceLogs,
   getAttendanceLogByField,
+  getAttendanceLogFirstByField,
   updateAttendanceLog,
   deleteAttendanceLog,
 };

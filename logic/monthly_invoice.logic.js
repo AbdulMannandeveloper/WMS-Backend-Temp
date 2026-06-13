@@ -1,4 +1,5 @@
 const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
+const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 
 const clientLogic = require("./client.logic");
 
@@ -17,15 +18,23 @@ const createMonthlyInvoice = async (data) => {
     throw new Error("Total amount cannot be negative.");
   }
 
-  if (!data.invoiceDate) {
-    // Default to 1st of the current month if invoice date is not provided
+  if (!data.billingPeriod) {
+    // Default to 1st of the current month if billing period is not provided
     const now = new Date();
-    data.invoiceDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    data.billingPeriod = new Date(now.getFullYear(), now.getMonth(), 1);
   }
   if (!data.status) {
     data.status = "DRAFT"; // Default status
   }
   return await monthlyInvoiceRepository.createMonthlyInvoice(data);
+};
+
+const getAllMonthlyInvoices = async () => {
+  return await monthlyInvoiceRepository.getAllMonthlyInvoices();
+};
+
+const getMonthlyInvoiceById = async (id) => {
+  return await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
 };
 
 const getMonthlyInvoiceByClientIdForMonth = async (clientId, billingPeriod) => {
@@ -86,8 +95,7 @@ const approveMonthlyInvoice = async (id) => {
     throw new Error("Only invoices in DRAFT status can be approved.");
   }
 
-  data = { status: "APPROVED" };
-  data.approvedAt = new Date(); // Set the approval date to the current date
+  const data = { status: "APPROVED", approvedAt: new Date() };
 
   // ----------------------------------------------------------------
   // Logic to set pdfLink and send email notification to client
@@ -102,6 +110,8 @@ const deleteMonthlyInvoice = async (id) => {
 
 module.exports = {
   createMonthlyInvoice,
+  getAllMonthlyInvoices,
+  getMonthlyInvoiceById,
   getMonthlyInvoiceByClientIdForMonth,
   getMonthlyInvoiceByField,
   updateMonthlyInvoice,

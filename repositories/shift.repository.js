@@ -22,10 +22,20 @@ const deleteShift = async (id) => {
   return await prismaShift.delete({ where: { id } });
 };
 
+const getShiftByField = async (field, value) => {
+  return await prismaShift.findMany({ where: { [field]: value } });
+};
+
+const getShiftFirstByField = async (field, value) => {
+  return await prismaShift.findFirst({ where: { [field]: value } });
+};
+
 module.exports = {
   createShift,
   getAllShifts,
   getShiftById,
+  getShiftByField,
+  getShiftFirstByField,
   updateShift,
   deleteShift,
 };

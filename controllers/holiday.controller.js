@@ -20,7 +20,7 @@ const getAllHolidays = async (req, res) => {
 
 const getHolidayById = async (req, res) => {
   try {
-    const holiday = await holidayLogic.getHolidayById(parseInt(req.params.id));
+    const holiday = await holidayLogic.getHolidayById(req.params.id);
     if (!holiday) {
       return res.status(404).json({ error: "Holiday not found" });
     }
@@ -33,7 +33,7 @@ const getHolidayById = async (req, res) => {
 const updateHoliday = async (req, res) => {
   try {
     const holiday = await holidayLogic.updateHoliday(
-      parseInt(req.params.id),
+      req.params.id,
       req.body,
     );
     res.status(200).json(holiday);
@@ -44,7 +44,7 @@ const updateHoliday = async (req, res) => {
 
 const deleteHoliday = async (req, res) => {
   try {
-    const holiday = await holidayLogic.deleteHoliday(parseInt(req.params.id));
+    const holiday = await holidayLogic.deleteHoliday(req.params.id);
     res.status(200).json(holiday);
   } catch (error) {
     res.status(400).json({ error: error.message });

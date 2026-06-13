@@ -23,11 +23,6 @@ DROP INDEX "idx_inventory_ledger_location_time";
 DROP INDEX "idx_inventory_ledger_user_time";
 
 -- AlterTable
-ALTER TABLE "clients_services" DROP CONSTRAINT "clients_services_pkey",
-ADD COLUMN     "id" UUID NOT NULL,
-ADD CONSTRAINT "clients_services_pkey" PRIMARY KEY ("id");
-
--- AlterTable
 ALTER TABLE "inventory_ledger" DROP COLUMN "location_id",
 DROP COLUMN "quantity_changed",
 ADD COLUMN     "from_location_id" UUID,
@@ -37,9 +32,6 @@ ADD COLUMN     "reference_id" VARCHAR(100),
 ADD COLUMN     "to_location_id" UUID,
 DROP COLUMN "movement_type",
 ADD COLUMN     "movement_type" "InventoryMovementType" NOT NULL;
-
--- CreateIndex
-CREATE UNIQUE INDEX "uq_clients_services_pair" ON "clients_services"("client_id", "service_id");
 
 -- CreateIndex
 CREATE INDEX "inventory_ledger_from_location_id_to_location_id_idx" ON "inventory_ledger"("from_location_id", "to_location_id");

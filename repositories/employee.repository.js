@@ -20,14 +20,14 @@ const createEmployee = async (employeeData) => {
 
 const getAllEmployees = async () => {
     return await prismaEmployee.findMany({
-        // select: PUBLIC_EMPLOYEE_SELECT,
+        include: { user: true },
     });
 }
 
 const getEmployeeByField = async (field, value) => {
     return await prismaEmployee.findUnique({
         where: { [field]: value },
-        // select: PUBLIC_EMPLOYEE_SELECT,
+        include: { user: true },
     });
 }
 

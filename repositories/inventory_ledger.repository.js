@@ -1,7 +1,7 @@
 const { prisma } = require("../lib/prisma");
 const prismaInventoryLedger = prisma.inventoryLedger;
 
-const inventoryLedgerRepository = async (data) => {
+const createInventoryLedger = async (data) => {
   return await prismaInventoryLedger.create({
     data,
   });
@@ -32,7 +32,7 @@ const deleteInventoryLedger = async (id) => {
 };
 
 module.exports = {
-  inventoryLedgerRepository,
+  createInventoryLedger,
   getAllInventoryLedgers,
   getInventoryLedgerByField,
 //   updateInventoryLedger,
