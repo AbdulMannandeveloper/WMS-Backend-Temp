@@ -1,6 +1,52 @@
 const stockLevelRepository = require("../repositories/stock_level.repository");
 const productRepository = require("../repositories/product.repository");
-const warehosueLocationRepository = require("../repositories/warehouse_location.repository");
+const warehouseLocationRepository = require("../repositories/warehouse_location.repository");
+
+const enrichStockLevelsWithZoneShelfBin = async (data) => {
+  if (!data) return data;
+  
+  const isArray = Array.isArray(data);
+  const items = isArray ? data : [data];
+  
+  const locationsToEnrich = items.filter(item => item && item.location && item.locationId);
+  if (locationsToEnrich.length === 0) return data;
+  
+  const locations = await warehouseLocationRepository.getAllWarehouseLocations();
+  const locationMap = new Map(locations.map(loc => [loc.id, loc]));
+  
+  const resolveHierarchy = (locId) => {
+    let zone = null;
+    let shelf = null;
+    let bin = null;
+    
+    let current = locationMap.get(locId);
+    while (current) {
+      const className = current.locationClass?.name?.toUpperCase();
+      if (className === 'ZONE') {
+        zone = current.locationName;
+      } else if (className === 'SHELF') {
+        shelf = current.locationName;
+      } else if (className === 'BIN') {
+        bin = current.locationName;
+      }
+      
+      current = current.parentLocationId ? locationMap.get(current.parentLocationId) : null;
+    }
+    
+    return { zone, shelf, bin };
+  };
+  
+  for (const item of items) {
+    if (item && item.location) {
+      const hierarchy = resolveHierarchy(item.locationId);
+      item.location.zone = hierarchy.zone;
+      item.location.shelf = hierarchy.shelf;
+      item.location.bin = hierarchy.bin;
+    }
+  }
+  
+  return isArray ? items : items[0];
+};
 
 const createStockLevel = async (stockLevelData) => {
   if (!stockLevelData.productId || !stockLevelData.locationId) {
@@ -17,8 +63,8 @@ const createStockLevel = async (stockLevelData) => {
   }
 
   const location =
-    await warehouseLocationRepository.getWarehouseLocationByField(
-      "locationId",
+    await warehouseLocationRepository.getWarehouseLocationFirstByField(
+      "id",
       stockLevelData.locationId,
     );
   if (!location) {
@@ -32,22 +78,26 @@ const createStockLevel = async (stockLevelData) => {
     stockLevelData.arrivedTodayQuantity = stockLevelData.currentQuantity;
   }
 
-  return await stockLevelRepository.createStockLevel(stockLevelData);
+  const result = await stockLevelRepository.createStockLevel(stockLevelData);
+  return await enrichStockLevelsWithZoneShelfBin(result);
 };
 
 const getAllStockLevels = async () => {
-  return await stockLevelRepository.getAllStockLevels();
+  const result = await stockLevelRepository.getAllStockLevels();
+  return await enrichStockLevelsWithZoneShelfBin(result);
 };
 
 const getStockLevelByField = async (field, value) => {
-  return await stockLevelRepository.getStockLevelByField(field, value);
+  const result = await stockLevelRepository.getStockLevelByField(field, value);
+  return await enrichStockLevelsWithZoneShelfBin(result);
 };
 
 const getStockLevelByProductAndLocation = async (productId, locationId) => {
-  return await stockLevelRepository.getStockLevelByProductAndLocation(
+  const result = await stockLevelRepository.getStockLevelByProductAndLocation(
     productId,
     locationId,
   );
+  return await enrichStockLevelsWithZoneShelfBin(result);
 };
 
 const updateStockLevel = async (id, updateData) => {
@@ -63,8 +113,8 @@ const updateStockLevel = async (id, updateData) => {
 
   if (updateData.locationId) {
     const location =
-      await warehouseLocationRepository.getWarehouseLocationByField(
-        "locationId",
+      await warehouseLocationRepository.getWarehouseLocationFirstByField(
+        "id",
         updateData.locationId,
       );
     if (!location) {
@@ -87,7 +137,9 @@ const updateStockLevel = async (id, updateData) => {
     }
 
     // Logic to notify/send alerts if stock level falls below the threshold
-    if (updateData.currentQuantity < currentStockLevel.threshold) {
+    const product = await productRepository.getProductById(currentStockLevel.productId);
+    const threshold = product ? product.thresholdLimit : 0;
+    if (updateData.currentQuantity < threshold) {
       // Implement alert/notification logic here (e.g., send email, trigger webhook, etc.)
       console.log(
         `Stock level for product ${currentStockLevel.productId} at location ${currentStockLevel.locationId} is below threshold.`,
@@ -96,12 +148,15 @@ const updateStockLevel = async (id, updateData) => {
 
     // Adjustment of arrivedTodayQuantity if currentQuantity has increased compared to the existing stock level
     if (updateData.currentQuantity > currentStockLevel.currentQuantity) {
-      updateData.arrivedTodayQuantity +=
-        updateData.currentQuantity - currentStockLevel.currentQuantity;
+      const baseArrived = updateData.arrivedTodayQuantity !== undefined 
+        ? updateData.arrivedTodayQuantity 
+        : (currentStockLevel.arrivedTodayQuantity || 0);
+      updateData.arrivedTodayQuantity = baseArrived + (updateData.currentQuantity - currentStockLevel.currentQuantity);
     }
   }
 
-  return await stockLevelRepository.updateStockLevel(id, updateData);
+  const result = await stockLevelRepository.updateStockLevel(id, updateData);
+  return await enrichStockLevelsWithZoneShelfBin(result);
 };
 
 const updateStockLevelByProductAndLocation = async (

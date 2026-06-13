@@ -22,6 +22,10 @@ const getAllShifts = async () => {
   return await shiftRepository.getAllShifts();
 };
 
+const getShiftById = async (id) => {
+  return await shiftRepository.getShiftById(id);
+};
+
 const getShiftByField = async (field, value) => {
   return await shiftRepository.getShiftByField(field, value);
 };
@@ -55,6 +59,7 @@ const deleteShift = async (id) => {
 module.exports = {
   createShift,
   getAllShifts,
+  getShiftById,
   getShiftByField,
   updateShift,
   deleteShift,

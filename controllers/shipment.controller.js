@@ -67,8 +67,18 @@ const deleteShipment = async (req, res) => {
   }
 };
 
+const getAllShipments = async (req, res) => {
+  try {
+    const shipments = await shipmentLogic.getAllShipments();
+    res.status(200).json(shipments);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
 module.exports = {
   createShipment,
+  getAllShipments,
   getShipmentByField,
   getShipmentsByClientId,
   dispatchShipment,

@@ -2,7 +2,7 @@ const inventoryLedgerLogic = require("../logic/inventory_ledger.logic");
 
 const createInventoryLedgerEntry = async (req, res) => {
   try {
-    const result = await inventoryLedgerLogic.createInventoryLedgerEntry(
+    const result = await inventoryLedgerLogic.createInventoryLedger(
       req.body,
     );
     res.status(201).json(result);
@@ -42,7 +42,7 @@ const getInventoryLedgerByClientId = async (req, res) => {
   try {
     const { clientId } = req.params;
     const ledgers =
-      await inventoryLedgerLogic.getInventoryLedgerByClientId(clientId);
+      await inventoryLedgerLogic.getInventoryLedgersByClientId(clientId);
     res.status(200).json(ledgers);
   } catch (err) {
     res.status(400).json({ error: err.message });

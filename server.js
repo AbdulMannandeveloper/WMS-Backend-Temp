@@ -19,6 +19,9 @@ const warehouseLocationRoutes = require("./routes/warehouse_location.routes");
 const inventoryLedgerRoutes = require("./routes/inventory_ledger.routes");
 const shipmentRoutes = require("./routes/shipment.routes");
 const shipmentItemRoutes = require("./routes/shipment_item.routes");
+const attendanceRoutes = require("./routes/attendance.routes");
+const monthlyInvoiceRoutes = require("./routes/monthly_invoice.routes");
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -31,10 +34,10 @@ app.use(morgan("dev"));
 app.use(express.static("public"));
 
 app.get('/', (req, res) => {
-	res.status(200).json({
-		message: 'ProPackers UK API is running',
-		version: '1.0.0',
-	});
+  res.status(200).json({
+    message: 'ProPackers UK API is running',
+    version: '1.0.0',
+  });
 });
 
 app.use("/api/users", userRoutes);
@@ -51,6 +54,9 @@ app.use("/api/warehouse-locations", warehouseLocationRoutes);
 app.use("/api/inventory-ledgers", inventoryLedgerRoutes);
 app.use("/api/shipments", shipmentRoutes);
 app.use("/api/shipment-items", shipmentItemRoutes);
+app.use("/api/attendance", attendanceRoutes);
+app.use("/api/monthly-invoices", monthlyInvoiceRoutes);
+
 
 app.use((req, res) => {
   res.status(404).json({

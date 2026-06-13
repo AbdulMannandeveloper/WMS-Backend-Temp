@@ -32,7 +32,7 @@ const getShiftByField = async (req, res) => {
 
 const getShiftById = async (req, res) => {
   try {
-    const shift = await shiftLogic.getShiftById(parseInt(req.params.id));
+    const shift = await shiftLogic.getShiftById(req.params.id);
     if (!shift) {
       return res.status(404).json({ error: 'Shift not found' });
     }
@@ -44,7 +44,7 @@ const getShiftById = async (req, res) => {
 
 const updateShift = async (req, res) => {
   try {
-    const shift = await shiftLogic.updateShift(parseInt(req.params.id), req.body);
+    const shift = await shiftLogic.updateShift(req.params.id, req.body);
     res.status(200).json(shift);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -53,7 +53,7 @@ const updateShift = async (req, res) => {
 
 const deleteShift = async (req, res) => {
   try {
-    const shift = await shiftLogic.deleteShift(parseInt(req.params.id));
+    const shift = await shiftLogic.deleteShift(req.params.id);
     res.status(200).json(shift);
   } catch (error) {
     res.status(400).json({ error: error.message });

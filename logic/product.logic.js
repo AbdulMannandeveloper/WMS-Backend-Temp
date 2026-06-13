@@ -3,7 +3,7 @@ const clientRepository = require("../repositories/client.repository");
 const stockLevelRepository = require("../repositories/stock_level.repository");
 
 const addNewProduct = async (productData) => {
-  if (!productData.name || !productData.clientId || !productData.skuCode) {
+  if (!productData.productName || !productData.clientId || !productData.skuCode) {
     throw new Error(
       "Name, Client ID, and SKU Code are required to create a product.",
     );
@@ -38,7 +38,7 @@ const getProductById = async (id) => {
 };
 
 const getProductByName = async (name) => {
-  return await prodcutRepository.getProductsByField("name", name);
+  return await prodcutRepository.getProductsByField("productName", name);
 };
 
 const getProductByBarcode = async (barcode) => {
@@ -51,6 +51,12 @@ const getProductBySkuCode = async (skuCode) => {
 
 const getProductByClientId = async (clientId) => {
   return await prodcutRepository.getProductsByField("clientId", clientId);
+};
+
+const getProductByField = async (field, value) => {
+  // If querying by name, translate it to the database schema field 'productName'
+  const queryField = field === "name" ? "productName" : field;
+  return await prodcutRepository.getProductsByField(queryField, value);
 };
 
 const updateProduct = async (id, updateData) => {
@@ -88,6 +94,11 @@ module.exports = {
   addNewProduct,
   getAllProducts,
   getProductById,
+  getProductByName,
+  getProductByBarcode,
+  getProductBySkuCode,
+  getProductByClientId,
+  getProductByField,
   updateProduct,
   // deleteProduct,
   getProductandStockLevelById

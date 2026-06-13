@@ -1,6 +1,6 @@
 const inventoryLedgerRepository = require("../repositories/inventory_ledger.repository");
 const productRepository = require("../repositories/product.repository");
-const locationRepository = require("../repositories/warehouse_location.repository");
+const locationRepository = require("../repositories/location.repository");
 const userRepository = require("../repositories/user.repository");
 
 const stockLevelLogic = require("./stock_level.logic");
@@ -141,6 +141,7 @@ const getAllInventoryLedgers = async () => {
   await enrichLedgerEntriesWithProductDetails(ledgers);
   await enrichLedgerEntriesWithLocationDetails(ledgers);
   await enrichLedgerEntriesWithUserDetails(ledgers);
+  return ledgers;
 };
 
 const getInventoryLedgerByField = async (field, value) => {
