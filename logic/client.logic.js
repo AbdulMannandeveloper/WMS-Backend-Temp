@@ -29,13 +29,13 @@ const generateClientNumber = () =>
  *   companyName  - Client's business/company name
  *   contactName  - Primary contact person name
  *   email        - Contact email (used for login + email)
- *   phone        - (optional) Mobile / phone number
+ *   mobile       - (optional) Mobile / phone number (also accepts legacy "phone")
  *   address      - (optional) Business address
  *
  * firstName / lastName are derived from contactName for the User record
  * (split on first space; everything after becomes lastName).
  */
-const addClient = async ({ adminId, companyName, contactName, email, phone, address }) => {
+const addClient = async ({ adminId, companyName, contactName, email, mobile, phone, address }) => {
   // --- Validate admin ---
   if (!adminId) {
     throw new Error('adminId is required.');
@@ -83,7 +83,7 @@ const addClient = async ({ adminId, companyName, contactName, email, phone, addr
       companyName,
       contactName,
       email,
-      mobile: phone || null,
+      mobile: mobile || phone || null,
       address: address || null,
     });
 
