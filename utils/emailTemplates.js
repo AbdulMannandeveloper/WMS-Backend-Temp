@@ -51,8 +51,42 @@ const resetPasswordEmailTemplate = ({ setupUrl, expiresHours }) => {
   return { subject, text, html };
 };
 
+// US-090: Sent to the client when their monthly invoice is approved by admin
+const invoiceApprovedEmailTemplate = ({ companyName, billingMonth, totalAmount, portalUrl }) => {
+  const subject = `Your ProPackers UK Invoice for ${billingMonth} is Ready`;
+  const formattedAmount = Number(totalAmount).toFixed(2);
+  const text = `Dear ${companyName}, your invoice for ${billingMonth} totalling £${formattedAmount} has been approved and is ready to view. Log in to your portal here: ${portalUrl}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px;">Your Invoice is Ready</h2>
+      <p style="margin: 0 0 16px;">Dear <strong>${companyName}</strong>,</p>
+      <p style="margin: 0 0 16px;">
+        Your monthly invoice for <strong>${billingMonth}</strong> has been reviewed and approved.
+      </p>
+      <table style="border-collapse: collapse; margin: 0 0 20px;">
+        <tr>
+          <td style="padding: 6px 16px 6px 0; color: #6b7280;">Billing Period</td>
+          <td style="padding: 6px 0; font-weight: bold;">${billingMonth}</td>
+        </tr>
+        <tr>
+          <td style="padding: 6px 16px 6px 0; color: #6b7280;">Total Amount</td>
+          <td style="padding: 6px 0; font-weight: bold; font-size: 18px;">£${formattedAmount}</td>
+        </tr>
+      </table>
+      <p style="margin: 0 0 20px;">Log in to your client portal to view the full itemised breakdown:</p>
+      <p style="margin: 0 0 20px;">
+        <a href="${portalUrl}" style="background: #0f766e; color: #ffffff; text-decoration: none; padding: 10px 16px; border-radius: 6px; display: inline-block;">View Invoice</a>
+      </p>
+      <p style="margin: 0; color: #6b7280;">If the button does not work, paste this URL in your browser: ${portalUrl}</p>
+    </div>
+  `;
+
+  return { subject, text, html };
+};
+
 module.exports = {
   otpEmailTemplate,
   inviteEmailTemplate,
   resetPasswordEmailTemplate,
+  invoiceApprovedEmailTemplate,
 };

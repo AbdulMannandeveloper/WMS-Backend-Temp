@@ -2,6 +2,10 @@ const monthlyInvoiceRepository = require("../repositories/monthly_invoice.reposi
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 
 const clientLogic = require("./client.logic");
+const { sendMail } = require("../utils/mailer");
+const { invoiceApprovedEmailTemplate } = require("../utils/emailTemplates");
+
+const APP_BASE_URL = process.env.APP_BASE_URL || "https://myapp.com";
 
 const createMonthlyInvoice = async (data) => {
   // Check for required fields
@@ -95,13 +99,40 @@ const approveMonthlyInvoice = async (id) => {
     throw new Error("Only invoices in DRAFT status can be approved.");
   }
 
-  const data = { status: "APPROVED", approvedAt: new Date() };
+  const updateData = { status: "APPROVED", approvedAt: new Date() };
 
-  // ----------------------------------------------------------------
-  // Logic to set pdfLink and send email notification to client
-  // ----------------------------------------------------------------
+  // Call the repository directly — bypasses the updateMonthlyInvoice guard
+  // that blocks direct status changes from external callers.
+  const approvedInvoice = await monthlyInvoiceRepository.updateMonthlyInvoice(id, updateData);
 
-  return await monthlyInvoiceRepository.updateMonthlyInvoice(id, data);
+  // US-090: Email the client to notify them their invoice is ready to view
+  try {
+    const clientEmail = existingInvoice.client?.email;
+    if (clientEmail) {
+      const portalUrl = `${APP_BASE_URL}/client/invoices`;
+      const billingMonth = new Date(existingInvoice.billingPeriod).toLocaleString("en-GB", {
+        month: "long",
+        year: "numeric",
+      });
+      const emailContent = invoiceApprovedEmailTemplate({
+        companyName: existingInvoice.client?.companyName || "Valued Client",
+        billingMonth,
+        totalAmount: existingInvoice.totalAmount,
+        portalUrl,
+      });
+      await sendMail({
+        to: clientEmail,
+        subject: emailContent.subject,
+        html: emailContent.html,
+        text: emailContent.text,
+      });
+    }
+  } catch (emailError) {
+    // Email failure should NOT roll back the approval — log and continue
+    console.error("Invoice approval email failed to send:", emailError.message);
+  }
+
+  return approvedInvoice;
 };
 
 const deleteMonthlyInvoice = async (id) => {

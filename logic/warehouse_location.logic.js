@@ -394,10 +394,39 @@ const assertNoClassCycle = async (currentClassId, nextParentClassId) => {
   }
 };
 
+// US-029: Build a nested tree from the flat list of all warehouse locations
+const getWarehouseLocationTree = async () => {
+  const allLocations = await warehouseLocationRepository.getAllWarehouseLocations();
+
+  // Index by id for O(1) parent lookup
+  const locationMap = new Map();
+  for (const loc of allLocations) {
+    locationMap.set(loc.id, { ...loc, children: [] });
+  }
+
+  const roots = [];
+  for (const loc of locationMap.values()) {
+    if (!loc.parentLocationId) {
+      roots.push(loc);
+    } else {
+      const parent = locationMap.get(loc.parentLocationId);
+      if (parent) {
+        parent.children.push(loc);
+      } else {
+        // Orphaned node (parent deleted) — promote to root
+        roots.push(loc);
+      }
+    }
+  }
+
+  return roots;
+};
+
 module.exports = {
   createWarehouseLocation,
   getAllWarehouseLocations,
   getWarehouseLocationByField,
+  getWarehouseLocationTree,
   updateWarehouseLocation,
   deleteWarehouseLocation,
   createWarehouseLocationClass,

@@ -6,6 +6,7 @@ const clientLogic = require("./client.logic");
 const stockLevelLogic = require("./stock_level.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const ShipmentServiceMappingLogic = require("./shipment_service_mapping.logic");
+const clientServiceLogic = require("./client_service.logic");
 const invoiceLineItemLogic = require("./invoice_line_item.logic");
 const monthlyInvoiceLogic = require("./monthly_invoice.logic");
 
@@ -74,54 +75,64 @@ const dispatchShipment = async (shipmentId) => {
   // Update the shipment status to 'DISPATCHED'
   await shipmentRepositry.updateShipment(shipmentId, { status: "DISPATCHED" });
 
-  // Inventory adjustment logic
   const shipmentItems = await shipmentItemLogic.getShipmentItemsByField(
     "shipmentId",
     shipmentId,
   );
 
+  // ── LOOP 1: Inventory deduction — one ledger entry per physical item ──
   for (const item of shipmentItems) {
-    // Adjust the stock level for the source location using ledger logic to ensure proper tracking of inventory movements
     const inventoryLedgerEntry = {
       productId: item.productId,
-      userId: shipment.employeeId, // Assuming the employee is the user making the movement
+      userId: shipment.employeeId,
       movementType: "CHECKOUT",
       quantity: item.quantity,
       referenceId: shipment.id,
       fromLocationId: item.sourceLocationId,
     };
     await inventoryLedgerLogic.createInventoryLedger(inventoryLedgerEntry);
-
-    // Check if monthly invoice exists for the client, if not create one
-    let monthlyInvoice;
-    monthlyInvoice = await monthlyInvoiceLogic.getMonthlyInvoiceByClientIdForMonth(
-      shipment.clientId,
-      new Date(),
-    );
-    if (!monthlyInvoice) {
-      monthlyInvoice = await monthlyInvoiceLogic.createMonthlyInvoice({
-        clientId: shipment.clientId,
-      });
-    }
-    // Transfer the ShipmentServiceMappings for the shipment to InvoiceLineItems for the associated client's monthly invoice
-    const shipmentServices =
-      await ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
-        "shipmentId",
-        shipmentId,
-      );
-
-    for (const serviceMapping of shipmentServices) {
-      const invoiceLineItemData = {
-        monthlyInvoiceId: monthlyInvoice.id,
-        serviceId: serviceMapping.serviceId,
-        quantity: serviceMapping.quantity,
-        unitPrice: serviceMapping.appliedUnitPrice,
-        description: `Charge for service ${serviceMapping.serviceId} on shipment ${shipment.id}`,
-      };
-      await invoiceLineItemLogic.createInvoiceLineItem(invoiceLineItemData);
-    }
   }
-  return await shipmentRepositry.getShipmentByField("id", shipmentId); // Return the updated shipment
+
+  // ── LOOP 2: Invoice line items — once per shipment, not per item ──
+  // Get or create the monthly invoice for this client's current billing period
+  let monthlyInvoice = await monthlyInvoiceLogic.getMonthlyInvoiceByClientIdForMonth(
+    shipment.clientId,
+    new Date(),
+  );
+  if (!monthlyInvoice) {
+    monthlyInvoice = await monthlyInvoiceLogic.createMonthlyInvoice({
+      clientId: shipment.clientId,
+    });
+  }
+
+  // Fetch all services associated with this shipment
+  const shipmentServices =
+    await ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
+      "shipmentId",
+      shipmentId,
+    );
+
+  for (const serviceMapping of shipmentServices) {
+    // Bug #4 fix: look up clientServiceId so the line item has a proper backlink
+    const clientService = await clientServiceLogic.getClientServiceByClientIdAndServiceId(
+      shipment.clientId,
+      serviceMapping.serviceId,
+    );
+
+    const invoiceLineItemData = {
+      invoiceId: monthlyInvoice.id,           // Bug #3 fix: was monthlyInvoiceId
+      clientServiceId: clientService ? clientService.id : null,  // Bug #4 fix
+      serviceId: serviceMapping.serviceId,
+      quantity: serviceMapping.quantity,
+      unitPrice: serviceMapping.appliedUnitPrice,
+      description: `Charge for service "${serviceMapping.service?.description || serviceMapping.serviceId}" on shipment ${shipment.id}`,
+      dateOfService: new Date(),
+      itemType: "AUTOMATED_SERVICE",
+    };
+    await invoiceLineItemLogic.createInvoiceLineItem(invoiceLineItemData);
+  }
+
+  return await shipmentRepositry.getShipmentByField("id", shipmentId);
 };
 
 const updateShipment = async (id, data) => {

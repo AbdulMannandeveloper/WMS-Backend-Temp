@@ -86,10 +86,22 @@ const deleteWarehouseLocation = async (req, res) => {
   }
 };
 
+// US-029: Return all warehouse locations as a nested tree structure
+const getWarehouseLocationTree = async (req, res) => {
+  try {
+    const tree = await warehhouseLocationLogic.getWarehouseLocationTree();
+    res.status(200).json(tree);
+  } catch (error) {
+    console.error("Error building warehouse location tree:", error);
+    res.status(500).json({ error: "An unexpected error occurred" });
+  }
+};
+
 module.exports = {
   createWarehouseLocation,
   getAllWarehouseLocations,
   getWarehouseLocationByField,
+  getWarehouseLocationTree,
   updateWarehouseLocation,
   deleteWarehouseLocation,
 };

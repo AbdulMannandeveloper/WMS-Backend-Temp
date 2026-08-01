@@ -58,15 +58,26 @@ const getShipmentServiceMappingsByField = async (field, value) => {
 };
 
 const updateShipmentServiceMapping = async (id, updateData) => {
+  // Always fetch the existing mapping first so we can reference its shipmentId
+  const existing = await shipmentServiceMappingRepositry.getShipmentServiceMappingByField("id", id);
+  if (!existing) {
+    throw new Error("Shipment service mapping not found.");
+  }
+
+  let shipment;
   if (updateData.shipmentId) {
-    const shipment = await shipmentLogic.getShipmentByField(
+    shipment = await shipmentLogic.getShipmentByField(
       "id",
       updateData.shipmentId,
     );
     if (!shipment) {
       throw new Error("Shipment not found.");
     }
+  } else {
+    // Use the existing shipmentId to fetch the shipment (needed for clientId lookup below)
+    shipment = await shipmentLogic.getShipmentByField("id", existing.shipmentId);
   }
+
   if (updateData.serviceId) {
     const clientService =
       await clientServiceLogic.getClientServiceByClientIdAndServiceId(

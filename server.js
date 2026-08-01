@@ -21,6 +21,10 @@ const shipmentRoutes = require("./routes/shipment.routes");
 const shipmentItemRoutes = require("./routes/shipment_item.routes");
 const attendanceRoutes = require("./routes/attendance.routes");
 const monthlyInvoiceRoutes = require("./routes/monthly_invoice.routes");
+const auditLogRoutes = require("./routes/audit_log.routes");
+const payrollRoutes = require("./routes/payroll.routes");
+const expenseRoutes = require("./routes/expense.routes");
+const profitLossRoutes = require("./routes/profit_loss.routes");
 
 
 const app = express();
@@ -56,6 +60,10 @@ app.use("/api/shipments", shipmentRoutes);
 app.use("/api/shipment-items", shipmentItemRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/monthly-invoices", monthlyInvoiceRoutes);
+app.use("/api/audit-logs", auditLogRoutes);
+app.use("/api/payroll", payrollRoutes);
+app.use("/api/expenses", expenseRoutes);
+app.use("/api/profit-loss", profitLossRoutes);
 
 
 app.use((req, res) => {

@@ -4,6 +4,7 @@ const bcrypt = require("bcrypt");
 const otpRepository = require("../repositories/otp.repository");
 const userRepository = require("../repositories/user.repository");
 const invitationTokenRepository = require("../repositories/invitation-token.repository");
+const attendanceLogLogic = require("./attendance_log.logic");
 const { sendMail } = require("../utils/mailer");
 const {
   otpEmailTemplate,
@@ -211,6 +212,31 @@ const verifyOTP = async (userId, otp) => {
 
   // return user info along with verification result
   const updatedUser = await userRepository.getUserByField('id', result.userId);
+
+  // US-064: Auto-create attendance log on first login of the day (employee/admin only)
+  // Subsequent logins on the same day are silently ignored.
+  if (updatedUser && (updatedUser.role === 'employee' || updatedUser.role === 'admin')) {
+    try {
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+      const existingLogs = await attendanceLogLogic.getAttendanceLogByField('userId', updatedUser.id);
+      const todayLog = Array.isArray(existingLogs)
+        ? existingLogs.find((log) => log.date && log.date.toISOString().split('T')[0] === todayStr)
+        : null;
+
+      if (!todayLog) {
+        // First login of the day — create attendance record
+        await attendanceLogLogic.createAttendanceLog({
+          userId: updatedUser.id,
+          loginTimestamp: now.toISOString(),
+          date: `${todayStr}T00:00:00.000Z`,
+        });
+      }
+    } catch (attendanceErr) {
+      // Don't block login if attendance logging fails (e.g. no default shift configured yet)
+      console.warn('Auto-attendance log skipped:', attendanceErr.message);
+    }
+  }
 
   return {
     verified: true,

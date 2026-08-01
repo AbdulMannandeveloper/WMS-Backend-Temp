@@ -54,11 +54,22 @@ const deleteAttendanceLog = async (req, res) => {
   }
 };
 
+// US-068/069: Admin-triggered archive and cleanup of attendance logs older than 2 months
+const archiveAndCleanup = async (req, res) => {
+  try {
+    const result = await attendanceLogLogic.archiveAndCleanupOldLogs();
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   createAttendanceLog,
   getAllAttendanceLogs,
   getAttendanceLogByField,
   updateAttendanceLog,
   updateLogoutTimestamp,
-  deleteAttendanceLog
+  deleteAttendanceLog,
+  archiveAndCleanup,
 };

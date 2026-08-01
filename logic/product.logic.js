@@ -1,8 +1,9 @@
 const prodcutRepository = require("../repositories/product.repository");
 const clientRepository = require("../repositories/client.repository");
 const stockLevelRepository = require("../repositories/stock_level.repository");
+const auditLogLogic = require("./audit_log.logic");
 
-const addNewProduct = async (productData) => {
+const addNewProduct = async (productData, adminUserId) => {
   if (!productData.productName || !productData.clientId || !productData.skuCode) {
     throw new Error(
       "Name, Client ID, and SKU Code are required to create a product.",
@@ -26,7 +27,15 @@ const addNewProduct = async (productData) => {
     productData.isDeactivated = false; // Default to active if not provided
   }
 
-  return await prodcutRepository.createProduct(productData);
+  const newProduct = await prodcutRepository.createProduct(productData);
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, "CREATE_PRODUCT", {
+      productId: newProduct.id,
+      skuCode: newProduct.skuCode,
+      productName: newProduct.productName,
+    }).catch(err => console.error("Audit log error:", err.message));
+  }
+  return newProduct;
 };
 
 const getAllProducts = async () => {
@@ -59,7 +68,7 @@ const getProductByField = async (field, value) => {
   return await prodcutRepository.getProductsByField(queryField, value);
 };
 
-const updateProduct = async (id, updateData) => {
+const updateProduct = async (id, updateData, adminUserId) => {
   if (updateData.size && updateData.size <= 0) {
     throw new Error("Size must be a positive number.");
   }
@@ -68,12 +77,28 @@ const updateProduct = async (id, updateData) => {
     throw new Error("Weight must be a positive number.");
   }
 
-  return await prodcutRepository.updateProduct(id, updateData);
+  const updatedProduct = await prodcutRepository.updateProduct(id, updateData);
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, "EDIT_PRODUCT", {
+      productId: id,
+      skuCode: updatedProduct.skuCode,
+      changes: updateData,
+    }).catch(err => console.error("Audit log error:", err.message));
+  }
+  return updatedProduct;
 };
 
-// const deleteProduct = async (id) => {
-//   return await prodcutRepository.deleteProduct(id);
-// };
+const deleteProduct = async (id, adminUserId) => {
+  const deletedProduct = await prodcutRepository.deleteProduct(id);
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, "DELETE_PRODUCT", {
+      productId: id,
+      skuCode: deletedProduct?.skuCode,
+      productName: deletedProduct?.productName,
+    }).catch(err => console.error("Audit log error:", err.message));
+  }
+  return deletedProduct;
+};
 
 
 
@@ -82,7 +107,7 @@ const getProductandStockLevelById = async (id) => {
   if (!product) {
     throw new Error("Product not found.");
   }
-  const stockLevels = await stockLevelRepository.getStockLevelByProductId(id);
+  const stockLevels = await stockLevelRepository.getStockLevelByField("productId", id);
 
   return {
     product,
@@ -100,6 +125,6 @@ module.exports = {
   getProductByClientId,
   getProductByField,
   updateProduct,
-  // deleteProduct,
+  deleteProduct,
   getProductandStockLevelById
 };

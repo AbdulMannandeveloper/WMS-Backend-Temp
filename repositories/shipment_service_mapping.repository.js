@@ -16,6 +16,16 @@ const getShipmentServiceMappingByField = async (field, value) => {
   });
 };
 
+// Returns ALL mappings matching the field — used by dispatchShipment to iterate services
+const getShipmentServiceMappingsByField = async (field, value) => {
+  return await prismaShipmentServiceMapping.findMany({
+    where: { [field]: value },
+    include: {
+      service: true,
+    },
+  });
+};
+
 const updateShipmentServiceMapping = async (id, data) => {
   return await prismaShipmentServiceMapping.update({
     where: { id },
@@ -33,6 +43,7 @@ module.exports = {
   createShipmentServiceMapping,
   getAllShipmentServiceMappings,
   getShipmentServiceMappingByField,
+  getShipmentServiceMappingsByField,
   updateShipmentServiceMapping,
   deleteShipmentServiceMapping,
 };

@@ -15,11 +15,6 @@ const includeRelations = {
       sourceLocation: true,
     },
   },
-  shipmentServices: {
-    include: {
-      service: true,
-    },
-  },
 };
 
 const createShipment = async (data) => {

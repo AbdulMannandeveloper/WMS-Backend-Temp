@@ -31,8 +31,19 @@ const getTransporter = () => {
 
 const sendMail = async ({ to, subject, html, text }) => {
   try {
-    const tx = getTransporter();
+    // --- OPTION 1: CONSOLE (MOCK) EMAIL ---
+    console.log('\n=================== MOCK EMAIL ===================');
+    console.log(`To:      ${to}`);
+    console.log(`Subject: ${subject}`);
+    console.log('--------------------------------------------------');
+    if (text) console.log(text);
+    else if (html) console.log('[HTML Content rendering...] ' + html.substring(0, 200) + '...');
+    console.log('==================================================\n');
+    return true;
 
+    // --- OPTION 2: SMTP EMAIL ---
+    /*
+    const tx = getTransporter();
     await tx.sendMail({
       from: MAIL_FROM,
       to,
@@ -40,8 +51,8 @@ const sendMail = async ({ to, subject, html, text }) => {
       text,
       html,
     });
-
     return true;
+    */
   } catch (error) {
     console.error('[Mailer] Failed to send email:', error.message);
     return false;

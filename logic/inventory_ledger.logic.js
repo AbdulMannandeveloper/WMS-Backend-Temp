@@ -2,6 +2,7 @@ const inventoryLedgerRepository = require("../repositories/inventory_ledger.repo
 const productRepository = require("../repositories/product.repository");
 const locationRepository = require("../repositories/location.repository");
 const userRepository = require("../repositories/user.repository");
+const clientRepository = require("../repositories/client.repository");
 
 const stockLevelLogic = require("./stock_level.logic");
 const shipmentLogic = require("./shipment.logic");
@@ -135,90 +136,108 @@ const createInventoryLedger = async (newData) => {
 };
 
 const getAllInventoryLedgers = async () => {
-  const ledgers = await inventoryLedgerRepository.getAllInventoryLedgers();
-
-  // Enrich ledger entries with product, location, and user details
-  await enrichLedgerEntriesWithProductDetails(ledgers);
-  await enrichLedgerEntriesWithLocationDetails(ledgers);
-  await enrichLedgerEntriesWithUserDetails(ledgers);
-  return ledgers;
+  // Repository now includes all relations — no manual enrichment needed
+  return await inventoryLedgerRepository.getAllInventoryLedgers();
 };
 
 const getInventoryLedgerByField = async (field, value) => {
-  const ledgers = await inventoryLedgerRepository.getInventoryLedgerByField(
-    field,
-    value,
-  );
-
-  // Enrich ledger entries with product, location, and user details
-  await enrichLedgerEntriesWithProductDetails(ledgers);
-  await enrichLedgerEntriesWithLocationDetails(ledgers);
-  await enrichLedgerEntriesWithUserDetails(ledgers);
-
-  // Enrich ledger entries with client details (e.g., name - via product)
-  for (const ledger of ledgers) {
-    const product = await productRepository.getProductByField(
-      "id",
-      ledger.productId,
-    );
-    const client = product
-      ? await clientRepository.getClientByField("id", product.clientId)
-      : null;
-    ledger.clientId = product ? product.clientId : null;
-    ledger.clientName = client ? client.name : "Unknown Client";
-  }
-
-  return ledgers;
+  return await inventoryLedgerRepository.getInventoryLedgerByField(field, value);
 };
 
-// Function to get inventory ledger entries for a specific client (clientId is referenced in the product table)
+// US-058/059/060: Filter ledger by date range, productId, clientId, movementType
+const getLedgerWithFilters = async ({ startDate, endDate, productId, clientId, movementType } = {}) => {
+  const filters = {};
+
+  // Date range filter (US-058)
+  if (startDate || endDate) {
+    filters.timestamp = {};
+    if (startDate) filters.timestamp.gte = new Date(startDate);
+    if (endDate) {
+      // Inclusive end: go to end of that day
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      filters.timestamp.lte = end;
+    }
+  }
+
+  // Product filter (US-059)
+  if (productId) {
+    filters.productId = productId;
+  }
+
+  // Movement type filter (US-060)
+  if (movementType) {
+    filters.movementType = movementType;
+  }
+
+  // Client filter — find all productIds for the client, then filter by those (US-059)
+  if (clientId) {
+    const clientProducts = await productRepository.getProductsByField("clientId", clientId);
+    const clientProductIds = clientProducts.map((p) => p.id);
+    filters.productId = { in: clientProductIds };
+  }
+
+  return await inventoryLedgerRepository.getAllInventoryLedgers(filters);
+};
+
+// US-063: Get inventory ledger entries for a specific client (via their products)
 const getInventoryLedgersByClientId = async (clientId) => {
-  // Get all products for the client
-  const clientProducts = await productRepository.getProductsByField(
-    "clientId",
-    clientId,
-  );
+  const clientProducts = await productRepository.getProductsByField("clientId", clientId);
   const clientProductIds = clientProducts.map((product) => product.id);
 
-  // Get all inventory ledger entries for those products
-  const inventoryLedgers =
-    await inventoryLedgerRepository.getInventoryLedgerByField("productId", {
-      in: clientProductIds,
+  if (clientProductIds.length === 0) return [];
+
+  // Use the filter-based query — repository handles all includes
+  return await inventoryLedgerRepository.getAllInventoryLedgers({
+    productId: { in: clientProductIds },
+  });
+};
+
+// US-054: Daily checkout summary — all CHECKOUT movements today, grouped by client
+const getDailyCheckoutSummary = async (dateStr) => {
+  const date = dateStr ? new Date(dateStr) : new Date();
+  const startOfDay = new Date(date);
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(date);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const checkouts = await inventoryLedgerRepository.getAllInventoryLedgers({
+    movementType: "CHECKOUT",
+    timestamp: { gte: startOfDay, lte: endOfDay },
+  });
+
+  // Group by client
+  const grouped = {};
+  for (const entry of checkouts) {
+    const clientId = entry.product?.client?.id || "unknown";
+    const companyName = entry.product?.client?.companyName || "Unknown Client";
+
+    if (!grouped[clientId]) {
+      grouped[clientId] = {
+        clientId,
+        companyName,
+        totalItemsCheckedOut: 0,
+        items: [],
+      };
+    }
+
+    grouped[clientId].totalItemsCheckedOut += entry.quantity;
+    grouped[clientId].items.push({
+      ledgerId: entry.id,
+      productId: entry.productId,
+      productName: entry.product?.productName || "Unknown",
+      skuCode: entry.product?.skuCode || null,
+      quantity: entry.quantity,
+      fromLocation: entry.fromLocation?.locationName || null,
+      performedBy: entry.user
+        ? `${entry.user.firstName} ${entry.user.lastName}`
+        : "Unknown",
+      timestamp: entry.timestamp,
+      shipmentId: entry.referenceId || null,
     });
-
-  // Enrich ledger entries with product details
-  for (const ledger of inventoryLedgers) {
-    const product = clientProducts.find((p) => p.id === ledger.productId);
-    ledger.productName = product ? product.name : "Unknown Product";
   }
 
-  // Enrich ledger entries with location details
-  for (const ledger of inventoryLedgers) {
-    if (ledger.fromLocationId) {
-      const fromLocation = await locationRepository.getLocationByField(
-        "id",
-        ledger.fromLocationId,
-      );
-      ledger.fromLocationName = fromLocation
-        ? fromLocation.name
-        : "Unknown Location";
-    }
-    if (ledger.toLocationId) {
-      const toLocation = await locationRepository.getLocationByField(
-        "id",
-        ledger.toLocationId,
-      );
-      ledger.toLocationName = toLocation ? toLocation.name : "Unknown Location";
-    }
-  }
-
-  // Enrich ledger entries with user details
-  for (const ledger of inventoryLedgers) {
-    const user = await userRepository.getUserByField("id", ledger.userId);
-    ledger.userName = user ? user.name : "Unknown User";
-  }
-
-  return inventoryLedgers;
+  return Object.values(grouped);
 };
 
 // const updateInventoryLedger = async (id, updateData) => {
@@ -395,6 +414,8 @@ module.exports = {
   getAllInventoryLedgers,
   getInventoryLedgerByField,
   getInventoryLedgersByClientId,
+  getLedgerWithFilters,
+  getDailyCheckoutSummary,
   //   updateInventoryLedger,
   //   deleteInventoryLedger,
 };

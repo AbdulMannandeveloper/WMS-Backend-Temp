@@ -36,6 +36,11 @@ const createShipmentItem = async (data) => {
     throw new Error("Source stock not found");
   }
 
+  // US-051: Prevent checkout of deactivated products
+  if (product.isDeactivated) {
+    throw new Error("Cannot add a deactivated product to a shipment.");
+  }
+
   // If status is not provided, default to 'PENDING'
   if (!data.status) {
     data.status = "PENDING";
@@ -43,12 +48,14 @@ const createShipmentItem = async (data) => {
 
   // Handle the reservation of inventory if the status is 'PENDING'
   if (data.status === "PENDING") {
-    // Implement inventory reservation logic here
-    // For example, you might want to check if the required quantity is available and reserve it
-    if (sourceStock.currentQuantity < data.quantity) {
-      throw new Error("Insufficient inventory available");
+    // Bug #10 fix: available qty = currentQuantity - reservedQuantity (not just currentQuantity)
+    const availableQuantity = sourceStock.currentQuantity - sourceStock.reservedQuantity;
+    if (availableQuantity < data.quantity) {
+      throw new Error(
+        `Insufficient available inventory. Available: ${availableQuantity}, Requested: ${data.quantity}.`
+      );
     }
-    // Update the reserved quantity in the stock level. Current (total) quantity will be adjusted only after the shipment is completed/shipped.
+    // Update the reserved quantity in the stock level.
     await stockLevelLogic.updateStockLevel(sourceStock.id, {
       reservedQuantity: sourceStock.reservedQuantity + data.quantity,
     });

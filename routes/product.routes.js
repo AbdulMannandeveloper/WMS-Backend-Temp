@@ -9,7 +9,7 @@ router.get('/', authorizeRoles('admin'), productController.getAllProducts);
 router.get('/:id', authorizeRoles('admin'), productController.getProductById);
 router.put('/:id', authorizeRoles('admin'), productController.updateProduct);
 router.patch('/:id', authorizeRoles('admin'), productController.deactivateProduct);
-// router.delete('/:id', productController.deleteProduct);
+router.delete('/:id', authorizeRoles('admin'), productController.deleteProduct);
 
 router.get('/:id/stock', authorizeRoles('admin'), productController.getProductandStockLevelById);
 

@@ -62,6 +62,19 @@ const updateInvoiceLineItem = async (id, data) => {
 };
 
 const deleteInvoiceLineItem = async (id) => {
+  // Fetch the line item first so we can reverse its amount from the invoice total
+  const lineItem = await invoiceLineItemRepository.getInvoiceLineItemsByField("id", id);
+  const item = Array.isArray(lineItem) ? lineItem[0] : lineItem;
+
+  if (!item) {
+    throw new Error("Invoice line item not found.");
+  }
+
+  // Reverse the line item's contribution to the invoice total
+  await monthlyInvoiceLogic.updateMonthlyInvoice(item.invoiceId, {
+    amountToAdjust: -Number(item.totalPrice),
+  });
+
   return await invoiceLineItemRepository.deleteInvoiceLineItem(id);
 };
 
