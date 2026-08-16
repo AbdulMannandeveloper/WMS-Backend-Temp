@@ -1,10 +1,12 @@
 const inventoryLedgerLogic = require("../logic/inventory_ledger.logic");
 const auditLogLogic = require("../logic/audit_log.logic");
+const clientRepository = require("../repositories/client.repository");
+const { parsePagination, paginatedResponse } = require("../utils/pagination");
 
 const createInventoryLedgerEntry = async (req, res) => {
   try {
-    const result = await inventoryLedgerLogic.createInventoryLedger(req.body);
-    const adminUserId = req.header("x-user-id") || (req.user && req.user.id);
+    const result = await inventoryLedgerLogic.createInventoryLedger({ ...req.body, userId: req.user.id });
+    const adminUserId = req.user.id;
     if (adminUserId) {
       await auditLogLogic.createAuditLog(adminUserId, "ADJUST_STOCK", {
         ledgerId: result.id,
@@ -24,8 +26,14 @@ const createInventoryLedgerEntry = async (req, res) => {
 
 const getAllInventoryLedgers = async (req, res) => {
   try {
-    const ledgers = await inventoryLedgerLogic.getAllInventoryLedgers();
-    res.status(200).json(ledgers);
+    const pagination = parsePagination(req.query);
+    const result = await inventoryLedgerLogic.getAllInventoryLedgers(pagination);
+    if (result && result.items) {
+      return res.status(200).json(
+        paginatedResponse(result.items, result.total, pagination),
+      );
+    }
+    res.status(200).json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -47,6 +55,15 @@ const getInventoryLedgerByField = async (req, res) => {
 const getInventoryLedgerByClientId = async (req, res) => {
   try {
     const { clientId } = req.params;
+
+    // A client may only read their own ledger. Staff (admin/employee) may read any.
+    if (req.user.role === "client") {
+      const ownClient = await clientRepository.getClientByField("userId", req.user.id);
+      if (!ownClient || ownClient.id !== clientId) {
+        return res.status(403).json({ error: "You do not have access to this client's records." });
+      }
+    }
+
     const ledgers = await inventoryLedgerLogic.getInventoryLedgersByClientId(clientId);
     res.status(200).json(ledgers);
   } catch (err) {
@@ -58,14 +75,23 @@ const getInventoryLedgerByClientId = async (req, res) => {
 const getLedgerWithFilters = async (req, res) => {
   try {
     const { startDate, endDate, productId, clientId, movementType } = req.query;
-    const ledgers = await inventoryLedgerLogic.getLedgerWithFilters({
-      startDate,
-      endDate,
-      productId,
-      clientId,
-      movementType,
-    });
-    res.status(200).json(ledgers);
+    const pagination = parsePagination(req.query);
+    const result = await inventoryLedgerLogic.getLedgerWithFilters(
+      {
+        startDate,
+        endDate,
+        productId,
+        clientId,
+        movementType,
+      },
+      pagination,
+    );
+    if (result && result.items) {
+      return res.status(200).json(
+        paginatedResponse(result.items, result.total, pagination),
+      );
+    }
+    res.status(200).json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

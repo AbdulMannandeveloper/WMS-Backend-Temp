@@ -1,11 +1,12 @@
+const { prisma } = require("../lib/prisma");
 const shipmentItemRepository = require("../repositories/shipment_item.repository");
+const stockLevelRepository = require("../repositories/stock_level.repository");
 
 const shipmentLogic = require("./shipment.logic");
 const productLogic = require("./product.logic");
 const stockLevelLogic = require("./stock_level.logic");
 
 const createShipmentItem = async (data) => {
-  // Check for required fields
   if (
     !data.shipmentId ||
     !data.productId ||
@@ -15,7 +16,6 @@ const createShipmentItem = async (data) => {
     throw new Error("Missing required fields");
   }
 
-  // Validate shipmentId, productId, and sourceLocationId
   const shipment = await shipmentLogic.getShipmentByField(
     "id",
     data.shipmentId,
@@ -36,35 +36,38 @@ const createShipmentItem = async (data) => {
     throw new Error("Source stock not found");
   }
 
-  // US-051: Prevent checkout of deactivated products
   if (product.isDeactivated) {
     throw new Error("Cannot add a deactivated product to a shipment.");
   }
 
-  // If status is not provided, default to 'PENDING'
   if (!data.status) {
     data.status = "PENDING";
   }
 
-  // Handle the reservation of inventory if the status is 'PENDING'
-  if (data.status === "PENDING") {
-    // Bug #10 fix: available qty = currentQuantity - reservedQuantity (not just currentQuantity)
-    const availableQuantity = sourceStock.currentQuantity - sourceStock.reservedQuantity;
-    if (availableQuantity < data.quantity) {
-      throw new Error(
-        `Insufficient available inventory. Available: ${availableQuantity}, Requested: ${data.quantity}.`
+  return prisma.$transaction(async (tx) => {
+    if (data.status === "PENDING") {
+      const reserved = await stockLevelRepository.reserveStockAtomically(
+        sourceStock.id,
+        data.quantity,
+        tx,
       );
+      if (reserved === 0) {
+        const availableQuantity =
+          sourceStock.currentQuantity - sourceStock.reservedQuantity;
+        throw new Error(
+          `Insufficient available inventory. Available: ${availableQuantity}, Requested: ${data.quantity}.`,
+        );
+      }
     }
-    // Update the reserved quantity in the stock level.
-    await stockLevelLogic.updateStockLevel(sourceStock.id, {
-      reservedQuantity: sourceStock.reservedQuantity + data.quantity,
-    });
-  }
-  return await shipmentItemRepository.createShipmentItem(data);
+    return await shipmentItemRepository.createShipmentItem(data, tx);
+  }, {
+    maxWait: 10_000,
+    timeout: 30_000,
+  });
 };
 
-const getShipmentItemsByField = async (field, value) => {
-  return await shipmentItemRepository.getShipmentItemsByField(field, value);
+const getShipmentItemsByField = async (field, value, tx) => {
+  return await shipmentItemRepository.getShipmentItemsByField(field, value, tx);
 };
 
 const updateShipmentItem = async (id, data) => {
@@ -78,17 +81,23 @@ const updateShipmentItem = async (id, data) => {
     }
   }
 
-  const existingItem = await shipmentItemRepository.getShipmentItemsByField(
+  const existingItems = await shipmentItemRepository.getShipmentItemsByField(
     "id",
     id,
   );
+  const existingItem = Array.isArray(existingItems)
+    ? existingItems[0]
+    : existingItems;
+  if (!existingItem) {
+    throw new Error("Shipment item not found");
+  }
+
   if (data.productId) {
     const product = await productLogic.getProductById(data.productId);
     if (!product) {
       throw new Error("Product not found");
     }
 
-    // If both Product and Location are being updated, validate the new combination
     if (data.sourceLocationId) {
       const sourceStock =
         await stockLevelLogic.getStockLevelByProductAndLocation(
@@ -100,7 +109,6 @@ const updateShipmentItem = async (id, data) => {
       }
     }
 
-    // If only Product is being updated, validate the existing source location with the new product
     const sourceStock = await stockLevelLogic.getStockLevelByProductAndLocation(
       data.productId,
       existingItem.sourceLocationId,
@@ -110,7 +118,6 @@ const updateShipmentItem = async (id, data) => {
     }
   }
 
-  // If only Location is being updated, validate the existing product with the new location
   if (data.sourceLocationId) {
     const sourceStock = await stockLevelLogic.getStockLevelByProductAndLocation(
       existingItem.productId,

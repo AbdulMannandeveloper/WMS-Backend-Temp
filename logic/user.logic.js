@@ -5,7 +5,8 @@ const invitationTokenRepository = require("../repositories/invitation-token.repo
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 
-const { sendMail } = require('../utils/mailer');
+const { enqueueMail } = require('../utils/mailQueue');
+const { invalidateCachedUser } = require('../utils/authUserCache');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
 
 const SALT_ROUNDS = 10;
@@ -14,6 +15,14 @@ const APP_BASE_URL = process.env.APP_BASE_URL || "https://myapp.com";
 
 const hashValue = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
+
+// Removes the password hash from any user object before it is returned to a
+// client, replacing it with a boolean the UI can use to show pending/active.
+const sanitizeUser = (user) => {
+    if (!user) return user;
+    const { passwordHash, ...rest } = user;
+    return { ...rest, hasPassword: Boolean(passwordHash) };
+};
 
 const addNewUser = async (userData) => {
     // Admin verification: Only an active admin can add new users
@@ -25,66 +34,64 @@ const addNewUser = async (userData) => {
         throw new Error("Only an active admin can add new users.");
     }
 
-    // Remove adminId from userData before creating the user
-    delete userData.adminId;
+    // Allowlist the fields a client may set. This prevents mass-assignment of
+    // sensitive fields such as passwordHash or isActive. (createUser also forces
+    // isActive=false, and the account is activated only via password setup.)
+    const allowedRoles = ["employee", "client", "admin"];
+    const role = allowedRoles.includes(userData.role) ? userData.role : "employee";
+    const safeUserData = {
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        username: userData.username,
+        email: userData.email,
+        role,
+        passwordHash: null,
+    };
 
     // Creating a new user with just firstName, lastName, and email
-    if (!userData.firstName || !userData.lastName || !userData.email) {
+    if (!safeUserData.firstName || !safeUserData.lastName || !safeUserData.email) {
         throw new Error("First and last names, and email are required to register a user");
     }
-    
-    if (!/\S+@\S+\.\S+/.test(userData.email)) {
+
+    if (!/\S+@\S+\.\S+/.test(safeUserData.email)) {
         throw new Error("Invalid email format");
     }
 
-    const existingUser = await userRepository.getUserByField('email', userData.email);
+    const existingUser = await userRepository.getUserByField('email', safeUserData.email);
     if (existingUser) {
         throw new Error("A user with this email already exists");
     }
-    
-    const newUser = await userRepository.createUser(userData);
-    
-    if (newUser) {
-        let email_sent = false;
-        // Send an email notification to the new user (this is a placeholder, implement your email sending logic here)
-        // console.log(`Email sent to ${newUser.email}: Your account for WMS has been created. Please visit the link below to complete your registration and activate your account.`);
 
-        // Create link for user to complete registration
+    const newUser = await userRepository.createUser(safeUserData);
 
-        const plainToken = crypto.randomBytes(32).toString("hex");
-        const tokenHash = hashValue(plainToken);
-        const expiresAt = new Date(Date.now() + INVITE_EXPIRY_HOURS * 60 * 60 * 1000);
-
-        await invitationTokenRepository.createInvitationToken({
-            userId: newUser.id,
-            tokenHash,
-            expiresAt,
-        });
-
-        const setupUrl = `${APP_BASE_URL}/setup-password?token=${plainToken}`;
-        const emailContent = inviteEmailTemplate({
-            setupUrl,
-            expiresHours: INVITE_EXPIRY_HOURS,
-        });
-
-        email_sent = await sendMail({
-            to: newUser .email,
-            subject: emailContent.subject,
-            html: emailContent.html,
-            text: emailContent.text,
-        });
-
-        if (!email_sent) {
-            await userRepository.deleteUser(newUser.id);
-            throw new Error("Failed to send email notification. User creation rolled back.");
-        }
-    } else {
+    if (!newUser) {
         throw new Error("Failed to create user");
     }
-    
-    // Rollback the user creation if email sending fails
 
-    return newUser;
+    const plainToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashValue(plainToken);
+    const expiresAt = new Date(Date.now() + INVITE_EXPIRY_HOURS * 60 * 60 * 1000);
+
+    await invitationTokenRepository.createInvitationToken({
+        userId: newUser.id,
+        tokenHash,
+        expiresAt,
+    });
+
+    const setupUrl = `${APP_BASE_URL}/setup-password?token=${plainToken}`;
+    const emailContent = inviteEmailTemplate({
+        setupUrl,
+        expiresHours: INVITE_EXPIRY_HOURS,
+    });
+
+    enqueueMail({
+        to: newUser.email,
+        subject: emailContent.subject,
+        html: emailContent.html,
+        text: emailContent.text,
+    });
+
+    return sanitizeUser(newUser);
 };
 
 const completeUserRegistration = async (email, registrationData) => {
@@ -100,21 +107,39 @@ const completeUserRegistration = async (email, registrationData) => {
     registrationData.passwordHash = passwordHash;
     registrationData.isActive = true; // Activate the user account
 
-    return await userRepository.updateUser(user.id, registrationData);
+    const updated = await userRepository.updateUser(user.id, registrationData);
+    invalidateCachedUser(user.id);
+    return updated;
 };
 
 const getAllUsers = async () => {
-    return await userRepository.getAllUsers();
+    const users = await userRepository.getAllUsers();
+    return Array.isArray(users) ? users.map(sanitizeUser) : users;
 };
 
 const getUserByEmail = async (email) => {
-    return await userRepository.getUserByField('email', email);
+    return sanitizeUser(await userRepository.getUserByField('email', email));
 };
 
-const updateUser = async (id, updateData) => {
+const USER_UPDATE_FIELDS = ['firstName', 'lastName', 'username', 'email', 'role', 'isActive'];
+
+const updateUser = async (id, rawUpdateData) => {
     const user = await userRepository.getUserByField('id', id);
     if (!user) {
         throw new Error("User not found");
+    }
+
+    // Allowlist updatable fields. passwordHash can never be set through this path;
+    // passwords are only ever set via the invitation/reset token flow.
+    const updateData = {};
+    for (const field of USER_UPDATE_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(rawUpdateData, field)) {
+            updateData[field] = rawUpdateData[field];
+        }
+    }
+
+    if (updateData.role && !['employee', 'client', 'admin'].includes(updateData.role)) {
+        throw new Error("Invalid role.");
     }
 
     if (updateData.email && !/\S+@\S+\.\S+/.test(updateData.email)) {
@@ -129,7 +154,9 @@ const updateUser = async (id, updateData) => {
         }
     }
 
-    return await userRepository.updateUser(user.id, updateData);
+    const updated = sanitizeUser(await userRepository.updateUser(user.id, updateData));
+    invalidateCachedUser(user.id);
+    return updated;
 };
 
 const deleteUser = async (id) => {
@@ -137,7 +164,9 @@ const deleteUser = async (id) => {
     if (!user) {
         throw new Error("User not found");
     }
-    return await userRepository.deleteUser(user.id);
+    const deleted = await userRepository.deleteUser(user.id);
+    invalidateCachedUser(user.id);
+    return deleted;
 };
 
 module.exports = { addNewUser, getAllUsers, getUserByEmail, updateUser, completeUserRegistration, deleteUser };

@@ -1,7 +1,5 @@
 const { prisma } = require("../lib/prisma");
 
-const prismaMonthlyInvoice = prisma.monthlyInvoice;
-
 const includeRelations = {
   client: {
     select: {
@@ -21,19 +19,21 @@ const includeRelations = {
   },
 };
 
-const createMonthlyInvoice = async (invoiceData) => {
-  return await prismaMonthlyInvoice.create({ data: invoiceData });
+const db = (tx) => tx || prisma;
+
+const createMonthlyInvoice = async (invoiceData, tx) => {
+  return await db(tx).monthlyInvoice.create({ data: invoiceData });
 };
 
-const getAllMonthlyInvoices = async () => {
-  return await prismaMonthlyInvoice.findMany({
+const getAllMonthlyInvoices = async (tx) => {
+  return await db(tx).monthlyInvoice.findMany({
     include: includeRelations,
     orderBy: { billingPeriod: "desc" },
   });
 };
 
-const getMonthlyInvoiceByClientIdAndMonth = async (clientId, billingMonth) => {
-  return await prismaMonthlyInvoice.findUnique({
+const getMonthlyInvoiceByClientIdAndMonth = async (clientId, billingMonth, tx) => {
+  return await db(tx).monthlyInvoice.findUnique({
     where: {
       clientId_billingPeriod: {
         clientId: clientId,
@@ -44,15 +44,15 @@ const getMonthlyInvoiceByClientIdAndMonth = async (clientId, billingMonth) => {
   });
 };
 
-const getMonthlyInvoiceById = async (id) => {
-  return await prismaMonthlyInvoice.findUnique({
+const getMonthlyInvoiceById = async (id, tx) => {
+  return await db(tx).monthlyInvoice.findUnique({
     where: { id },
     include: includeRelations,
   });
 };
 
-const getMonthlyInvoiceByField = async (field, value) => {
-  return await prismaMonthlyInvoice.findMany({
+const getMonthlyInvoiceByField = async (field, value, tx) => {
+  return await db(tx).monthlyInvoice.findMany({
     where: {
       [field]: value,
     },
@@ -61,16 +61,16 @@ const getMonthlyInvoiceByField = async (field, value) => {
   });
 };
 
-const updateMonthlyInvoice = async (id, updateData) => {
-  return await prismaMonthlyInvoice.update({
+const updateMonthlyInvoice = async (id, updateData, tx) => {
+  return await db(tx).monthlyInvoice.update({
     where: { id },
     data: updateData,
     include: includeRelations,
   });
 };
 
-const deleteMonthlyInvoice = async (id) => {
-  return await prismaMonthlyInvoice.delete({
+const deleteMonthlyInvoice = async (id, tx) => {
+  return await db(tx).monthlyInvoice.delete({
     where: { id },
   });
 };

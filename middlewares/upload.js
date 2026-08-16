@@ -1,27 +1,22 @@
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
+const { localUploadDir } = require('../lib/objectStorage');
 
-// Ensure public/uploads directory exists
-const uploadDir = path.join(__dirname, '../public/uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.pdf'];
+const ALLOWED_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'application/pdf',
+];
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  },
-});
+// Memory storage — controller persists via objectStorage (local disk or S3).
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-  const allowedExtensions = ['.png', '.jpg', '.jpeg', '.webp', '.pdf'];
   const ext = path.extname(file.originalname).toLowerCase();
-  if (allowedExtensions.includes(ext)) {
+  const mime = (file.mimetype || '').toLowerCase();
+  if (ALLOWED_EXTENSIONS.includes(ext) && ALLOWED_MIME_TYPES.includes(mime)) {
     cb(null, true);
   } else {
     cb(new Error('Only images (png, jpg, jpeg, webp) and PDF documents are allowed.'));
@@ -31,7 +26,9 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
 module.exports = upload;
+module.exports.uploadDir = localUploadDir;
+module.exports.ALLOWED_EXTENSIONS = ALLOWED_EXTENSIONS;

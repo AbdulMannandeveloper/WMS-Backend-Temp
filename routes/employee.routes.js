@@ -1,4 +1,5 @@
 const express = require('express');
+const { authorizeRoles } = require('../middlewares/authorize');
 const { addEmployee, getAllEmployees, getEmployeeById } = require('../controllers/employee.controller');
 
 const router = express.Router();

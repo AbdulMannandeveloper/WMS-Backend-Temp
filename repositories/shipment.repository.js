@@ -1,6 +1,14 @@
 const { prisma } = require("../lib/prisma");
+const { assertAllowedField } = require("../utils/pick");
 
-const prismaShipment = prisma.shipment;
+const SHIPMENT_QUERY_FIELDS = [
+  "id",
+  "employeeId",
+  "clientId",
+  "status",
+  "shipmentType",
+  "courierName",
+];
 
 const includeRelations = {
   client: true,
@@ -17,43 +25,46 @@ const includeRelations = {
   },
 };
 
-const createShipment = async (data) => {
-  return await prismaShipment.create({
+const db = (tx) => tx || prisma;
+
+const createShipment = async (data, tx) => {
+  return await db(tx).shipment.create({
     data,
     include: includeRelations,
   });
 };
 
-const getAllShipments = async () => {
-  return await prismaShipment.findMany({
+const getAllShipments = async (tx) => {
+  return await db(tx).shipment.findMany({
     include: includeRelations,
   });
 };
 
-const getShipmentByField = async (field, value) => {
-  return await prismaShipment.findFirst({
+const getShipmentByField = async (field, value, tx) => {
+  assertAllowedField(field, SHIPMENT_QUERY_FIELDS);
+  return await db(tx).shipment.findFirst({
     where: { [field]: value },
     include: includeRelations,
   });
 };
 
-const getShipmentsByClientId = async (clientId) => {
-  return await prismaShipment.findMany({
+const getShipmentsByClientId = async (clientId, tx) => {
+  return await db(tx).shipment.findMany({
     where: { clientId },
     include: includeRelations,
   });
 };
 
-const updateShipment = async (id, data) => {
-  return await prismaShipment.update({
+const updateShipment = async (id, data, tx) => {
+  return await db(tx).shipment.update({
     where: { id },
     data,
     include: includeRelations,
   });
 };
 
-const deleteShipment = async (id) => {
-  return await prismaShipment.delete({
+const deleteShipment = async (id, tx) => {
+  return await db(tx).shipment.delete({
     where: { id },
   });
 };

@@ -2,32 +2,34 @@ const { prisma } = require('../lib/prisma');
 
 const prismaEmployee = prisma.employee;
 
-// const PUBLIC_EMPLOYEE_SELECT = {
-//     username: true, // Get the username for the corresponding user through UserId
-//     email: true,
-//     jobTitle: true,
-//     // wageRate: true,
-//     createdAt: true,
-//     updatedAt: true,
-// };
+// User fields that are safe to return alongside an employee record.
+// Never includes passwordHash.
+const PUBLIC_USER_SELECT = {
+    id: true,
+    firstName: true,
+    lastName: true,
+    username: true,
+    email: true,
+    role: true,
+    isActive: true,
+};
 
 const createEmployee = async (employeeData) => {
     return await prismaEmployee.create({
         data: employeeData,
-        // select: PUBLIC_EMPLOYEE_SELECT,
     });
 }
 
 const getAllEmployees = async () => {
     return await prismaEmployee.findMany({
-        include: { user: true },
+        include: { user: { select: PUBLIC_USER_SELECT } },
     });
 }
 
 const getEmployeeByField = async (field, value) => {
     return await prismaEmployee.findUnique({
         where: { [field]: value },
-        include: { user: true },
+        include: { user: { select: PUBLIC_USER_SELECT } },
     });
 }
 

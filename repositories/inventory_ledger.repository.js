@@ -1,5 +1,15 @@
 const { prisma } = require("../lib/prisma");
-const prismaInventoryLedger = prisma.inventoryLedger;
+const { assertAllowedField } = require("../utils/pick");
+
+const LEDGER_QUERY_FIELDS = [
+  "id",
+  "productId",
+  "userId",
+  "movementType",
+  "referenceId",
+  "fromLocationId",
+  "toLocationId",
+];
 
 const includeRelations = {
   product: {
@@ -20,32 +30,58 @@ const includeRelations = {
   },
 };
 
-const createInventoryLedger = async (data) => {
-  return await prismaInventoryLedger.create({
+const db = (tx) => tx || prisma;
+
+const createInventoryLedger = async (data, tx) => {
+  return await db(tx).inventoryLedger.create({
     data,
     include: includeRelations,
   });
 };
 
-const getAllInventoryLedgers = async (filters = {}) => {
-  return await prismaInventoryLedger.findMany({
-    where: filters,
+/**
+ * @param {object} filters
+ * @param {{ skip?: number, take?: number } | undefined} pagination
+ * When pagination.take is set, returns { items, total }; otherwise a plain array
+ * for backward-compatible callers (filters, daily summary, etc.).
+ */
+const getAllInventoryLedgers = async (filters = {}, pagination, tx) => {
+  const client = db(tx);
+  const where = filters;
+  const orderBy = { timestamp: "desc" };
+
+  if (pagination && pagination.take != null) {
+    const [items, total] = await Promise.all([
+      client.inventoryLedger.findMany({
+        where,
+        include: includeRelations,
+        orderBy,
+        skip: pagination.skip || 0,
+        take: pagination.take,
+      }),
+      client.inventoryLedger.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  return await client.inventoryLedger.findMany({
+    where,
     include: includeRelations,
-    orderBy: { timestamp: "desc" },
+    orderBy,
   });
 };
 
-const getInventoryLedgerByField = async (field, value) => {
-  return await prismaInventoryLedger.findMany({
+const getInventoryLedgerByField = async (field, value, tx) => {
+  assertAllowedField(field, LEDGER_QUERY_FIELDS);
+  return await db(tx).inventoryLedger.findMany({
     where: { [field]: value },
     include: includeRelations,
     orderBy: { timestamp: "desc" },
   });
 };
 
-// ONLY FOR ROLLBACK PURPOSES - NOT EXPOSED TO API
-const deleteInventoryLedger = async (id) => {
-  return await prismaInventoryLedger.delete({
+const deleteInventoryLedger = async (id, tx) => {
+  return await db(tx).inventoryLedger.delete({
     where: { id },
   });
 };
@@ -54,6 +90,5 @@ module.exports = {
   createInventoryLedger,
   getAllInventoryLedgers,
   getInventoryLedgerByField,
-//   updateInventoryLedger,
   deleteInventoryLedger,
 };

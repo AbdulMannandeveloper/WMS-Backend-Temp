@@ -3,6 +3,9 @@ const express = require('express');
 const { authorizeRoles } = require('../middlewares/authorize');
 const router = express.Router();
 
+// Employee-accessible barcode/SKU lookup for the mobile check-in flow
+router.get('/lookup/barcode/:value', authorizeRoles('admin', 'employee'), productController.lookupProductByBarcode);
+
 router.get('/field/:field/:value', authorizeRoles('admin'), productController.getProductByField);
 router.post('/', authorizeRoles('admin'), productController.createProduct);
 router.get('/', authorizeRoles('admin'), productController.getAllProducts);

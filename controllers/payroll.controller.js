@@ -1,7 +1,7 @@
 const payrollLogic = require("../logic/payroll.logic");
 
 const getAdminUserId = (req) => {
-  return req.header("x-user-id") || (req.user && req.user.id);
+  return req.user && req.user.id;
 };
 
 const setBaseSalary = async (req, res) => {

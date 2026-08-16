@@ -5,7 +5,9 @@ const otpRepository = require("../repositories/otp.repository");
 const userRepository = require("../repositories/user.repository");
 const invitationTokenRepository = require("../repositories/invitation-token.repository");
 const attendanceLogLogic = require("./attendance_log.logic");
-const { sendMail } = require("../utils/mailer");
+const { enqueueMail } = require("../utils/mailQueue");
+const { invalidateCachedUser } = require("../utils/authUserCache");
+const { signAuthToken } = require("../utils/jwt");
 const {
   otpEmailTemplate,
   inviteEmailTemplate,
@@ -18,14 +20,25 @@ const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
 const INVITE_EXPIRY_HOURS = Number(process.env.INVITE_EXPIRY_HOURS || 24);
 const APP_BASE_URL = process.env.APP_BASE_URL || "https://myapp.com";
 
+// SHA-256 is fine for high-entropy random invitation/reset tokens.
 const hashValue = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
+
+// OTP codes are low-entropy (6 digits), so they are hashed with a keyed HMAC
+// (pepper) to prevent precomputation/rainbow-table attacks if the DB leaks.
+const hashOtp = (value) => {
+  const pepper = process.env.OTP_PEPPER;
+  if (!pepper) {
+    throw new Error("OTP_PEPPER is not configured. Set it in the environment.");
+  }
+  return crypto.createHmac("sha256", pepper).update(String(value)).digest("hex");
+};
 
 const generateOtpCode = () => crypto.randomInt(100000, 1000000).toString();
 
 const createOtpAndSendEmail = async (userId, email) => {
   const otp = generateOtpCode();
-  const codeHash = hashValue(otp);
+  const codeHash = hashOtp(otp);
   const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
 
   const otpRecord = await otpRepository.createOtp({
@@ -39,44 +52,39 @@ const createOtpAndSendEmail = async (userId, email) => {
     expiresMinutes: OTP_EXPIRY_MINUTES,
   });
 
-  const sent = await sendMail({
+  enqueueMail({
     to: email,
     subject: emailContent.subject,
     html: emailContent.html,
     text: emailContent.text,
   });
-
-  if (!sent) {
-    await otpRepository.deleteOtpById(otpRecord.id).catch(() => null);
-    throw new Error("OTP email could not be sent.");
-  }
 };
 
 const authenticateUser = async (identifier, password) => {
+  if (!identifier || !password) {
+    throw new Error("Invalid credentials.");
+  }
+
   let user = await userRepository.getUserByField("email", identifier);
   if (!user) {
     user = await userRepository.getUserByField("username", identifier);
   }
 
-  if (!user) {
-    throw new Error("User not found");
+  // Use a single generic error for both "no such user" and "wrong password"
+  // so an attacker cannot enumerate which accounts exist.
+  if (!user || !user.passwordHash) {
+    throw new Error("Invalid credentials.");
+  }
+
+  const isMatch = await bcrypt.compare(password, user.passwordHash);
+  if (!isMatch) {
+    throw new Error("Invalid credentials.");
   }
 
   if (!user.isActive) {
     throw new Error(
       "The account is not active. Please complete verification first.",
     );
-  }
-
-  if (!user.passwordHash) {
-    throw new Error(
-      "Password is not set for this account. Please complete account setup.",
-    );
-  }
-
-  const isMatch = await bcrypt.compare(password, user.passwordHash);
-  if (!isMatch) {
-    throw new Error("Invalid password");
   }
 
   await createOtpAndSendEmail(user.id, user.email);
@@ -140,17 +148,12 @@ const requestAdminSignupOtp = async (payload) => {
       expiresHours: INVITE_EXPIRY_HOURS,
     });
 
-    const sent = await sendMail({
+    enqueueMail({
       to: email,
       subject: emailContent.subject,
       html: emailContent.html,
       text: emailContent.text,
     });
-
-    if (!sent) {
-      await userRepository.deleteUser(user.id).catch(() => null);
-      throw new Error("Failed to send invitation email. User creation rolled back.");
-    }
   } catch (error) {
     await userRepository.deleteUser(user.id).catch(() => null);
     throw new Error(`Failed to send invitation email. ${error.message}`);
@@ -184,7 +187,7 @@ const verifyAdminSignupOtp = async ({ email, otp }) => {
     throw new Error("Too many failed attempts. OTP has been invalidated.");
   }
 
-  const candidateHash = hashValue(otp);
+  const candidateHash = hashOtp(otp);
   if (candidateHash !== record.codeHash) {
     await otpRepository.incrementAttemptsById(record.id);
     throw new Error("Invalid OTP.");
@@ -192,6 +195,7 @@ const verifyAdminSignupOtp = async ({ email, otp }) => {
 
   await otpRepository.deleteOtpById(record.id);
   await userRepository.updateUser(user.id, { isActive: true });
+  invalidateCachedUser(user.id);
 
   return { verified: true, userId: user.id };
 };
@@ -238,8 +242,11 @@ const verifyOTP = async (userId, otp) => {
     }
   }
 
+  const token = signAuthToken({ id: updatedUser.id, role: updatedUser.role });
+
   return {
     verified: true,
+    token,
     userId: updatedUser.id,
     firstName: updatedUser.firstName,
     lastName: updatedUser.lastName,
@@ -299,6 +306,7 @@ const inviteUserByAdmin = async ({
       isActive: false,
       passwordHash: null,
     });
+    invalidateCachedUser(targetUser.id);
   }
 
   await invitationTokenRepository.invalidateUnusedUserTokens(targetUser.id);
@@ -319,16 +327,12 @@ const inviteUserByAdmin = async ({
     expiresHours: INVITE_EXPIRY_HOURS,
   });
 
-  const sent = await sendMail({
+  enqueueMail({
     to: targetUser.email,
     subject: emailContent.subject,
     html: emailContent.html,
     text: emailContent.text,
   });
-
-  if (!sent) {
-    throw new Error("Invitation email could not be sent.");
-  }
 
   return { invited: true, userId: targetUser.id, email: targetUser.email };
 };
@@ -358,6 +362,7 @@ const setupPasswordWithToken = async ({ token, password }) => {
     passwordHash,
     isActive: true,
   });
+  invalidateCachedUser(tokenRecord.userId);
 
   await invitationTokenRepository.markTokenUsed(tokenRecord.id);
 
@@ -426,16 +431,12 @@ const resetPasswordForUser = async ({ adminId, userId }) => {
     expiresHours: INVITE_EXPIRY_HOURS,
   });
 
-  const sent = await sendMail({
+  enqueueMail({
     to: targetUser.email,
     subject: emailContent.subject,
     html: emailContent.html,
     text: emailContent.text,
   });
-
-  if (!sent) {
-    throw new Error("Failed to send password reset email.");
-  }
 
   return { reset: true, userId: targetUser.id, email: targetUser.email };
 };
@@ -486,7 +487,7 @@ const forgotPassword = async ({ email }) => {
     expiresHours: INVITE_EXPIRY_HOURS,
   });
 
-  await sendMail({
+  enqueueMail({
     to: user.email,
     subject: emailContent.subject,
     html: emailContent.html,

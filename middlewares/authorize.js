@@ -1,31 +1,61 @@
 const userRepository = require('../repositories/user.repository');
+const { verifyAuthToken } = require('../utils/jwt');
+const {
+    getCachedUser,
+    setCachedUser,
+} = require('../utils/authUserCache');
 
-const resolveActorId = (req) => {
+/**
+ * Extracts a bearer JWT from the Authorization header.
+ * Only "Authorization: Bearer <jwt>" is accepted.
+ */
+const extractBearerToken = (req) => {
     const authHeader = req.header('authorization') || '';
-    const bearerUserId = authHeader.toLowerCase().startsWith('token ')
-        ? authHeader.slice(6).trim()
-        : null;
-
-    return (
-        (req.user && req.user.id) ||
-        req.header('x-user-id') ||
-        bearerUserId ||
-        null
-    );
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+        return authHeader.slice(7).trim();
+    }
+    return null;
 };
 
+/**
+ * Authenticates the request from a signed JWT and (optionally) enforces roles.
+ * User records are cached briefly (AUTH_USER_CACHE_TTL_MS) to cut DB load under
+ * concurrency; deactivated accounts still expire within the TTL window.
+ *
+ * Usage:
+ *   authorizeRoles()                 -> any authenticated, active user
+ *   authorizeRoles('admin')          -> admins only
+ *   authorizeRoles('admin', 'employee')
+ */
 const authorizeRoles = (...allowedRoles) => {
     const normalizedAllowedRoles = allowedRoles.flat().filter(Boolean);
 
     return async (req, res, next) => {
         try {
-            const actorId = resolveActorId(req);
-
-            if (!actorId) {
+            const token = extractBearerToken(req);
+            if (!token) {
                 return res.status(401).json({ error: 'Authentication required.' });
             }
 
-            const user = await userRepository.getUserByField('id', actorId);
+            let payload;
+            try {
+                payload = verifyAuthToken(token);
+            } catch (err) {
+                return res.status(401).json({ error: 'Invalid or expired session.' });
+            }
+
+            const actorId = payload && payload.sub;
+            if (!actorId) {
+                return res.status(401).json({ error: 'Invalid session.' });
+            }
+
+            let user = getCachedUser(actorId);
+            if (!user) {
+                user = await userRepository.getUserByField('id', actorId);
+                if (user) {
+                    setCachedUser(actorId, user);
+                }
+            }
 
             if (!user) {
                 return res.status(401).json({ error: 'User not found.' });
@@ -58,4 +88,5 @@ const authorizeRoles = (...allowedRoles) => {
 
 module.exports = {
     authorizeRoles,
+    authenticate: authorizeRoles(),
 };

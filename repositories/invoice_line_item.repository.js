@@ -1,9 +1,9 @@
 const { prisma } = require("../lib/prisma");
 
-const prismaInvoiceLineItem = prisma.invoiceLineItem;
+const db = (tx) => tx || prisma;
 
-const createInvoiceLineItem = async (lineItemData) => {
-  return await prismaInvoiceLineItem.create({
+const createInvoiceLineItem = async (lineItemData, tx) => {
+  return await db(tx).invoiceLineItem.create({
     data: lineItemData,
     include: {
       clientService: {
@@ -13,12 +13,12 @@ const createInvoiceLineItem = async (lineItemData) => {
   });
 };
 
-const getAllInvoiceLineItems = async () => {
-  return await prismaInvoiceLineItem.findMany();
+const getAllInvoiceLineItems = async (tx) => {
+  return await db(tx).invoiceLineItem.findMany();
 };
 
-const getInvoiceLineItemsByField = async (field, value) => {
-  return await prismaInvoiceLineItem.findMany({
+const getInvoiceLineItemsByField = async (field, value, tx) => {
+  return await db(tx).invoiceLineItem.findMany({
     where: {
       [field]: value,
     },
@@ -31,15 +31,15 @@ const getInvoiceLineItemsByField = async (field, value) => {
   });
 };
 
-const updateInvoiceLineItem = async (id, updateData) => {
-  return await prismaInvoiceLineItem.update({
+const updateInvoiceLineItem = async (id, updateData, tx) => {
+  return await db(tx).invoiceLineItem.update({
     where: { id },
     data: updateData,
   });
 };
 
-const deleteInvoiceLineItem = async (id) => {
-  return await prismaInvoiceLineItem.delete({
+const deleteInvoiceLineItem = async (id, tx) => {
+  return await db(tx).invoiceLineItem.delete({
     where: { id },
   });
 };

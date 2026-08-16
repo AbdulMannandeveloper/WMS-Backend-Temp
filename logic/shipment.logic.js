@@ -1,24 +1,23 @@
+const { prisma } = require("../lib/prisma");
 const shipmentRepositry = require("../repositories/shipment.repository");
+const stockLevelRepository = require("../repositories/stock_level.repository");
+const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
+const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 
 const shipmentItemLogic = require("./shipment_item.logic");
 const employeeLogic = require("./employee.logic");
 const clientLogic = require("./client.logic");
-const stockLevelLogic = require("./stock_level.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const ShipmentServiceMappingLogic = require("./shipment_service_mapping.logic");
 const clientServiceLogic = require("./client_service.logic");
-const invoiceLineItemLogic = require("./invoice_line_item.logic");
-const monthlyInvoiceLogic = require("./monthly_invoice.logic");
 
 const createShipment = async (data) => {
-  // Check for required fields
   if (!data.employeeId || !data.clientId || !data.shipmentType) {
     throw new Error(
       "Employee ID, Client ID, and Shipment Type are required to create a shipment.",
     );
   }
 
-  // Validate employeeId and clientId
   const employee = await employeeLogic.getEmployeeById(data.employeeId);
   const client = await clientLogic.getClientById(data.clientId);
   if (!employee) {
@@ -29,20 +28,18 @@ const createShipment = async (data) => {
   }
 
   if (!data.status) {
-    data.status = "PENDING"; // Default status
+    data.status = "PENDING";
   }
 
   const { shipmentItems, shipmentServices, ...shipmentData } = data;
   const shipment = await shipmentRepositry.createShipment(shipmentData);
 
-  // Handle the creation of ShipmentItems if provided
   if (data.shipmentItems && Array.isArray(data.shipmentItems)) {
     for (const item of data.shipmentItems) {
-      item.shipmentId = shipment.id; // Associate the item with the created shipment
+      item.shipmentId = shipment.id;
       await shipmentItemLogic.createShipmentItem(item);
     }
   }
-  // Return the shipment combined with its created items
   const createdShipmentItems = await shipmentItemLogic.getShipmentItemsByField(
     "shipmentId",
     shipment.id,
@@ -62,6 +59,10 @@ const getShipmentsByClientId = async (clientId) => {
   return await shipmentRepositry.getShipmentsByClientId(clientId);
 };
 
+/**
+ * Dispatch a shipment: status flip + inventory checkouts + invoice lines
+ * all commit or roll back together.
+ */
 const dispatchShipment = async (shipmentId) => {
   const shipment = await shipmentRepositry.getShipmentByField("id", shipmentId);
   if (!shipment) {
@@ -72,67 +73,106 @@ const dispatchShipment = async (shipmentId) => {
       "Only shipments with READY_FOR_DISPATCH status can be dispatched.",
     );
   }
-  // Update the shipment status to 'DISPATCHED'
-  await shipmentRepositry.updateShipment(shipmentId, { status: "DISPATCHED" });
 
-  const shipmentItems = await shipmentItemLogic.getShipmentItemsByField(
-    "shipmentId",
-    shipmentId,
-  );
-
-  // ── LOOP 1: Inventory deduction — one ledger entry per physical item ──
-  for (const item of shipmentItems) {
-    const inventoryLedgerEntry = {
-      productId: item.productId,
-      userId: shipment.employeeId,
-      movementType: "CHECKOUT",
-      quantity: item.quantity,
-      referenceId: shipment.id,
-      fromLocationId: item.sourceLocationId,
-    };
-    await inventoryLedgerLogic.createInventoryLedger(inventoryLedgerEntry);
-  }
-
-  // ── LOOP 2: Invoice line items — once per shipment, not per item ──
-  // Get or create the monthly invoice for this client's current billing period
-  let monthlyInvoice = await monthlyInvoiceLogic.getMonthlyInvoiceByClientIdForMonth(
-    shipment.clientId,
-    new Date(),
-  );
-  if (!monthlyInvoice) {
-    monthlyInvoice = await monthlyInvoiceLogic.createMonthlyInvoice({
-      clientId: shipment.clientId,
+  return prisma.$transaction(async (tx) => {
+    await tx.shipment.update({
+      where: { id: shipmentId },
+      data: { status: "DISPATCHED" },
     });
-  }
 
-  // Fetch all services associated with this shipment
-  const shipmentServices =
-    await ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
-      "shipmentId",
-      shipmentId,
+    const shipmentItems = await tx.shipmentItem.findMany({
+      where: { shipmentId },
+    });
+
+    const actorUserId =
+      shipment.employee?.userId ||
+      shipment.employee?.user?.id ||
+      shipment.employeeId;
+
+    for (const item of shipmentItems) {
+      await inventoryLedgerLogic.createInventoryLedger(
+        {
+          productId: item.productId,
+          userId: actorUserId,
+          movementType: "CHECKOUT",
+          quantity: item.quantity,
+          referenceId: shipment.id,
+          fromLocationId: item.sourceLocationId,
+        },
+        { tx },
+      );
+    }
+
+    const billingMonth = new Date(
+      new Date().getFullYear(),
+      new Date().getMonth(),
+      1,
     );
 
-  for (const serviceMapping of shipmentServices) {
-    // Bug #4 fix: look up clientServiceId so the line item has a proper backlink
-    const clientService = await clientServiceLogic.getClientServiceByClientIdAndServiceId(
-      shipment.clientId,
-      serviceMapping.serviceId,
-    );
+    let monthlyInvoice =
+      await monthlyInvoiceRepository.getMonthlyInvoiceByClientIdAndMonth(
+        shipment.clientId,
+        billingMonth,
+        tx,
+      );
+    if (!monthlyInvoice) {
+      monthlyInvoice = await monthlyInvoiceRepository.createMonthlyInvoice(
+        {
+          clientId: shipment.clientId,
+          billingPeriod: billingMonth,
+          status: "DRAFT",
+        },
+        tx,
+      );
+    }
 
-    const invoiceLineItemData = {
-      invoiceId: monthlyInvoice.id,           // Bug #3 fix: was monthlyInvoiceId
-      clientServiceId: clientService ? clientService.id : null,  // Bug #4 fix
-      serviceId: serviceMapping.serviceId,
-      quantity: serviceMapping.quantity,
-      unitPrice: serviceMapping.appliedUnitPrice,
-      description: `Charge for service "${serviceMapping.service?.description || serviceMapping.serviceId}" on shipment ${shipment.id}`,
-      dateOfService: new Date(),
-      itemType: "AUTOMATED_SERVICE",
-    };
-    await invoiceLineItemLogic.createInvoiceLineItem(invoiceLineItemData);
-  }
+    const shipmentServices =
+      await ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
+        "shipmentId",
+        shipmentId,
+      );
 
-  return await shipmentRepositry.getShipmentByField("id", shipmentId);
+    let totalAdjust = 0;
+    for (const serviceMapping of shipmentServices) {
+      const clientService =
+        await clientServiceLogic.getClientServiceByClientIdAndServiceId(
+          shipment.clientId,
+          serviceMapping.serviceId,
+        );
+
+      const unitPrice = serviceMapping.appliedUnitPrice;
+      const quantity = serviceMapping.quantity;
+      const totalPrice = quantity * unitPrice;
+
+      await invoiceLineItemRepository.createInvoiceLineItem(
+        {
+          invoiceId: monthlyInvoice.id,
+          clientServiceId: clientService ? clientService.id : null,
+          quantity,
+          unitPrice,
+          totalPrice,
+          description: `Charge for service "${serviceMapping.service?.description || serviceMapping.serviceId}" on shipment ${shipment.id}`,
+          dateOfService: new Date(),
+          itemType: "AUTOMATED_SERVICE",
+        },
+        tx,
+      );
+      totalAdjust += totalPrice;
+    }
+
+    if (totalAdjust !== 0) {
+      await monthlyInvoiceRepository.updateMonthlyInvoice(
+        monthlyInvoice.id,
+        { totalAmount: Number(monthlyInvoice.totalAmount || 0) + totalAdjust },
+        tx,
+      );
+    }
+
+    return await shipmentRepositry.getShipmentByField("id", shipmentId, tx);
+  }, {
+    maxWait: 10_000,
+    timeout: 60_000,
+  });
 };
 
 const updateShipment = async (id, data) => {
@@ -145,29 +185,34 @@ const deleteShipment = async (id) => {
     throw new Error("Shipment not found.");
   }
 
-  // Release reserved inventory items if not already dispatched
-  if (shipment.status !== "DISPATCHED") {
-    const shipmentItems = await shipmentItemLogic.getShipmentItemsByField(
-      "shipmentId",
-      id,
-    );
-    for (const item of shipmentItems) {
-      const sourceStock = await stockLevelLogic.getStockLevelByProductAndLocation(
-        item.productId,
-        item.sourceLocationId,
-      );
-      if (sourceStock) {
-        const newReserved = Math.max(0, sourceStock.reservedQuantity - item.quantity);
-        await stockLevelLogic.updateStockLevel(sourceStock.id, {
-          reservedQuantity: newReserved,
-        });
+  return prisma.$transaction(async (tx) => {
+    if (shipment.status !== "DISPATCHED") {
+      const shipmentItems = await tx.shipmentItem.findMany({
+        where: { shipmentId: id },
+      });
+      for (const item of shipmentItems) {
+        const sourceStock =
+          await stockLevelRepository.getStockLevelByProductAndLocation(
+            item.productId,
+            item.sourceLocationId,
+            tx,
+          );
+        if (sourceStock) {
+          await stockLevelRepository.releaseReservedStockAtomically(
+            sourceStock.id,
+            item.quantity,
+            tx,
+          );
+        }
       }
     }
-  }
 
-  return await shipmentRepositry.deleteShipment(id);
+    return await shipmentRepositry.deleteShipment(id, tx);
+  }, {
+    maxWait: 10_000,
+    timeout: 30_000,
+  });
 };
-
 
 module.exports = {
   createShipment,

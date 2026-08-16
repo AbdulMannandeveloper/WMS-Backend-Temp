@@ -8,7 +8,11 @@ const {
   deleteClientService,
 } = require('../controllers/client_service.controller');
 
+const { authorizeRoles } = require('../middlewares/authorize');
+
 const router = express.Router();
+
+router.use(authorizeRoles('admin'));
 
 router.post('/', createClientServiceEntry);
 router.get('/', getAllClientServices);

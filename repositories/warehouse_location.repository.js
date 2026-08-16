@@ -1,6 +1,15 @@
 const { prisma } = require("../lib/prisma");
+const { assertAllowedField } = require("../utils/pick");
 
 const prismaWarehouseLocation = prisma.warehouseLocation;
+
+const LOCATION_QUERY_FIELDS = [
+  "id",
+  "locationName",
+  "locationClassId",
+  "parentLocationId",
+  "materializedPath",
+];
 
 const createWarehouseLocation = async (locationData) => {
   return await prismaWarehouseLocation.create({
@@ -23,12 +32,14 @@ const getAllWarehouseLocations = async () => {
 };
 
 const getWarehouseLocationByField = async (field, value) => {
+  assertAllowedField(field, LOCATION_QUERY_FIELDS);
   return await prismaWarehouseLocation.findMany({
     where: { [field]: value },
   });
 };
 
 const getWarehouseLocationFirstByField = async (field, value) => {
+  assertAllowedField(field, LOCATION_QUERY_FIELDS);
   return await prismaWarehouseLocation.findFirst({
     where: { [field]: value },
     include: {

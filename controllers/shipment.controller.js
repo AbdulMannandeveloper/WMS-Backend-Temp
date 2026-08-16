@@ -1,8 +1,26 @@
 const shipmentLogic = require("../logic/shipment.logic");
+const { pick } = require("../utils/pick");
+
+const SHIPMENT_CREATE_FIELDS = [
+  "employeeId",
+  "clientId",
+  "shipmentType",
+  "status",
+  "packagingType",
+  "courierName",
+  "shipmentItems",
+  "shipmentServices",
+];
+const SHIPMENT_UPDATE_FIELDS = [
+  "shipmentType",
+  "status",
+  "packagingType",
+  "courierName",
+];
 
 const createShipment = async (req, res) => {
   try {
-    const shipmentData = req.body;
+    const shipmentData = pick(req.body, SHIPMENT_CREATE_FIELDS);
     const newShipment = await shipmentLogic.createShipment(shipmentData);
     res.status(201).json(newShipment);
   } catch (error) {
@@ -46,7 +64,7 @@ const getShipmentsByClientId = async (req, res) => {
 const updateShipment = async (req, res) => {
   try {
     const { id } = req.params;
-    const shipmentData = req.body;
+    const shipmentData = pick(req.body, SHIPMENT_UPDATE_FIELDS);
     const updatedShipment = await shipmentLogic.updateShipment(
       id,
       shipmentData,

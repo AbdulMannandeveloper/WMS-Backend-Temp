@@ -7,6 +7,11 @@ const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const MAIL_FROM = process.env.MAIL_FROM || 'no-reply@propackersuk.local';
 
+// "smtp" -> deliver via SMTP. Anything else -> mock (no email sent).
+const MAIL_TRANSPORT = String(process.env.MAIL_TRANSPORT || '').toLowerCase();
+// Only print the (sensitive) email body in mock mode when explicitly opted in.
+const MAIL_DEBUG = String(process.env.MAIL_DEBUG || '').toLowerCase() === 'true';
+
 let transporter;
 
 const getTransporter = () => {
@@ -31,28 +36,25 @@ const getTransporter = () => {
 
 const sendMail = async ({ to, subject, html, text }) => {
   try {
-    // --- OPTION 1: CONSOLE (MOCK) EMAIL ---
-    console.log('\n=================== MOCK EMAIL ===================');
-    console.log(`To:      ${to}`);
-    console.log(`Subject: ${subject}`);
-    console.log('--------------------------------------------------');
-    if (text) console.log(text);
-    else if (html) console.log('[HTML Content rendering...] ' + html.substring(0, 200) + '...');
-    console.log('==================================================\n');
-    return true;
+    if (MAIL_TRANSPORT === 'smtp') {
+      const tx = getTransporter();
+      await tx.sendMail({ from: MAIL_FROM, to, subject, text, html });
+      return true;
+    }
 
-    // --- OPTION 2: SMTP EMAIL ---
-    /*
-    const tx = getTransporter();
-    await tx.sendMail({
-      from: MAIL_FROM,
-      to,
-      subject,
-      text,
-      html,
-    });
+    // Mock mode: never log OTP codes / setup links unless MAIL_DEBUG is enabled.
+    if (MAIL_DEBUG) {
+      console.log('\n=================== MOCK EMAIL (MAIL_DEBUG) ===================');
+      console.log(`To:      ${to}`);
+      console.log(`Subject: ${subject}`);
+      console.log('--------------------------------------------------------------');
+      if (text) console.log(text);
+      else if (html) console.log(html);
+      console.log('==============================================================\n');
+    } else {
+      console.log(`[Mailer] (mock) email queued to <${to}> — subject: "${subject}"`);
+    }
     return true;
-    */
   } catch (error) {
     console.error('[Mailer] Failed to send email:', error.message);
     return false;

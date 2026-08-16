@@ -53,8 +53,9 @@ const requestAdminSignupOtp = async (req, res) => {
 
 const inviteUserByAdmin = async (req, res) => {
     try {
-        // US-004, US-005: Admin invites employees, clients, or other admins
-        const result = await authLogic.inviteUserByAdmin(req.body);
+        // US-004, US-005: Admin invites employees, clients, or other admins.
+        // The acting admin is taken from the verified session, never the body.
+        const result = await authLogic.inviteUserByAdmin({ ...req.body, adminId: req.user.id });
         res.status(201).json({
             message: 'Invitation sent successfully.',
             ...result,
@@ -76,17 +77,11 @@ const setupPasswordWithToken = async (req, res) => {
 // US-008: Admin triggers a reset-password email for a specific user
 const resetPasswordForUser = async (req, res) => {
     try {
-        const authHeader = req.header('authorization') || '';
-        const bearerUserId = authHeader.toLowerCase().startsWith('token ')
-            ? authHeader.slice(6).trim()
-            : null;
-        const adminId =
-            req.body.adminId ||
-            (req.user && req.user.id) ||
-            req.header('x-user-id') ||
-            bearerUserId;
-
-        const result = await authLogic.resetPasswordForUser({ ...req.body, adminId });
+        // The acting admin is taken from the verified session, never the body/headers.
+        const result = await authLogic.resetPasswordForUser({
+            userId: req.body.userId,
+            adminId: req.user.id,
+        });
         res.status(200).json({ message: 'Password reset email sent successfully.', ...result });
     } catch (err) {
         res.status(400).json({ error: err.message });

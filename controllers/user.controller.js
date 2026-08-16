@@ -1,37 +1,9 @@
 const userLogic = require('../logic/user.logic');
 
-// DEPRECATED: User creation moved to /auth/admin/users/invite endpoint
-// Kept for backward compatibility - redirect traffic to auth endpoint
-// const addNewUser = async (req, res) => {
-//     try {
-//         const loggedInUserId = (req.user && req.user.id) || req.header('x-user-id');
-//         const result = await userLogic.addNewUser({ ...req.body, adminId: loggedInUserId });
-//         res.status(201).json(result);
-//     } catch (err) {
-//         res.status(400).json({ error: err.message });
-//     }
-// };
-const registerFirstUser = async (req, res) => {
-    try {
-        const result = await userLogic.registerFirstUser(req.body);
-        res.status(201).json(result);
-    } catch (err) {
-        res.status(400).json({ error: err.message });
-    }
-};
-
 const addNewUser = async (req, res) => {
     try {
-        // Use authenticated user id, or allow Postman/testing via x-user-id / Authorization header.
-        const authHeader = req.header('authorization') || '';
-        const bearerUserId = authHeader.toLowerCase().startsWith('token ')
-            ? authHeader.slice(6).trim()
-            : null;
-        const loggedInUserId =
-            (req.user && req.user.id) ||
-            req.header('x-user-id') ||
-            bearerUserId;
-        const result = await userLogic.addNewUser({ ...req.body, adminId: loggedInUserId });
+        // The acting admin is taken from the verified session, never the body/headers.
+        const result = await userLogic.addNewUser({ ...req.body, adminId: req.user.id });
         res.status(201).json(result);
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -77,4 +49,4 @@ const deleteUser = async (req, res) => {
     }
 };
 
-module.exports = { registerFirstUser, addNewUser, getAllUsers, getUserByEmail, updateUser, deleteUser };
+module.exports = { addNewUser, getAllUsers, getUserByEmail, updateUser, deleteUser };

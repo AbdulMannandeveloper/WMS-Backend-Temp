@@ -158,7 +158,9 @@ model Holiday {
 model EmployeeAttendanceLog {
   id              String    @id @default(uuid()) @db.Uuid
   userId          String    @map("user_id") @db.Uuid
-  loginTimestamp  DateTime  @map("login_timestamp") @db.Timestamptz(6)
+  // Nullable so admin-marked leave rows do not invent fake clock-ins.
+  // Status values used in practice: on-time | late | leave
+  loginTimestamp  DateTime? @map("login_timestamp") @db.Timestamptz(6)
   logoutTimestamp DateTime? @map("logout_timestamp") @db.Timestamptz(6)
   status          String    @db.VarChar(20)
   date            DateTime  @db.Date
@@ -174,7 +176,10 @@ model MonthlyAttendanceSummary {
   userId            String   @map("user_id") @db.Uuid
   monthYear         DateTime @map("month_year") @db.Date
   totalDaysPresent  Int      @default(0) @map("total_days_present")
+  totalOnTimeDays   Int      @default(0) @map("total_on_time_days")
   totalLateArrivals Int      @default(0) @map("total_late_arrivals")
+  totalLeaveDays    Int      @default(0) @map("total_leave_days")
+  totalHolidayDays  Int      @default(0) @map("total_holiday_days")
   totalHoursWorked  Decimal  @default(0) @map("total_hours_worked") @db.Decimal(8, 2)
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 

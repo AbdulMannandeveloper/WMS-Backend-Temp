@@ -1,5 +1,37 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const { authorizeRoles } = require('../middlewares/authorize');
+
+const buildAuthLimiter = () => {
+	const options = {
+		windowMs: 15 * 60 * 1000,
+		max: 10,
+		standardHeaders: true,
+		legacyHeaders: false,
+		message: { error: 'Too many attempts. Please try again later.' },
+	};
+
+	if (process.env.REDIS_URL) {
+		try {
+			const Redis = require('ioredis');
+			const { RedisStore } = require('rate-limit-redis');
+			const client = new Redis(process.env.REDIS_URL, {
+				maxRetriesPerRequest: 3,
+			});
+			options.store = new RedisStore({
+				sendCommand: (...args) => client.call(...args),
+				prefix: 'rl:auth:',
+			});
+			console.log('[RateLimit] Auth limiter using Redis store');
+		} catch (err) {
+			console.error('[RateLimit] Redis store unavailable, using memory:', err.message);
+		}
+	}
+
+	return rateLimit(options);
+};
+
+const authLimiter = buildAuthLimiter();
 
 const {
 	loginUser,
@@ -14,28 +46,18 @@ const {
 
 const router = express.Router();
 
-router.post('/login', loginUser);
-router.post('/verify-otp', verifyOTP);
+router.post('/login', authLimiter, loginUser);
+router.post('/verify-otp', authLimiter, verifyOTP);
 
-// US-001, US-002, US-003, US-005: First admin registration with invitation link
-router.post('/admin-signup/request-otp', requestAdminSignupOtp);
+router.post('/admin-signup/request-otp', authLimiter, requestAdminSignupOtp);
 
-// DEPRECATED: /admin-signup/verify-otp removed
-// First admin now uses /setup-password endpoint (same as other users)
-// router.post('/admin-signup/verify-otp', verifyAdminSignupOtp);
-
-// US-004, US-005: Admin invites employees, clients, or other admins
 router.post('/admin/users/invite', authorizeRoles('admin'), inviteUserByAdmin);
 
-// US-009: Self-service — user requests a fresh password reset link by email
-router.post('/forgot-password', forgotPassword);
+router.post('/forgot-password', authLimiter, forgotPassword);
 
-// US-005, US-009: Set password via invitation token (initial setup AND password reset)
 router.post('/setup-password', setupPasswordWithToken);
 router.get('/setup-password/preview', setupPasswordPreview);
 
-// US-008: Admin triggers a reset-password email for a specific user
-// US-009: User completes password reset via the secure link (reuses /setup-password)
 router.post('/admin/users/reset-password', authorizeRoles('admin'), resetPasswordForUser);
 
 module.exports = router;

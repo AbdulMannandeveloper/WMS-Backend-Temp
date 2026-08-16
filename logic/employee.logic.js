@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const userRepository = require('../repositories/user.repository');
 const employeeRepository = require('../repositories/employee.repository');
 const invitationTokenRepository = require('../repositories/invitation-token.repository');
-const { sendMail } = require('../utils/mailer');
+const { enqueueMail } = require('../utils/mailQueue');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
 
 const INVITE_EXPIRY_HOURS = Number(process.env.INVITE_EXPIRY_HOURS || 24);
@@ -96,19 +96,12 @@ const addEmployee = async ({ adminId, firstName, lastName, email }) => {
     const setupUrl = `${APP_BASE_URL}/setup-password?token=${plainToken}`;
     const emailContent = inviteEmailTemplate({ setupUrl, expiresHours: INVITE_EXPIRY_HOURS });
 
-    const sent = await sendMail({
+    enqueueMail({
       to: email,
       subject: emailContent.subject,
       html: emailContent.html,
       text: emailContent.text,
     });
-
-    if (!sent) {
-      // Atomic rollback: remove employee and user records if email fails
-      await employeeRepository.deleteEmployee(newEmployee.id).catch(() => null);
-      await userRepository.deleteUser(newUser.id).catch(() => null);
-      throw new Error('Failed to send invitation email. Employee creation rolled back.');
-    }
 
     return {
       userId: newUser.id,

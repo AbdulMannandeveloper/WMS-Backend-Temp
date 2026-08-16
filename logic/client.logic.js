@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const userRepository = require('../repositories/user.repository');
 const clientRepository = require('../repositories/client.repository');
 const invitationTokenRepository = require('../repositories/invitation-token.repository');
-const { sendMail } = require('../utils/mailer');
+const { enqueueMail } = require('../utils/mailQueue');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
 
 const INVITE_EXPIRY_HOURS = Number(process.env.INVITE_EXPIRY_HOURS || 24);
@@ -101,19 +101,12 @@ const addClient = async ({ adminId, companyName, contactName, email, mobile, pho
     const setupUrl = `${APP_BASE_URL}/setup-password?token=${plainToken}`;
     const emailContent = inviteEmailTemplate({ setupUrl, expiresHours: INVITE_EXPIRY_HOURS });
 
-    const sent = await sendMail({
+    enqueueMail({
       to: email,
       subject: emailContent.subject,
       html: emailContent.html,
       text: emailContent.text,
     });
-
-    if (!sent) {
-      // Roll back user and client records if email fails
-      await clientRepository.deleteClient(newClient.id).catch(() => null);
-      await userRepository.deleteUser(newUser.id).catch(() => null);
-      throw new Error('Failed to send invitation email. Client creation rolled back.');
-    }
 
     return {
       userId: newUser.id,

@@ -2,6 +2,17 @@ const prodcutRepository = require("../repositories/product.repository");
 const clientRepository = require("../repositories/client.repository");
 const stockLevelRepository = require("../repositories/stock_level.repository");
 const auditLogLogic = require("./audit_log.logic");
+const { assertAllowedField } = require("../utils/pick");
+
+const PRODUCT_QUERY_FIELDS = [
+  "id",
+  "skuCode",
+  "barcode",
+  "productName",
+  "clientId",
+  "colour",
+  "size",
+];
 
 const addNewProduct = async (productData, adminUserId) => {
   if (!productData.productName || !productData.clientId || !productData.skuCode) {
@@ -65,6 +76,7 @@ const getProductByClientId = async (clientId) => {
 const getProductByField = async (field, value) => {
   // If querying by name, translate it to the database schema field 'productName'
   const queryField = field === "name" ? "productName" : field;
+  assertAllowedField(queryField, PRODUCT_QUERY_FIELDS);
   return await prodcutRepository.getProductsByField(queryField, value);
 };
 

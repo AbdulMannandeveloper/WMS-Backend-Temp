@@ -1,8 +1,23 @@
 const stockLevelLogic = require("../logic/stock_level.logic");
+const { pick } = require("../utils/pick");
+const { parsePagination, paginatedResponse } = require("../utils/pagination");
+
+const STOCK_CREATE_FIELDS = [
+  "productId",
+  "locationId",
+  "currentQuantity",
+  "reservedQuantity",
+  "arrivedTodayQuantity",
+];
+const STOCK_UPDATE_FIELDS = [
+  "currentQuantity",
+  "reservedQuantity",
+  "arrivedTodayQuantity",
+];
 
 const createStockLevel = async (req, res) => {
   try {
-    const stockLevelData = req.body;
+    const stockLevelData = pick(req.body, STOCK_CREATE_FIELDS);
     const stockLevel = await stockLevelLogic.createStockLevel(stockLevelData);
     res.status(201).json(stockLevel);
   } catch (error) {
@@ -25,8 +40,14 @@ const createStockLevel = async (req, res) => {
 
 const getAllStockLevels = async (req, res) => {
   try {
-    const stockLevels = await stockLevelLogic.getAllStockLevels();
-    res.status(200).json(stockLevels);
+    const pagination = parsePagination(req.query);
+    const result = await stockLevelLogic.getAllStockLevels(pagination);
+    if (result && result.items) {
+      return res.status(200).json(
+        paginatedResponse(result.items, result.total, pagination),
+      );
+    }
+    res.status(200).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -80,7 +101,7 @@ const getStockLevelByLocationId = async (req, res) => {
 const updateStockLevel = async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    const updateData = pick(req.body, STOCK_UPDATE_FIELDS);
     const stockLevel = await stockLevelLogic.updateStockLevel(id, updateData);
     if (!stockLevel) {
       return res.status(404).json({ error: "Stock level not found." });
@@ -97,7 +118,7 @@ const updateStockLevel = async (req, res) => {
 const updateStockLevelByProductAndLocation = async (req, res) => {
   try {
     const { productId, locationId } = req.params;
-    const updateData = req.body;
+    const updateData = pick(req.body, STOCK_UPDATE_FIELDS);
     const stockLevel =
       await stockLevelLogic.updateStockLevelByProductAndLocation(
         productId,

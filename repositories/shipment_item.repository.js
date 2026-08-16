@@ -1,26 +1,26 @@
 const { prisma } = require('../lib/prisma');
 
-const prismaShipmentItem = prisma.shipmentItem;
+const db = (tx) => tx || prisma;
 
-const createShipmentItem = async (data) => {
-  return await prismaShipmentItem.create({ data });
+const createShipmentItem = async (data, tx) => {
+  return await db(tx).shipmentItem.create({ data });
 };
 
-const getShipmentItemsByField = async (field, value) => {
-  return await prismaShipmentItem.findMany({
+const getShipmentItemsByField = async (field, value, tx) => {
+  return await db(tx).shipmentItem.findMany({
     where: { [field]: value },
   });
 };
 
-const updateShipmentItem = async (id, data) => {
-  return await prismaShipmentItem.update({
+const updateShipmentItem = async (id, data, tx) => {
+  return await db(tx).shipmentItem.update({
     where: { id },
     data,
   });
 };
 
-const deleteShipmentItem = async (id) => {
-  return await prismaShipmentItem.delete({
+const deleteShipmentItem = async (id, tx) => {
+  return await db(tx).shipmentItem.delete({
     where: { id },
   });
 };

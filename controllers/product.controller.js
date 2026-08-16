@@ -1,9 +1,22 @@
 const productLogic = require("../logic/product.logic");
+const { pick } = require("../utils/pick");
+
+const PRODUCT_FIELDS = [
+  "clientId",
+  "skuCode",
+  "barcode",
+  "productName",
+  "colour",
+  "size",
+  "weight",
+  "thresholdLimit",
+  "isDeactivated",
+];
 
 const createProduct = async (req, res) => {
   try {
-    const productData = req.body;
-    const adminUserId = req.header("x-user-id") || (req.user && req.user.id);
+    const productData = pick(req.body, PRODUCT_FIELDS);
+    const adminUserId = req.user.id;
     const product = await productLogic.addNewProduct(productData, adminUserId);
     res.status(201).json(product);
   } catch (error) {
@@ -49,8 +62,8 @@ const getProductByField = async (req, res) => {
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
-    const adminUserId = req.header("x-user-id") || (req.user && req.user.id);
+    const updateData = pick(req.body, PRODUCT_FIELDS);
+    const adminUserId = req.user.id;
     const product = await productLogic.updateProduct(id, updateData, adminUserId);
     if (!product) {
       return res.status(404).json({ error: "Product not found." });
@@ -79,12 +92,30 @@ const deactivateProduct = async (req, res) => {
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const adminUserId = req.header("x-user-id") || (req.user && req.user.id);
+    const adminUserId = req.user.id;
     const product = await productLogic.deleteProduct(id, adminUserId);
     if (!product) {
       return res.status(404).json({ error: "Product not found." });
     }
     res.status(200).json({ message: "Product deleted successfully." });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Employee-accessible barcode lookup for the mobile check-in flow.
+// Falls back to SKU code so manually typed SKUs also resolve.
+const lookupProductByBarcode = async (req, res) => {
+  try {
+    const { value } = req.params;
+    let products = await productLogic.getProductByBarcode(value);
+    if (!products || products.length === 0) {
+      products = await productLogic.getProductBySkuCode(value);
+    }
+    if (!products || products.length === 0) {
+      return res.status(404).json({ error: "No product matches this barcode or SKU." });
+    }
+    res.status(200).json(products[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -108,5 +139,6 @@ module.exports = {
   updateProduct,
   deactivateProduct,
   deleteProduct,
+  lookupProductByBarcode,
   getProductandStockLevelById
 };

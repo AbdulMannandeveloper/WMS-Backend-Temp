@@ -6,6 +6,9 @@ const router = express.Router();
 // Specific named routes MUST come before wildcard /:field/:value
 // US-068/069: Admin-triggered archive: archive monthly summaries + purge logs older than 2 months
 router.post("/archive-and-cleanup", authorizeRoles("admin"), attendanceController.archiveAndCleanup);
+router.post("/mark-leave", authorizeRoles("admin"), attendanceController.markLeave);
+router.post("/unmark-leave", authorizeRoles("admin"), attendanceController.unmarkLeave);
+router.get("/analytics/:userId", authorizeRoles("admin"), attendanceController.getEmployeeAttendanceAnalytics);
 
 router.post("/", authorizeRoles("admin", "employee"), attendanceController.createAttendanceLog);
 router.get("/", authorizeRoles("admin"), attendanceController.getAllAttendanceLogs);

@@ -3,7 +3,7 @@ const clientLogic = require('../logic/client.logic');
 // US-010 & US-011: Admin adds a new client; email is sent automatically
 const addClient = async (req, res) => {
   try {
-    const result = await clientLogic.addClient(req.body);
+    const result = await clientLogic.addClient({ ...req.body, adminId: req.user.id });
     res.status(201).json({
       message: 'Client added successfully. An invitation email has been sent.',
       ...result,

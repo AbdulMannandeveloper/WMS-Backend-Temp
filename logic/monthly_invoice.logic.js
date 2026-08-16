@@ -2,7 +2,7 @@ const monthlyInvoiceRepository = require("../repositories/monthly_invoice.reposi
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 
 const clientLogic = require("./client.logic");
-const { sendMail } = require("../utils/mailer");
+const { enqueueMail } = require("../utils/mailQueue");
 const { invoiceApprovedEmailTemplate } = require("../utils/emailTemplates");
 
 const APP_BASE_URL = process.env.APP_BASE_URL || "https://myapp.com";
@@ -120,7 +120,7 @@ const approveMonthlyInvoice = async (id) => {
         totalAmount: existingInvoice.totalAmount,
         portalUrl,
       });
-      await sendMail({
+      enqueueMail({
         to: clientEmail,
         subject: emailContent.subject,
         html: emailContent.html,
@@ -129,7 +129,7 @@ const approveMonthlyInvoice = async (id) => {
     }
   } catch (emailError) {
     // Email failure should NOT roll back the approval — log and continue
-    console.error("Invoice approval email failed to send:", emailError.message);
+    console.error("Invoice approval email failed to queue:", emailError.message);
   }
 
   return approvedInvoice;
