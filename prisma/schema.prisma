@@ -378,6 +378,13 @@ model MonthlyInvoice {
   updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
   approvedAt    DateTime?     @map("approved_at") @db.Timestamptz(6)
 
+  // Set together when the invoice is marked paid. Method and reference are what
+  // a payment query gets answered from, so they are worth capturing at the time
+  // rather than reconstructing from a bank statement later.
+  paidAt           DateTime? @map("paid_at") @db.Timestamptz(6)
+  paymentMethod    String?   @map("payment_method") @db.VarChar(40)
+  paymentReference String?   @map("payment_reference") @db.VarChar(120)
+
   client    Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
   lineItems InvoiceLineItem[]
 

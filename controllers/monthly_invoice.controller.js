@@ -7,6 +7,9 @@ const { pick } = require("../utils/pick");
 // items. status is absent too — it moves through the approval workflow only.
 const INVOICE_UPDATE_FIELDS = ["billingPeriod", "pdfLink"];
 
+// paidAt is stamped server-side; only the human-supplied details come from the body.
+const PAYMENT_FIELDS = ["paymentMethod", "paymentReference"];
+
 const getAllMonthlyInvoices = async (req, res) => {
   try {
     const invoices = await monthlyInvoiceLogic.getAllMonthlyInvoices();
@@ -70,7 +73,23 @@ const updateMonthlyInvoice = async (req, res) => {
 
 const approveMonthlyInvoice = async (req, res) => {
   try {
-    const invoice = await monthlyInvoiceLogic.approveMonthlyInvoice(req.params.id);
+    const invoice = await monthlyInvoiceLogic.approveMonthlyInvoice(
+      req.params.id,
+      req.user.id,
+    );
+    res.status(200).json(invoice);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+const markMonthlyInvoicePaid = async (req, res) => {
+  try {
+    const invoice = await monthlyInvoiceLogic.markMonthlyInvoicePaid(
+      req.params.id,
+      pick(req.body, PAYMENT_FIELDS),
+      req.user.id,
+    );
     res.status(200).json(invoice);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -79,7 +98,7 @@ const approveMonthlyInvoice = async (req, res) => {
 
 const deleteMonthlyInvoice = async (req, res) => {
   try {
-    await monthlyInvoiceLogic.deleteMonthlyInvoice(req.params.id);
+    await monthlyInvoiceLogic.deleteMonthlyInvoice(req.params.id, req.user.id);
     res.status(200).json({ message: "Invoice deleted successfully." });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -134,6 +153,7 @@ module.exports = {
   createMonthlyInvoice,
   updateMonthlyInvoice,
   approveMonthlyInvoice,
+  markMonthlyInvoicePaid,
   deleteMonthlyInvoice,
   getLineItemsForInvoice,
   createLineItem,

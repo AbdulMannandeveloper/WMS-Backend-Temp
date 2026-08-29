@@ -6,7 +6,48 @@ const { firstOfMonthUtc } = require("../utils/dates");
 const { enqueueMail } = require("../utils/mailQueue");
 const { invoiceApprovedEmailTemplate } = require("../utils/emailTemplates");
 
+const auditLogLogic = require("./audit_log.logic");
+
 const APP_BASE_URL = process.env.APP_BASE_URL || "https://myapp.com";
+
+/**
+ * The invoice lifecycle, stated in one place the way SHIPMENT_TRANSITIONS is in
+ * shipment.logic.js.
+ *
+ * PAID is terminal. Everything past DRAFT is a document the client has already
+ * been sent, so it is credited rather than edited or deleted.
+ */
+const INVOICE_TRANSITIONS = {
+  DRAFT: ["APPROVED"],
+  APPROVED: ["PAID"],
+  PAID: [],
+};
+
+/** Only a DRAFT invoice accepts line-item changes or deletion. */
+const isEditable = (status) => status === "DRAFT";
+
+const assertTransition = (from, to) => {
+  const allowed = INVOICE_TRANSITIONS[from];
+  if (!allowed) {
+    throw new Error(`Invoice has an unrecognised status: ${from}.`);
+  }
+  if (!allowed.includes(to)) {
+    const options = allowed.length
+      ? allowed.join(", ")
+      : "nothing — it is a final state";
+    throw new Error(
+      `A ${from} invoice cannot become ${to}. Allowed from ${from}: ${options}.`,
+    );
+  }
+};
+
+/** Audit failures must never roll back the operation they describe. */
+const audit = (actorUserId, action, details) => {
+  if (!actorUserId) return Promise.resolve(null);
+  return auditLogLogic
+    .createAuditLog(actorUserId, action, details)
+    .catch((err) => console.error(`Audit log error (${action}):`, err.message));
+};
 
 const createMonthlyInvoice = async (data) => {
   // Check for required fields
@@ -92,21 +133,26 @@ const updateMonthlyInvoice = async (id, data) => {
   return await monthlyInvoiceRepository.updateMonthlyInvoice(id, data);
 };
 
-const approveMonthlyInvoice = async (id) => {
+const approveMonthlyInvoice = async (id, actorUserId) => {
   const existingInvoice =
     await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
   if (!existingInvoice) {
     throw new Error("Monthly invoice not found.");
   }
-  if (existingInvoice.status !== "DRAFT") {
-    throw new Error("Only invoices in DRAFT status can be approved.");
-  }
+  assertTransition(existingInvoice.status, "APPROVED");
 
   const updateData = { status: "APPROVED", approvedAt: new Date() };
 
   // Call the repository directly — bypasses the updateMonthlyInvoice guard
   // that blocks direct status changes from external callers.
   const approvedInvoice = await monthlyInvoiceRepository.updateMonthlyInvoice(id, updateData);
+
+  await audit(actorUserId, "INVOICE_APPROVED", {
+    invoiceId: id,
+    clientId: existingInvoice.clientId,
+    totalAmount: Number(existingInvoice.totalAmount),
+    lineItemCount: existingInvoice.lineItems?.length ?? 0,
+  });
 
   // US-090: Email the client to notify them their invoice is ready to view
   try {
@@ -138,8 +184,60 @@ const approveMonthlyInvoice = async (id) => {
   return approvedInvoice;
 };
 
-const deleteMonthlyInvoice = async (id) => {
-  return await monthlyInvoiceRepository.deleteMonthlyInvoice(id);
+/**
+ * Deletes a draft invoice. Refused once approved — that document has been sent
+ * to the client, and the line items reference real dispatched work. The same
+ * reasoning as refusing to delete a dispatched shipment.
+ */
+const deleteMonthlyInvoice = async (id, actorUserId) => {
+  const existing = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+  if (!existing) {
+    throw new Error("Monthly invoice not found.");
+  }
+  if (!isEditable(existing.status)) {
+    throw new Error(
+      `A ${existing.status} invoice cannot be deleted. Raise a credit against it instead.`,
+    );
+  }
+
+  const deleted = await monthlyInvoiceRepository.deleteMonthlyInvoice(id);
+
+  await audit(actorUserId, "INVOICE_DELETED", {
+    invoiceId: id,
+    clientId: existing.clientId,
+    totalAmount: Number(existing.totalAmount),
+  });
+
+  return deleted;
+};
+
+/**
+ * APPROVED -> PAID. Records when the money arrived and against what, because
+ * that is the first thing anyone asks when a payment is queried.
+ */
+const markMonthlyInvoicePaid = async (id, { paymentMethod, paymentReference } = {}, actorUserId) => {
+  const existing = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+  if (!existing) {
+    throw new Error("Monthly invoice not found.");
+  }
+  assertTransition(existing.status, "PAID");
+
+  const paid = await monthlyInvoiceRepository.updateMonthlyInvoice(id, {
+    status: "PAID",
+    paidAt: new Date(),
+    paymentMethod: paymentMethod || null,
+    paymentReference: paymentReference || null,
+  });
+
+  await audit(actorUserId, "INVOICE_PAID", {
+    invoiceId: id,
+    clientId: existing.clientId,
+    totalAmount: Number(existing.totalAmount),
+    paymentMethod: paymentMethod || null,
+    paymentReference: paymentReference || null,
+  });
+
+  return paid;
 };
 
 module.exports = {
@@ -150,5 +248,10 @@ module.exports = {
   getMonthlyInvoiceByField,
   updateMonthlyInvoice,
   approveMonthlyInvoice,
+  markMonthlyInvoicePaid,
   deleteMonthlyInvoice,
+  // Shared with the line-item logic, which enforces the same DRAFT-only rule.
+  INVOICE_TRANSITIONS,
+  isEditable,
+  assertTransition,
 };

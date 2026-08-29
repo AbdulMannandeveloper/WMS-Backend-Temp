@@ -2,6 +2,18 @@ const { prisma } = require("../lib/prisma");
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
 
+// Only a DRAFT invoice accepts line-item changes. Checked inside the transaction
+// that already wraps every mutation here, so the status cannot change underneath
+// it. The admin UI has always gated on this; the API never did, which meant a
+// charge could be added to an invoice the client had already approved.
+const assertInvoiceEditable = (invoice) => {
+  if (invoice.status !== "DRAFT") {
+    throw new Error(
+      `This invoice is ${invoice.status} and can no longer be changed. Raise a credit or a new charge against a draft instead.`,
+    );
+  }
+};
+
 /**
  * Line items own the invoice total.
  *
@@ -63,6 +75,7 @@ const createInvoiceLineItem = async (data, options = {}) => {
     if (!monthlyInvoice) {
       throw new Error("Monthly invoice not found.");
     }
+    assertInvoiceEditable(monthlyInvoice);
 
     const invoiceLineItem =
       await invoiceLineItemRepository.createInvoiceLineItem(data, tx);
@@ -92,6 +105,12 @@ const updateInvoiceLineItem = async (id, data, options = {}) => {
       throw new Error("Invoice line item not found.");
     }
 
+    const parent = await monthlyInvoiceRepository.getMonthlyInvoiceById(
+      item.invoiceId,
+      tx,
+    );
+    assertInvoiceEditable(parent);
+
     const updated = await invoiceLineItemRepository.updateInvoiceLineItem(
       id,
       data,
@@ -116,6 +135,12 @@ const deleteInvoiceLineItem = async (id, options = {}) => {
     if (!item) {
       throw new Error("Invoice line item not found.");
     }
+
+    const parent = await monthlyInvoiceRepository.getMonthlyInvoiceById(
+      item.invoiceId,
+      tx,
+    );
+    assertInvoiceEditable(parent);
 
     const deleted = await invoiceLineItemRepository.deleteInvoiceLineItem(id, tx);
 
