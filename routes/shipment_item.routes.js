@@ -5,12 +5,18 @@ const router = express.Router();
 
 const { authorizeRoles } = require("../middlewares/authorize");
 
-// Apply authorization middleware to all shipment item routes
-router.use(authorizeRoles("admin", "employee")); // Only admin and employee can access shipment item routes
+// Picking is warehouse work: admin and employee both do it.
+const staffOnly = authorizeRoles("admin", "employee");
+const adminOnly = authorizeRoles("admin");
 
-// Only update route is open for now, as shipment items are created through the shipment creation process
-router.put("/:id", shimpentItemController.updateShipmentItem);
+// Pick / unpick. Separate endpoints rather than a status field on the generic
+// update, so the transition can be guarded against the parent shipment's state.
+router.put("/:id/pick", staffOnly, shimpentItemController.pickShipmentItem);
+router.put("/:id/unpick", staffOnly, shimpentItemController.unpickShipmentItem);
 
+// Quantity, source location and tracking id. Admin-only, matching the shipment
+// itself — changing what is going out is a commercial decision.
+router.put("/:id", adminOnly, shimpentItemController.updateShipmentItem);
 
 // -----------------------------NOT EXPOSED FOR NOW-----------------------------
 // router.post('/', shimpentItemController.createShipmentItem);

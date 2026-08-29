@@ -11,11 +11,13 @@ const SHIPMENT_CREATE_FIELDS = [
   "shipmentItems",
   "shipmentServices",
 ];
+// status is deliberately absent — it moves only through the transition
+// endpoints below, which enforce the state machine. Admin-only at the route.
 const SHIPMENT_UPDATE_FIELDS = [
   "shipmentType",
-  "status",
   "packagingType",
   "courierName",
+  "trackingId",
 ];
 
 const createShipment = async (req, res) => {
@@ -31,8 +33,45 @@ const createShipment = async (req, res) => {
 const dispatchShipment = async (req, res) => {
   try {
     const { shipmentId } = req.params;
-    await shipmentLogic.dispatchShipment(shipmentId);
+    await shipmentLogic.dispatchShipment(shipmentId, req.user.id);
     res.status(200).json({ message: "Shipment dispatched successfully." });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+const markShipmentReady = async (req, res) => {
+  try {
+    const shipment = await shipmentLogic.markShipmentReady(
+      req.params.id,
+      req.user.id,
+    );
+    res.status(200).json(shipment);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+const reopenShipment = async (req, res) => {
+  try {
+    const shipment = await shipmentLogic.reopenShipment(
+      req.params.id,
+      req.user.id,
+    );
+    res.status(200).json(shipment);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+const cancelShipment = async (req, res) => {
+  try {
+    const shipment = await shipmentLogic.cancelShipment(
+      req.params.id,
+      req.user.id,
+      req.body?.reason,
+    );
+    res.status(200).json(shipment);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -68,6 +107,7 @@ const updateShipment = async (req, res) => {
     const updatedShipment = await shipmentLogic.updateShipment(
       id,
       shipmentData,
+      req.user.id,
     );
     res.status(200).json(updatedShipment);
   } catch (error) {
@@ -78,7 +118,7 @@ const updateShipment = async (req, res) => {
 const deleteShipment = async (req, res) => {
   try {
     const { id } = req.params;
-    await shipmentLogic.deleteShipment(id);
+    await shipmentLogic.deleteShipment(id, req.user.id);
     res.status(200).json({ message: "Shipment deleted successfully." });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -100,6 +140,9 @@ module.exports = {
   getShipmentByField,
   getShipmentsByClientId,
   dispatchShipment,
+  markShipmentReady,
+  reopenShipment,
+  cancelShipment,
   updateShipment,
   deleteShipment,
 };

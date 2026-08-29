@@ -38,6 +38,30 @@ const updateShipmentItem = async (req, res) => {
   }
 };
 
+const pickShipmentItem = async (req, res) => {
+  try {
+    const item = await shipmentItemLogic.pickShipmentItem(
+      req.params.id,
+      req.user.id,
+    );
+    res.status(200).json(item);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+const unpickShipmentItem = async (req, res) => {
+  try {
+    const item = await shipmentItemLogic.unpickShipmentItem(
+      req.params.id,
+      req.user.id,
+    );
+    res.status(200).json(item);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
 const deleteShipmentItem = async (req, res) => {
   try {
     const { id } = req.params;
@@ -52,5 +76,7 @@ module.exports = {
   createShipmentItem,
   getShipmentItemsByField,
   updateShipmentItem,
+  pickShipmentItem,
+  unpickShipmentItem,
   deleteShipmentItem,
 };

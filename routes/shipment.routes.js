@@ -5,15 +5,28 @@ const router = express.Router();
 
 const { authorizeRoles } = require('../middlewares/authorize');
 
-// Apply authorization middleware to all shipment routes
-router.use(authorizeRoles('admin', 'employee')); // Only admin and employee can access shipment routes
+// Employees run the warehouse sequence — read, create, pick, mark ready,
+// dispatch. Only an admin changes what a shipment *is* (client, courier, type,
+// tracking id) or removes it.
+const staffOnly = authorizeRoles('admin', 'employee');
+const adminOnly = authorizeRoles('admin');
 
-router.get('/', shipmentController.getAllShipments);
-router.post('/',  shipmentController.createShipment);
-router.get('/field/:field/:value', shipmentController.getShipmentByField);
-router.get('/client/:clientId', shipmentController.getShipmentsByClientId);
-router.put('/:id', shipmentController.updateShipment);
-router.delete('/:id', shipmentController.deleteShipment);
-router.post('/:shipmentId/dispatch', shipmentController.dispatchShipment);
+// Reads
+router.get('/', staffOnly, shipmentController.getAllShipments);
+router.get('/field/:field/:value', staffOnly, shipmentController.getShipmentByField);
+router.get('/client/:clientId', staffOnly, shipmentController.getShipmentsByClientId);
+
+router.post('/', staffOnly, shipmentController.createShipment);
+
+// Lifecycle transitions. Each one guards the move against the state machine in
+// logic/shipment.logic.js — status is not settable through PUT.
+router.post('/:id/ready', staffOnly, shipmentController.markShipmentReady);
+router.post('/:shipmentId/dispatch', staffOnly, shipmentController.dispatchShipment);
+router.post('/:id/cancel', adminOnly, shipmentController.cancelShipment);
+router.post('/:id/reopen', adminOnly, shipmentController.reopenShipment);
+
+// Commercial / identity details, and removal
+router.put('/:id', adminOnly, shipmentController.updateShipment);
+router.delete('/:id', adminOnly, shipmentController.deleteShipment);
 
 module.exports = router;

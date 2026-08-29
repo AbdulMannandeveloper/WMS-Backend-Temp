@@ -99,9 +99,12 @@ model Shipment {
   employeeId    String         @map("employee_id") @db.Uuid
   clientId      String         @map("client_id") @db.Uuid
   shipmentType  String         @map("shipment_type") @db.VarChar(30)
-  status        String         @default("PENDING")
+  status        ShipmentStatus @default(PENDING)
   packagingType String         @map("packaging_type") @db.VarChar(30)
   courierName   String         @map("courier_name") @db.VarChar(120)
+  // Courier consignment number. Nullable, and no fixed length: couriers differ,
+  // and an item may carry its own (see ShipmentItem.trackingId), which wins.
+  trackingId    String?        @map("tracking_id") @db.VarChar(64)
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   // Relations
   employee      Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
@@ -110,6 +113,7 @@ model Shipment {
 
   @@index([employeeId, createdAt], map: "idx_shipments_employee_created_at")
   @@index([clientId, createdAt], map: "idx_shipments_client_created_at")
+  @@index([trackingId], map: "idx_shipments_tracking_id")
   @@map("shipments")
 }
 
@@ -280,13 +284,18 @@ model ShipmentItem {
   productId        String          @map("product_id") @db.Uuid
   sourceLocationId String          @map("source_location_id") @db.Uuid // Where it's reserved from
   quantity         Int
-  status           String          @default("PENDING")// Is it "PENDING", "PICKED" or "PACKED"
+  status           ShipmentItemStatus @default(PENDING)
+  // Set when this line ships under its own consignment number, e.g. an oversized
+  // piece travelling separately. Falls back to the shipment's when null.
+  trackingId       String?         @map("tracking_id") @db.VarChar(64)
 
   // Relations
   shipment       Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
   product        Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
   sourceLocation WarehouseLocation @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
 
+  @@index([shipmentId], map: "idx_shipment_items_shipment_id")
+  @@index([trackingId], map: "idx_shipment_items_tracking_id")
   @@map("shipment_items")
 }
 
@@ -416,6 +425,20 @@ enum UserRole {
   admin
   employee
   client
+}
+
+// Transitions are enforced in logic/shipment.logic.js — the enum only bounds the
+// vocabulary, it does not say which hops are legal.
+enum ShipmentStatus {
+  PENDING
+  READY_FOR_DISPATCH
+  DISPATCHED
+  CANCELLED
+}
+
+enum ShipmentItemStatus {
+  PENDING
+  PICKED
 }
 
 enum InventoryMovementType {
