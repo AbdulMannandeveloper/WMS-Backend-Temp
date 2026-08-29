@@ -1,4 +1,5 @@
 const shipmentController = require('../controllers/shipment.controller');
+const shipmentServiceController = require('../controllers/shipment_service.controller');
 
 const express = require('express');
 const router = express.Router();
@@ -24,6 +25,12 @@ router.post('/:id/ready', staffOnly, shipmentController.markShipmentReady);
 router.post('/:shipmentId/dispatch', staffOnly, shipmentController.dispatchShipment);
 router.post('/:id/cancel', adminOnly, shipmentController.cancelShipment);
 router.post('/:id/reopen', adminOnly, shipmentController.reopenShipment);
+
+// Billable services on a shipment. Staff may see what will be charged; only an
+// admin changes it, and only while the shipment is still PENDING.
+router.get('/:id/services', staffOnly, shipmentServiceController.listShipmentServices);
+router.post('/:id/services', adminOnly, shipmentServiceController.addShipmentService);
+router.delete('/:id/services/:mappingId', adminOnly, shipmentServiceController.removeShipmentService);
 
 // Commercial / identity details, and removal
 router.put('/:id', adminOnly, shipmentController.updateShipment);

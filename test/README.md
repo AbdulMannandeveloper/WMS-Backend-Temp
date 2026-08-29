@@ -49,8 +49,8 @@ then point `.env.test` at `postgres://propackers:propackers@localhost:5433/propa
 | `helpers/auth.js` | `as(user)` — a supertest agent carrying that user's token |
 | `factories/` | Fixture builders, including `makeWarehouseScenario()` |
 | `smoke.test.js` | Proves the rig works |
-| `billing/` | Invoice total regression suite (chunk 1.1) |
-| `known-bugs/` | See below |
+| `billing/` | Invoice totals |
+| `shipments/` | Creation, lifecycle, services, dispatch |
 
 ## Writing a test
 
@@ -75,24 +75,29 @@ tests never have to drive the password + OTP flow.
 Tests run **sequentially in a single worker**. They share one database and
 truncate between each, so parallel workers would wipe each other's fixtures.
 
-## `known-bugs/`
+## Phase 1 regression suites
 
-Three defects found during the codebase review, written as tests **before** the
-fixes. They use Vitest's `it.fails`, which passes only while the body throws.
+Three defects found in the original codebase review were written as tests
+**before** their fixes, using Vitest's `it.fails` — which passes only while the
+body throws. CI stayed green while the bugs were open, and each test started
+failing the moment its bug was fixed, forcing whoever fixed it to drop `.fails`
+and keep the test. The red-to-green handoff enforced itself.
 
-That means CI stays green today, and the moment the underlying bug is fixed the
-test **starts failing** — which is the signal to delete `.fails` and keep it as
-a permanent regression test. The red-to-green handoff enforces itself.
+All three have now graduated out of `known-bugs/`, and the directory is gone:
 
-| File | Bug | Fixed by |
+| Suite | Bug it guards against | Fixed in |
 |---|---|---|
-| `dispatch.test.js` | Dispatch always 400s — `prisma.shipmentServiceMapping` does not exist | Chunk 1.3 |
-| `shipment-status.test.js` | Status machine is browser-only; an employee can force `DISPATCHED`, or set `BANANA` | Chunk 1.2 |
+| `billing/invoice-total.test.js` | Totals string-concatenated: a £100 invoice plus £50 became £10,050 | 1.1 |
+| `shipments/status.test.js` | State machine was browser-only; an employee could force `DISPATCHED`, or set `BANANA` | 1.2 |
+| `shipments/dispatch.test.js` | Dispatch always 400d — `prisma.shipmentServiceMapping` had no model or table | 1.3 |
 
-**Do not "fix" a failing `known-bugs` test by loosening its assertions.** The
-assertions describe the behaviour the fix must produce.
+`shipments/create.test.js` and `shipments/services.test.js` cover two further
+bugs found while fixing those: a circular import that broke shipment creation
+outright, and a non-transactional create that stranded reserved stock against
+shipments the caller was told had failed.
 
-Graduated: `invoice-total.test.js` moved to `billing/` when chunk 1.1 landed.
+**Do not make a failing regression test pass by loosening its assertions.** They
+describe behaviour that was paid for once already.
 
 ## Money
 

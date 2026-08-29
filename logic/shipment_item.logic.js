@@ -13,7 +13,13 @@ const productLogic = require("./product.logic");
 const stockLevelLogic = require("./stock_level.logic");
 const auditLogLogic = require("./audit_log.logic");
 
-const createShipmentItem = async (data) => {
+/**
+ * Adds a line to a shipment and reserves its stock.
+ *
+ * Pass `{ tx }` to join an outer transaction — createShipment does, so that a
+ * shipment and all of its lines commit or roll back together.
+ */
+const createShipmentItem = async (data, options = {}) => {
   if (
     !data.shipmentId ||
     !data.productId ||
@@ -23,36 +29,36 @@ const createShipmentItem = async (data) => {
     throw new Error("Missing required fields");
   }
 
-  const shipment = await shipmentRepository.getShipmentByField(
-    "id",
-    data.shipmentId,
-  );
-  const product = await productLogic.getProductById(data.productId);
-  const sourceStock = await stockLevelLogic.getStockLevelByProductAndLocation(
-    data.productId,
-    data.sourceLocationId,
-  );
+  const run = async (tx) => {
+    const shipment = await shipmentRepository.getShipmentByField(
+      "id",
+      data.shipmentId,
+      tx,
+    );
+    const product = await productLogic.getProductById(data.productId);
+    const sourceStock = await stockLevelRepository.getStockLevelByProductAndLocation(
+      data.productId,
+      data.sourceLocationId,
+      tx,
+    );
 
-  if (!shipment) {
-    throw new Error("Shipment not found");
-  }
-  if (!product) {
-    throw new Error("Product not found");
-  }
-  if (!sourceStock) {
-    throw new Error("Source stock not found");
-  }
+    if (!shipment) {
+      throw new Error("Shipment not found");
+    }
+    if (!product) {
+      throw new Error("Product not found");
+    }
+    if (!sourceStock) {
+      throw new Error("Source stock not found");
+    }
 
-  if (product.isDeactivated) {
-    throw new Error("Cannot add a deactivated product to a shipment.");
-  }
+    if (product.isDeactivated) {
+      throw new Error("Cannot add a deactivated product to a shipment.");
+    }
 
-  if (!data.status) {
-    data.status = "PENDING";
-  }
+    const status = data.status || "PENDING";
 
-  return prisma.$transaction(async (tx) => {
-    if (data.status === "PENDING") {
+    if (status === "PENDING") {
       const reserved = await stockLevelRepository.reserveStockAtomically(
         sourceStock.id,
         data.quantity,
@@ -66,8 +72,18 @@ const createShipmentItem = async (data) => {
         );
       }
     }
-    return await shipmentItemRepository.createShipmentItem(data, tx);
-  }, {
+
+    return await shipmentItemRepository.createShipmentItem(
+      { ...data, status },
+      tx,
+    );
+  };
+
+  if (options.tx) {
+    return run(options.tx);
+  }
+
+  return prisma.$transaction(run, {
     maxWait: 10_000,
     timeout: 30_000,
   });

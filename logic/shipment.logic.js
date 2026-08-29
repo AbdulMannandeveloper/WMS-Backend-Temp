@@ -59,6 +59,56 @@ const requireShipment = async (id, tx) => {
   return shipment;
 };
 
+/** First of a month, UTC, which is how billingPeriod is stored. */
+const firstOfMonth = (date) =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+
+const addMonths = (date, count) =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + count, 1));
+
+/**
+ * Finds the invoice a new charge should land on, creating it if needed.
+ *
+ * Normally that is the current month's. If it has already been APPROVED or PAID
+ * the charge rolls forward to the next open period rather than being refused:
+ * a closed accounting period should never block goods leaving the warehouse,
+ * and the charge must not be silently dropped either. The line's dateOfService
+ * still records when the work happened, so a later-period invoice explains
+ * itself.
+ *
+ * Rolling forward rather than opening a second invoice for the same month is
+ * also forced by the schema — monthly_invoices is unique on (client, period).
+ */
+const resolveOpenInvoice = async (clientId, tx, maxLookahead = 12) => {
+  let period = firstOfMonth(new Date());
+
+  for (let i = 0; i <= maxLookahead; i++) {
+    const existing =
+      await monthlyInvoiceRepository.getMonthlyInvoiceByClientIdAndMonth(
+        clientId,
+        period,
+        tx,
+      );
+
+    if (!existing) {
+      return await monthlyInvoiceRepository.createMonthlyInvoice(
+        { clientId, billingPeriod: period, status: "DRAFT" },
+        tx,
+      );
+    }
+
+    if (existing.status === "DRAFT") {
+      return existing;
+    }
+
+    period = addMonths(period, 1);
+  }
+
+  throw new Error(
+    "Could not find an open invoice to bill this shipment to — every period for the next year is already closed.",
+  );
+};
+
 /** Audit failures must never roll back the operation they describe. */
 const audit = (actorUserId, action, details) => {
   if (!actorUserId) return Promise.resolve(null);
@@ -87,19 +137,54 @@ const createShipment = async (data) => {
   // starting state — that would be a transition, and transitions are guarded.
   const { shipmentItems, shipmentServices, status, ...shipmentData } = data;
   shipmentData.status = "PENDING";
-  const shipment = await shipmentRepositry.createShipment(shipmentData);
 
-  if (data.shipmentItems && Array.isArray(data.shipmentItems)) {
-    for (const item of data.shipmentItems) {
-      item.shipmentId = shipment.id;
-      await shipmentItemLogic.createShipmentItem(item);
+  // One transaction for the whole shipment. Previously the row was written
+  // first and each item created in its own transaction, so a later line that
+  // could not be reserved returned 400 while leaving the shipment, the earlier
+  // items, and their stock reservations behind. The caller saw a failure and
+  // assumed nothing had happened, and that stock stayed reserved against a
+  // shipment nobody would ever pick or cancel.
+  return prisma.$transaction(async (tx) => {
+    const shipment = await shipmentRepositry.createShipment(shipmentData, tx);
+
+    if (Array.isArray(shipmentItems)) {
+      for (const item of shipmentItems) {
+        await shipmentItemLogic.createShipmentItem(
+          { ...item, shipmentId: shipment.id },
+          { tx },
+        );
+      }
     }
-  }
-  const createdShipmentItems = await shipmentItemLogic.getShipmentItemsByField(
-    "shipmentId",
-    shipment.id,
-  );
-  return { ...shipment, shipmentItems: createdShipmentItems };
+
+    // Billable services applied to this shipment. Priced from the client's
+    // agreed rate and frozen; dispatch raises invoice lines from these.
+    if (Array.isArray(shipmentServices)) {
+      for (const service of shipmentServices) {
+        await ShipmentServiceMappingLogic.createShipmentServiceMapping(
+          { ...service, shipmentId: shipment.id },
+          tx,
+        );
+      }
+    }
+
+    const [createdItems, createdServices] = await Promise.all([
+      shipmentItemLogic.getShipmentItemsByField("shipmentId", shipment.id, tx),
+      ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
+        "shipmentId",
+        shipment.id,
+        tx,
+      ),
+    ]);
+
+    return {
+      ...shipment,
+      shipmentItems: createdItems,
+      shipmentServices: createdServices,
+    };
+  }, {
+    maxWait: 10_000,
+    timeout: 30_000,
+  });
 };
 
 const getAllShipments = async () => {
@@ -132,16 +217,22 @@ const dispatchShipment = async (shipmentId, actorUserId) => {
       where: { shipmentId },
     });
 
-    const actorUserId =
-      shipment.employee?.userId ||
-      shipment.employee?.user?.id ||
-      shipment.employeeId;
+    // The ledger records the person, so it must be a User id. The old
+    // `|| shipment.employeeId` fallback would have written an Employee id into
+    // a User foreign key; it only ever looked correct because the repository
+    // happens to include employee.user. Fail loudly instead.
+    const ledgerUserId = shipment.employee?.userId || shipment.employee?.user?.id;
+    if (!ledgerUserId) {
+      throw new Error(
+        "Cannot dispatch: the assigned employee has no linked user account to attribute the stock movement to.",
+      );
+    }
 
     for (const item of shipmentItems) {
       await inventoryLedgerLogic.createInventoryLedger(
         {
           productId: item.productId,
-          userId: actorUserId,
+          userId: ledgerUserId,
           movementType: "CHECKOUT",
           quantity: item.quantity,
           referenceId: shipment.id,
@@ -151,63 +242,49 @@ const dispatchShipment = async (shipmentId, actorUserId) => {
       );
     }
 
-    const billingMonth = new Date(
-      new Date().getFullYear(),
-      new Date().getMonth(),
-      1,
-    );
-
-    let monthlyInvoice =
-      await monthlyInvoiceRepository.getMonthlyInvoiceByClientIdAndMonth(
-        shipment.clientId,
-        billingMonth,
-        tx,
-      );
-    if (!monthlyInvoice) {
-      monthlyInvoice = await monthlyInvoiceRepository.createMonthlyInvoice(
-        {
-          clientId: shipment.clientId,
-          billingPeriod: billingMonth,
-          status: "DRAFT",
-        },
-        tx,
-      );
-    }
-
     const shipmentServices =
       await ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
         "shipmentId",
         shipmentId,
+        tx,
       );
 
-    for (const serviceMapping of shipmentServices) {
-      const clientService =
-        await clientServiceLogic.getClientServiceByClientIdAndServiceId(
-          shipment.clientId,
-          serviceMapping.serviceId,
+    // No billable services on this shipment: the goods still move, there is
+    // simply nothing to charge. Do not open an empty invoice for it.
+    if (shipmentServices.length > 0) {
+      const monthlyInvoice = await resolveOpenInvoice(shipment.clientId, tx);
+      const dispatchedAt = new Date();
+
+      for (const serviceMapping of shipmentServices) {
+        // appliedUnitPrice was frozen when the service was attached, so a rate
+        // change since then does not rewrite this charge.
+        const unitPrice = serviceMapping.appliedUnitPrice;
+        const quantity = serviceMapping.quantity;
+        const totalPrice = Number(quantity) * Number(unitPrice);
+
+        await invoiceLineItemRepository.createInvoiceLineItem(
+          {
+            invoiceId: monthlyInvoice.id,
+            clientServiceId: serviceMapping.clientServiceId || null,
+            quantity,
+            unitPrice,
+            totalPrice,
+            description: `Charge for service "${serviceMapping.service?.description || serviceMapping.serviceId}" on shipment ${shipment.id}`,
+            // When the work actually happened, even if it bills to a later
+            // period because this month's invoice was already closed.
+            dateOfService: dispatchedAt,
+            itemType: "AUTOMATED_SERVICE",
+          },
+          tx,
         );
+      }
 
-      const unitPrice = serviceMapping.appliedUnitPrice;
-      const quantity = serviceMapping.quantity;
-      const totalPrice = quantity * unitPrice;
-
-      await invoiceLineItemRepository.createInvoiceLineItem(
-        {
-          invoiceId: monthlyInvoice.id,
-          clientServiceId: clientService ? clientService.id : null,
-          quantity,
-          unitPrice,
-          totalPrice,
-          description: `Charge for service "${serviceMapping.service?.description || serviceMapping.serviceId}" on shipment ${shipment.id}`,
-          dateOfService: new Date(),
-          itemType: "AUTOMATED_SERVICE",
-        },
+      // The invoice total is derived from its line items, never accumulated here.
+      await monthlyInvoiceRepository.recalculateInvoiceTotal(
+        monthlyInvoice.id,
         tx,
       );
     }
-
-    // The invoice total is derived from its line items, never accumulated here.
-    await monthlyInvoiceRepository.recalculateInvoiceTotal(monthlyInvoice.id, tx);
 
     return await shipmentRepositry.getShipmentByField("id", shipmentId, tx);
   }, {

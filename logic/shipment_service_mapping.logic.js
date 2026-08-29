@@ -1,108 +1,135 @@
 const shipmentServiceMappingRepositry = require("../repositories/shipment_service_mapping.repository");
 
-const shipmentLogic = require("./shipment.logic");
-const clientLogic = require("./client.logic");
-const serviceLogic = require("./service.logic");
-const clientServiceLogic = require("./client_service.logic");
+// Deliberately the repository, not ./shipment.logic. shipment.logic requires
+// this module, so requiring it back would recreate the circular import that
+// broke shipment creation before chunk 1.2 — Node hands the second module a
+// partially-initialised exports object and the reference never fills in.
+const shipmentRepository = require("../repositories/shipment.repository");
+const clientServiceRepository = require("../repositories/client_service.repository");
 
-const createShipmentServiceMapping = async (data) => {
-  // Check for required fields
+/**
+ * Attaches a billable service to a shipment.
+ *
+ * The price is read from the client's negotiated ClientService rate and frozen
+ * onto the mapping. Dispatch bills from that frozen figure, so changing a rate
+ * afterwards never rewrites what a client was already charged.
+ */
+const createShipmentServiceMapping = async (data, tx) => {
   if (!data.shipmentId || !data.serviceId || !data.quantity) {
     throw new Error(
       "Shipment ID, Service ID, and Quantity are required to create a mapping.",
     );
   }
 
-  // Validate shipmentId and serviceId
-  const shipment = await shipmentLogic.getShipmentByField(
+  if (Number(data.quantity) <= 0) {
+    throw new Error("Quantity must be greater than zero.");
+  }
+
+  const shipment = await shipmentRepository.getShipmentByField(
     "id",
     data.shipmentId,
+    tx,
   );
-  const clientService =
-    await clientServiceLogic.getClientServiceByClientIdAndServiceId(
-      shipment.clientId,
-      data.serviceId,
-    );
-
   if (!shipment) {
     throw new Error("Shipment not found.");
   }
+
+  // That repository call is a findMany, so it hands back an array. Normalising
+  // here rather than changing it, because an empty array is truthy: the original
+  // `if (!clientService) throw` never fired, and appliedUnitPrice was silently
+  // read off the array as undefined. The schema's unique(clientId, serviceId)
+  // means there is at most one row.
+  //
+  // Read outside `tx` deliberately — an agreed rate is reference data set up long
+  // before this transaction, not something it mutates.
+  const matches =
+    await clientServiceRepository.getClientServiceByClientIdAndServiceId(
+      shipment.clientId,
+      data.serviceId,
+    );
+  const clientService = Array.isArray(matches) ? matches[0] : matches;
+
   if (!clientService) {
-    throw new Error("Client Service not found.");
+    throw new Error(
+      "That service is not set up for this client. Agree a rate on the client's services first.",
+    );
 
     // ----------------------------------------------------------
-    // We can also apply the idea/default price if the service exists but is 
-    // not associated with the client, but for now we will just throw an error.
-    
-    
-    // const service = await serviceLogic.getServiceByField("id", data.serviceId);
-    // if (!service) {
-    //   throw new Error("Service not found.");
-    // }
-    // data.appliedUnitPrice = service.ideaPrice;
+    // We could fall back to the service's default ideaPrice here, but billing a
+    // client a rate they never agreed is a commercial decision, not a technical
+    // one. Left for chunk 2.1.
     // ----------------------------------------------------------
   }
 
-  data.appliedUnitPrice = clientService.chargedPrice;
-
   return await shipmentServiceMappingRepositry.createShipmentServiceMapping(
-    data,
+    {
+      shipmentId: data.shipmentId,
+      serviceId: data.serviceId,
+      clientServiceId: clientService.id,
+      quantity: data.quantity,
+      appliedUnitPrice: clientService.chargedPrice,
+    },
+    tx,
   );
 };
 
-const getShipmentServiceMappingsByField = async (field, value) => {
+const getShipmentServiceMappingsByField = async (field, value, tx) => {
   return await shipmentServiceMappingRepositry.getShipmentServiceMappingsByField(
     field,
     value,
+    tx,
   );
 };
 
-const updateShipmentServiceMapping = async (id, updateData) => {
-  // Always fetch the existing mapping first so we can reference its shipmentId
-  const existing = await shipmentServiceMappingRepositry.getShipmentServiceMappingByField("id", id);
+const getShipmentServiceMappingById = async (id, tx) => {
+  return await shipmentServiceMappingRepositry.getShipmentServiceMappingByField(
+    "id",
+    id,
+    tx,
+  );
+};
+
+const updateShipmentServiceMapping = async (id, updateData, tx) => {
+  const existing =
+    await shipmentServiceMappingRepositry.getShipmentServiceMappingByField(
+      "id",
+      id,
+      tx,
+    );
   if (!existing) {
     throw new Error("Shipment service mapping not found.");
   }
 
-  let shipment;
-  if (updateData.shipmentId) {
-    shipment = await shipmentLogic.getShipmentByField(
-      "id",
-      updateData.shipmentId,
+  // The applied price is frozen at attachment time and is not editable. Detach
+  // and reattach to pick up a new rate.
+  if (updateData.appliedUnitPrice !== undefined) {
+    throw new Error(
+      "The applied unit price is fixed when the service is attached. Remove the service and add it again to pick up a new rate.",
     );
-    if (!shipment) {
-      throw new Error("Shipment not found.");
-    }
-  } else {
-    // Use the existing shipmentId to fetch the shipment (needed for clientId lookup below)
-    shipment = await shipmentLogic.getShipmentByField("id", existing.shipmentId);
   }
 
-  if (updateData.serviceId) {
-    const clientService =
-      await clientServiceLogic.getClientServiceByClientIdAndServiceId(
-        shipment.clientId,
-        updateData.serviceId,
-      );
-    if (!clientService) {
-      throw new Error("Client Service not found.");
-    }
-
-    updateData.appliedUnitPrice = clientService.chargedPrice;
+  if (updateData.quantity !== undefined && Number(updateData.quantity) <= 0) {
+    throw new Error("Quantity must be greater than zero.");
   }
+
   return await shipmentServiceMappingRepositry.updateShipmentServiceMapping(
     id,
     updateData,
+    tx,
   );
 };
 
-const deleteShipmentServiceMapping = async (id) => {
-  return await shipmentServiceMappingRepositry.deleteShipmentServiceMapping(id);
+const deleteShipmentServiceMapping = async (id, tx) => {
+  return await shipmentServiceMappingRepositry.deleteShipmentServiceMapping(
+    id,
+    tx,
+  );
 };
 
 module.exports = {
   createShipmentServiceMapping,
   getShipmentServiceMappingsByField,
+  getShipmentServiceMappingById,
   updateShipmentServiceMapping,
   deleteShipmentServiceMapping,
 };

@@ -1,40 +1,54 @@
 const { prisma } = require("../lib/prisma");
 
-const prismaShipmentServiceMapping = prisma.shipmentServiceMapping;
+// db(tx) rather than a module-level `prisma.shipmentServiceMapping` const, so
+// these reads and writes can join a caller's transaction. Dispatch needs that:
+// it reads the mappings inside the same transaction that moves the stock and
+// raises the invoice lines.
+const db = (tx) => tx || prisma;
 
-const createShipmentServiceMapping = async (data) => {
-  return await prismaShipmentServiceMapping.create({ data });
+const includeRelations = {
+  service: true,
+  clientService: true,
 };
 
-const getAllShipmentServiceMappings = async () => {
-  return await prismaShipmentServiceMapping.findMany();
+const createShipmentServiceMapping = async (data, tx) => {
+  return await db(tx).shipmentServiceMapping.create({
+    data,
+    include: includeRelations,
+  });
 };
 
-const getShipmentServiceMappingByField = async (field, value) => {
-  return await prismaShipmentServiceMapping.findFirst({
+const getAllShipmentServiceMappings = async (tx) => {
+  return await db(tx).shipmentServiceMapping.findMany({
+    include: includeRelations,
+  });
+};
+
+const getShipmentServiceMappingByField = async (field, value, tx) => {
+  return await db(tx).shipmentServiceMapping.findFirst({
     where: { [field]: value },
+    include: includeRelations,
   });
 };
 
 // Returns ALL mappings matching the field — used by dispatchShipment to iterate services
-const getShipmentServiceMappingsByField = async (field, value) => {
-  return await prismaShipmentServiceMapping.findMany({
+const getShipmentServiceMappingsByField = async (field, value, tx) => {
+  return await db(tx).shipmentServiceMapping.findMany({
     where: { [field]: value },
-    include: {
-      service: true,
-    },
+    include: includeRelations,
   });
 };
 
-const updateShipmentServiceMapping = async (id, data) => {
-  return await prismaShipmentServiceMapping.update({
+const updateShipmentServiceMapping = async (id, data, tx) => {
+  return await db(tx).shipmentServiceMapping.update({
     where: { id },
     data,
+    include: includeRelations,
   });
 };
 
-const deleteShipmentServiceMapping = async (id) => {
-  return await prismaShipmentServiceMapping.delete({
+const deleteShipmentServiceMapping = async (id, tx) => {
+  return await db(tx).shipmentServiceMapping.delete({
     where: { id },
   });
 };
