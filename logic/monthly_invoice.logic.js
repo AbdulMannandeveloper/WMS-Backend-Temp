@@ -18,8 +18,11 @@ const createMonthlyInvoice = async (data) => {
     throw new Error("Client not found.");
   }
 
-  if (data.totalAmount && data.totalAmount < 0) {
-    throw new Error("Total amount cannot be negative.");
+  // A new invoice has no line items, so its derived total is always zero.
+  if (data.totalAmount !== undefined) {
+    throw new Error(
+      "Total amount cannot be set directly. It is derived from the invoice's line items.",
+    );
   }
 
   if (!data.billingPeriod) {
@@ -71,13 +74,15 @@ const updateMonthlyInvoice = async (id, data) => {
   if (!existingInvoice) {
     throw new Error("Monthly invoice not found.");
   }
-  if (data.amountToAdjust) {
-    data.totalAmount = existingInvoice.totalAmount + data.amountToAdjust;
-    // Validate that the adjusted total amount is not negative
-    if (data.totalAmount < 0) {
-      throw new Error("Total amount cannot be negative after adjustment.");
-    }
-    delete data.amountToAdjust; // Remove the amountToAdjust field as it's not part of the actual invoice data model
+
+  // totalAmount is derived from the invoice's line items and is never written
+  // directly — see recalculateInvoiceTotal in the repository. A caller supplying
+  // it (or the old amountToAdjust) is working from a stale mental model, so say
+  // so rather than silently dropping the value.
+  if (data.totalAmount !== undefined || data.amountToAdjust !== undefined) {
+    throw new Error(
+      "Total amount cannot be set directly. It is derived from the invoice's line items — add or remove a line item instead.",
+    );
   }
 
   // If status is being updated, throw an error as status changes should be handled through specific workflows (e.g., approval, payment) rather than direct updates to ensure proper business logic is followed.

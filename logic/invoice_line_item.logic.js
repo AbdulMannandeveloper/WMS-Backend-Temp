@@ -1,20 +1,33 @@
+const { prisma } = require("../lib/prisma");
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
+const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
 
-const monthlyInvoiceLogic = require("./monthly_invoice.logic");
+/**
+ * Line items own the invoice total.
+ *
+ * Every mutation here writes the line item and re-derives
+ * monthly_invoices.total_amount in the same transaction, so the two can never
+ * disagree — see recalculateInvoiceTotal in the monthly invoice repository for
+ * why the sum is computed in Postgres rather than in JavaScript.
+ *
+ * Each function takes `{ tx }` to join an outer interactive transaction, the
+ * same pattern createInventoryLedger uses in inventory_ledger.logic.js. Callers
+ * already inside a transaction (shipment dispatch) must pass it: Prisma cannot
+ * nest interactive transactions.
+ */
 
-const createInvoiceLineItem = async (data) => {
+const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 30_000 };
+
+/** Runs `fn` in the caller's transaction, or opens one if there isn't one. */
+const inTransaction = (options, fn) =>
+  options.tx ? fn(options.tx) : prisma.$transaction(fn, TRANSACTION_OPTIONS);
+
+const createInvoiceLineItem = async (data, options = {}) => {
   // Check for required fields
   if (!data.invoiceId || !data.quantity || !data.unitPrice) {
     throw new Error(
       "Monthly Invoice ID, quantity, and unit price are required to create an invoice line item.",
     );
-  }
-  // Check if the monthly invoice exists
-  const monthlyInvoice = await monthlyInvoiceLogic.getMonthlyInvoiceById(
-    data.invoiceId,
-  );
-  if (!monthlyInvoice) {
-    throw new Error("Monthly invoice not found.");
   }
   if (data.quantity <= 0) {
     throw new Error("Quantity must be greater than zero.");
@@ -33,21 +46,31 @@ const createInvoiceLineItem = async (data) => {
     data.itemType = "AUTOMATED_SERVICE"; // Default item type if not provided
   }
 
-  // Calculate the total price for the line item based on quantity and unit price
+  // One line's own extension. Number() on both operands because these may
+  // arrive as Prisma Decimals from an internal caller, and `decimal * number`
+  // is only correct by accident — unlike `+`, which concatenates.
   if (!data.totalPrice) {
-    data.totalPrice = data.quantity * data.unitPrice;
+    data.totalPrice = Number(data.quantity) * Number(data.unitPrice);
   }
 
-  const invoiceLineItem =
-    await invoiceLineItemRepository.createInvoiceLineItem(data);
+  return inTransaction(options, async (tx) => {
+    // Existence checked inside the transaction so the invoice cannot be deleted
+    // between the check and the write.
+    const monthlyInvoice = await monthlyInvoiceRepository.getMonthlyInvoiceById(
+      data.invoiceId,
+      tx,
+    );
+    if (!monthlyInvoice) {
+      throw new Error("Monthly invoice not found.");
+    }
 
-  // After creating the invoice line item, we can also update the total amount
-  // on the monthly invoice to reflect the new line item. This ensures that the
-  // monthly invoice always has an accurate total amount based on its associated line items.
-  await monthlyInvoiceLogic.updateMonthlyInvoice(monthlyInvoice.id, {
-    amountToAdjust: invoiceLineItem.totalPrice,
+    const invoiceLineItem =
+      await invoiceLineItemRepository.createInvoiceLineItem(data, tx);
+
+    await monthlyInvoiceRepository.recalculateInvoiceTotal(data.invoiceId, tx);
+
+    return invoiceLineItem;
   });
-  return invoiceLineItem;
 };
 
 const getInvoiceLineItemsByField = async (field, value) => {
@@ -57,25 +80,49 @@ const getInvoiceLineItemsByField = async (field, value) => {
   );
 };
 
-const updateInvoiceLineItem = async (id, data) => {
-  return await invoiceLineItemRepository.updateInvoiceLineItem(id, data);
+const updateInvoiceLineItem = async (id, data, options = {}) => {
+  return inTransaction(options, async (tx) => {
+    const existing = await invoiceLineItemRepository.getInvoiceLineItemsByField(
+      "id",
+      id,
+      tx,
+    );
+    const item = Array.isArray(existing) ? existing[0] : existing;
+    if (!item) {
+      throw new Error("Invoice line item not found.");
+    }
+
+    const updated = await invoiceLineItemRepository.updateInvoiceLineItem(
+      id,
+      data,
+      tx,
+    );
+
+    // Editing quantity or price moves the invoice total with it.
+    await monthlyInvoiceRepository.recalculateInvoiceTotal(item.invoiceId, tx);
+
+    return updated;
+  });
 };
 
-const deleteInvoiceLineItem = async (id) => {
-  // Fetch the line item first so we can reverse its amount from the invoice total
-  const lineItem = await invoiceLineItemRepository.getInvoiceLineItemsByField("id", id);
-  const item = Array.isArray(lineItem) ? lineItem[0] : lineItem;
+const deleteInvoiceLineItem = async (id, options = {}) => {
+  return inTransaction(options, async (tx) => {
+    const existing = await invoiceLineItemRepository.getInvoiceLineItemsByField(
+      "id",
+      id,
+      tx,
+    );
+    const item = Array.isArray(existing) ? existing[0] : existing;
+    if (!item) {
+      throw new Error("Invoice line item not found.");
+    }
 
-  if (!item) {
-    throw new Error("Invoice line item not found.");
-  }
+    const deleted = await invoiceLineItemRepository.deleteInvoiceLineItem(id, tx);
 
-  // Reverse the line item's contribution to the invoice total
-  await monthlyInvoiceLogic.updateMonthlyInvoice(item.invoiceId, {
-    amountToAdjust: -Number(item.totalPrice),
+    await monthlyInvoiceRepository.recalculateInvoiceTotal(item.invoiceId, tx);
+
+    return deleted;
   });
-
-  return await invoiceLineItemRepository.deleteInvoiceLineItem(id);
 };
 
 module.exports = {

@@ -1,5 +1,11 @@
 const monthlyInvoiceLogic = require("../logic/monthly_invoice.logic");
 const invoiceLineItemLogic = require("../logic/invoice_line_item.logic");
+const { resolveOwnClientId, canAccessClientId } = require("../utils/clientScope");
+const { pick } = require("../utils/pick");
+
+// totalAmount is deliberately absent: it is derived from the invoice's line
+// items. status is absent too — it moves through the approval workflow only.
+const INVOICE_UPDATE_FIELDS = ["billingPeriod", "pdfLink"];
 
 const getAllMonthlyInvoices = async (req, res) => {
   try {
@@ -13,6 +19,12 @@ const getAllMonthlyInvoices = async (req, res) => {
 const getMonthlyInvoicesByClient = async (req, res) => {
   try {
     const { clientId } = req.params;
+
+    // A client may only read their own invoices. Admins may read any.
+    if (!(await canAccessClientId(req.user, clientId))) {
+      return res.status(403).json({ error: "You do not have access to this client's records." });
+    }
+
     const invoices = await monthlyInvoiceLogic.getMonthlyInvoiceByField("clientId", clientId);
     res.status(200).json(invoices);
   } catch (err) {
@@ -22,8 +34,13 @@ const getMonthlyInvoicesByClient = async (req, res) => {
 
 const getMonthlyInvoiceById = async (req, res) => {
   try {
+    const ownClientId = await resolveOwnClientId(req.user);
     const invoice = await monthlyInvoiceLogic.getMonthlyInvoiceById(req.params.id);
-    if (!invoice) return res.status(404).json({ error: "Invoice not found." });
+    // 404 rather than 403 for a foreign invoice, so a client cannot probe which
+    // invoice ids exist outside their own account.
+    if (!invoice || (ownClientId && invoice.clientId !== ownClientId)) {
+      return res.status(404).json({ error: "Invoice not found." });
+    }
     res.status(200).json(invoice);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -41,7 +58,10 @@ const createMonthlyInvoice = async (req, res) => {
 
 const updateMonthlyInvoice = async (req, res) => {
   try {
-    const invoice = await monthlyInvoiceLogic.updateMonthlyInvoice(req.params.id, req.body);
+    const invoice = await monthlyInvoiceLogic.updateMonthlyInvoice(
+      req.params.id,
+      pick(req.body, INVOICE_UPDATE_FIELDS),
+    );
     res.status(200).json(invoice);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -70,6 +90,14 @@ const deleteMonthlyInvoice = async (req, res) => {
 
 const getLineItemsForInvoice = async (req, res) => {
   try {
+    const ownClientId = await resolveOwnClientId(req.user);
+    if (ownClientId) {
+      // Line items are only reachable through an invoice the caller owns.
+      const invoice = await monthlyInvoiceLogic.getMonthlyInvoiceById(req.params.id);
+      if (!invoice || invoice.clientId !== ownClientId) {
+        return res.status(404).json({ error: "Invoice not found." });
+      }
+    }
     const items = await invoiceLineItemLogic.getInvoiceLineItemsByField("invoiceId", req.params.id);
     res.status(200).json(items);
   } catch (err) {

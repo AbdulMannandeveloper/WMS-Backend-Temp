@@ -132,7 +132,6 @@ const dispatchShipment = async (shipmentId) => {
         shipmentId,
       );
 
-    let totalAdjust = 0;
     for (const serviceMapping of shipmentServices) {
       const clientService =
         await clientServiceLogic.getClientServiceByClientIdAndServiceId(
@@ -157,16 +156,10 @@ const dispatchShipment = async (shipmentId) => {
         },
         tx,
       );
-      totalAdjust += totalPrice;
     }
 
-    if (totalAdjust !== 0) {
-      await monthlyInvoiceRepository.updateMonthlyInvoice(
-        monthlyInvoice.id,
-        { totalAmount: Number(monthlyInvoice.totalAmount || 0) + totalAdjust },
-        tx,
-      );
-    }
+    // The invoice total is derived from its line items, never accumulated here.
+    await monthlyInvoiceRepository.recalculateInvoiceTotal(monthlyInvoice.id, tx);
 
     return await shipmentRepositry.getShipmentByField("id", shipmentId, tx);
   }, {

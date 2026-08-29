@@ -49,6 +49,7 @@ then point `.env.test` at `postgres://propackers:propackers@localhost:5433/propa
 | `helpers/auth.js` | `as(user)` — a supertest agent carrying that user's token |
 | `factories/` | Fixture builders, including `makeWarehouseScenario()` |
 | `smoke.test.js` | Proves the rig works |
+| `billing/` | Invoice total regression suite (chunk 1.1) |
 | `known-bugs/` | See below |
 
 ## Writing a test
@@ -85,9 +86,35 @@ a permanent regression test. The red-to-green handoff enforces itself.
 
 | File | Bug | Fixed by |
 |---|---|---|
-| `invoice-total.test.js` | Invoice totals string-concatenate: £100 + £50 = £10,050 | Chunk 1.1 |
 | `dispatch.test.js` | Dispatch always 400s — `prisma.shipmentServiceMapping` does not exist | Chunk 1.3 |
 | `shipment-status.test.js` | Status machine is browser-only; an employee can force `DISPATCHED`, or set `BANANA` | Chunk 1.2 |
 
 **Do not "fix" a failing `known-bugs` test by loosening its assertions.** The
 assertions describe the behaviour the fix must produce.
+
+Graduated: `invoice-total.test.js` moved to `billing/` when chunk 1.1 landed.
+
+## Money
+
+**Never do money arithmetic in JavaScript on a value that came out of Prisma.**
+
+Prisma maps `Decimal` columns to a Decimal object whose `valueOf()` returns a
+string, so `+` concatenates instead of adding:
+
+```js
+Decimal('100.00') + 50   // "10050", not 150.00
+```
+
+That single operator turned a £100 invoice into £10,050. `<` comparisons against
+the result then silently pass, because they are comparing strings.
+
+Two safe options:
+
+- **Aggregate in the database.** `prisma.x.aggregate({ _sum: ... })` returns a
+  Decimal computed by Postgres. This is how `recalculateInvoiceTotal` works, and
+  it is the preferred approach for anything summing rows.
+- **Use Decimal's own methods** — `.plus()`, `.minus()`, `.times()` — when you
+  genuinely must compute in JS, as `scripts/repair-invoice-totals.js` does.
+
+`Number(x) + Number(y)` is acceptable for small fixed calculations but
+reintroduces float error over many rows; prefer the database.
