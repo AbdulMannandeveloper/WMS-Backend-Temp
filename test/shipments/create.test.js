@@ -203,6 +203,53 @@ describe('creating a shipment', () => {
     await expect(prisma.shipmentItem.count()).resolves.toBe(0);
   });
 
+  it('refuses billable services from an employee, and creates nothing', async () => {
+    const { employeeUser, employee, client, product, location } =
+      await makeWarehouseScenario();
+    const service = await makeService({ description: 'Fragile wrapping' });
+    await makeClientService(client.id, service.id, { chargedPrice: '4.50' });
+
+    const res = await as(employeeUser)
+      .post('/api/shipments')
+      .send({
+        employeeId: employee.id,
+        clientId: client.id,
+        shipmentType: 'Standard',
+        packagingType: 'Box',
+        courierName: 'Evri',
+        shipmentItems: [
+          { productId: product.id, sourceLocationId: location.id, quantity: 1 },
+        ],
+        shipmentServices: [{ serviceId: service.id, quantity: 1 }],
+      });
+
+    // POST /:id/services is admin-only; accepting them at creation would be a
+    // way around that. Refused loudly rather than dropped silently.
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/only an admin/i);
+    await expect(prisma.shipment.count()).resolves.toBe(0);
+  });
+
+  it('still lets an employee create a shipment without services', async () => {
+    const { employeeUser, employee, client, product, location } =
+      await makeWarehouseScenario();
+
+    const res = await as(employeeUser)
+      .post('/api/shipments')
+      .send({
+        employeeId: employee.id,
+        clientId: client.id,
+        shipmentType: 'Standard',
+        packagingType: 'Box',
+        courierName: 'Evri',
+        shipmentItems: [
+          { productId: product.id, sourceLocationId: location.id, quantity: 1 },
+        ],
+      });
+
+    expect(res.status).toBe(201);
+  });
+
   it('always starts at PENDING, whatever status the caller asks for', async () => {
     const { admin, employee, client, product, location } =
       await makeWarehouseScenario();

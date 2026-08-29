@@ -1,14 +1,13 @@
 const { prisma } = require('../lib/prisma');
+const { firstOfMonthUtc, endOfMonthUtc, addMonthsUtc } = require('../utils/dates');
 
-const normalizeMonth = (dateInput) => {
-  const d = dateInput ? new Date(dateInput) : new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-};
+// Must match how billing_period is stored, or the P&L reports the wrong month.
+const normalizeMonth = (dateInput) => firstOfMonthUtc(dateInput);
 
 const getPLSummary = async (monthYearStr) => {
   const normalizedMonth = normalizeMonth(monthYearStr);
   const startOfMonth = normalizedMonth;
-  const endOfMonth = new Date(normalizedMonth.getFullYear(), normalizedMonth.getMonth() + 1, 0, 23, 59, 59, 999);
+  const endOfMonth = endOfMonthUtc(normalizedMonth);
 
   // 1. Calculate Total Earnings (Invoices with status APPROVED or PAID)
   const invoices = await prisma.monthlyInvoice.findMany({
@@ -65,7 +64,7 @@ const getPLTrends = async (monthsCount = 6) => {
   const now = new Date();
 
   for (let i = monthsCount - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const d = addMonthsUtc(now, -i);
     const summary = await getPLSummary(d);
 
     // Format month label: "Apr 25" or "Jun 26"

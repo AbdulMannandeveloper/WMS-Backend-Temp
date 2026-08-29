@@ -9,8 +9,8 @@ const employeeLogic = require("./employee.logic");
 const clientLogic = require("./client.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const ShipmentServiceMappingLogic = require("./shipment_service_mapping.logic");
-const clientServiceLogic = require("./client_service.logic");
 const auditLogLogic = require("./audit_log.logic");
+const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
 
 /**
  * The shipment lifecycle, enforced here rather than in the browser.
@@ -59,13 +59,6 @@ const requireShipment = async (id, tx) => {
   return shipment;
 };
 
-/** First of a month, UTC, which is how billingPeriod is stored. */
-const firstOfMonth = (date) =>
-  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
-
-const addMonths = (date, count) =>
-  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + count, 1));
-
 /**
  * Finds the invoice a new charge should land on, creating it if needed.
  *
@@ -80,7 +73,7 @@ const addMonths = (date, count) =>
  * also forced by the schema — monthly_invoices is unique on (client, period).
  */
 const resolveOpenInvoice = async (clientId, tx, maxLookahead = 12) => {
-  let period = firstOfMonth(new Date());
+  let period = firstOfMonthUtc();
 
   for (let i = 0; i <= maxLookahead; i++) {
     const existing =
@@ -101,7 +94,7 @@ const resolveOpenInvoice = async (clientId, tx, maxLookahead = 12) => {
       return existing;
     }
 
-    period = addMonths(period, 1);
+    period = addMonthsUtc(period, 1);
   }
 
   throw new Error(
@@ -249,11 +242,34 @@ const dispatchShipment = async (shipmentId, actorUserId) => {
         tx,
       );
 
-    // No billable services on this shipment: the goods still move, there is
-    // simply nothing to charge. Do not open an empty invoice for it.
-    if (shipmentServices.length > 0) {
+    // The client's flat per-shipment rate, read at dispatch and written onto the
+    // line, so a later rate change cannot rewrite a charge already raised.
+    // Skipped at zero: fixedShipmentRate defaults to 0.00, and billing it
+    // unconditionally would put a £0.00 row on every invoice forever.
+    const shipmentRate = Number(shipment.client?.fixedShipmentRate ?? 0);
+    const hasShipmentCharge = shipmentRate > 0;
+
+    // Nothing to charge at all: the goods still move, but do not open an empty
+    // invoice just to hold no lines.
+    if (hasShipmentCharge || shipmentServices.length > 0) {
       const monthlyInvoice = await resolveOpenInvoice(shipment.clientId, tx);
       const dispatchedAt = new Date();
+
+      if (hasShipmentCharge) {
+        await invoiceLineItemRepository.createInvoiceLineItem(
+          {
+            invoiceId: monthlyInvoice.id,
+            clientServiceId: null,
+            quantity: 1,
+            unitPrice: shipmentRate,
+            totalPrice: shipmentRate,
+            description: `Shipment dispatch — ${shipment.courierName} (${shipment.shipmentType}), shipment ${shipment.id}`,
+            dateOfService: dispatchedAt,
+            itemType: "SHIPMENT_CHARGE",
+          },
+          tx,
+        );
+      }
 
       for (const serviceMapping of shipmentServices) {
         // appliedUnitPrice was frozen when the service was attached, so a rate

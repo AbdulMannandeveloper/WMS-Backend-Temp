@@ -2,6 +2,7 @@ const monthlyInvoiceRepository = require("../repositories/monthly_invoice.reposi
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 
 const clientLogic = require("./client.logic");
+const { firstOfMonthUtc } = require("../utils/dates");
 const { enqueueMail } = require("../utils/mailQueue");
 const { invoiceApprovedEmailTemplate } = require("../utils/emailTemplates");
 
@@ -26,9 +27,10 @@ const createMonthlyInvoice = async (data) => {
   }
 
   if (!data.billingPeriod) {
-    // Default to 1st of the current month if billing period is not provided
-    const now = new Date();
-    data.billingPeriod = new Date(now.getFullYear(), now.getMonth(), 1);
+    // Default to the 1st of the current month. UTC, because billing_period is a
+    // @db.Date: a local-time 1st is stored as the previous month's last day
+    // anywhere east of UTC.
+    data.billingPeriod = firstOfMonthUtc();
   }
   if (!data.status) {
     data.status = "DRAFT"; // Default status
@@ -46,11 +48,7 @@ const getMonthlyInvoiceById = async (id) => {
 
 const getMonthlyInvoiceByClientIdForMonth = async (clientId, billingPeriod) => {
   //  Billing period is stored as the first day of the month, so we create a date object for the first day of the current month to use as a filter when retrieving invoices for the client.
-  const billingMonth = new Date(
-    billingPeriod.getFullYear(),
-    billingPeriod.getMonth(),
-    1,
-  );
+  const billingMonth = firstOfMonthUtc(billingPeriod);
 
   return await monthlyInvoiceRepository.getMonthlyInvoiceByClientIdAndMonth(
     clientId,

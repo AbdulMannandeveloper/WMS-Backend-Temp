@@ -7,11 +7,10 @@ const payrollRepository = require('../repositories/payroll.repository');
 const expenseCategoryRepository = require('../repositories/expense_category.repository');
 const expenseRepository = require('../repositories/expense.repository');
 const auditLogLogic = require('./audit_log.logic');
+const { firstOfMonthUtc, endOfMonthUtc, lastDayOfMonthUtc } = require('../utils/dates');
 
-const normalizeMonth = (dateInput) => {
-  const d = dateInput ? new Date(dateInput) : new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-};
+// month_year is a @db.Date, so the boundary must be built in UTC — see utils/dates.js.
+const normalizeMonth = (dateInput) => firstOfMonthUtc(dateInput);
 
 const setBaseSalary = async (employeeId, amount, adminUserId) => {
   if (amount === undefined || amount === null || amount < 0) {
@@ -151,7 +150,7 @@ const createBonus = async (data, adminUserId) => {
 const getSalaryBreakdownForEmployee = async (userId, monthDate) => {
   const normalizedMonth = normalizeMonth(monthDate);
   const startOfMonth = normalizedMonth;
-  const endOfMonth = new Date(normalizedMonth.getFullYear(), normalizedMonth.getMonth() + 1, 0, 23, 59, 59, 999);
+  const endOfMonth = endOfMonthUtc(normalizedMonth);
 
   // Fetch employee record to get fixed baseSalary
   const employee = await prisma.employee.findUnique({
@@ -270,7 +269,7 @@ const finalizePayroll = async (monthYearStr, adminUserId) => {
   const existingExpenses = await expenseRepository.getAllExpenses({
     categoryId: salariesCategory.id,
     startDate: normalizedMonth,
-    endDate: new Date(normalizedMonth.getFullYear(), normalizedMonth.getMonth() + 1, 0),
+    endDate: lastDayOfMonthUtc(normalizedMonth),
   });
 
   let expense;

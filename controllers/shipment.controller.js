@@ -23,6 +23,21 @@ const SHIPMENT_UPDATE_FIELDS = [
 const createShipment = async (req, res) => {
   try {
     const shipmentData = pick(req.body, SHIPMENT_CREATE_FIELDS);
+
+    // Attaching a billable service is an admin action wherever it happens —
+    // POST /:id/services is admin-only, so accepting them here from an employee
+    // would be a way around that. Refuse rather than dropping them silently.
+    if (
+      Array.isArray(shipmentData.shipmentServices) &&
+      shipmentData.shipmentServices.length > 0 &&
+      req.user.role !== "admin"
+    ) {
+      return res.status(403).json({
+        error:
+          "Only an admin can add billable services to a shipment. Create the shipment, then ask an admin to add them.",
+      });
+    }
+
     const newShipment = await shipmentLogic.createShipment(shipmentData);
     res.status(201).json(newShipment);
   } catch (error) {
