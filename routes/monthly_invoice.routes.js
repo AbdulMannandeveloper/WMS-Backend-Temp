@@ -13,6 +13,7 @@ const adminOrClient = authorizeRoles("admin", "client");
 router.get("/client/:clientId", adminOrClient, invoiceController.getMonthlyInvoicesByClient);
 router.get("/:id", adminOrClient, invoiceController.getMonthlyInvoiceById);
 router.get("/:id/line-items", adminOrClient, invoiceController.getLineItemsForInvoice);
+router.get("/:id/pdf", adminOrClient, invoiceController.getMonthlyInvoicePdf);
 
 // Invoice CRUD (admin only)
 router.get("/", adminOnly, invoiceController.getAllMonthlyInvoices);

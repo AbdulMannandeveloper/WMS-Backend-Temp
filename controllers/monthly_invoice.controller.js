@@ -2,6 +2,7 @@ const monthlyInvoiceLogic = require("../logic/monthly_invoice.logic");
 const invoiceLineItemLogic = require("../logic/invoice_line_item.logic");
 const { resolveOwnClientId, canAccessClientId } = require("../utils/clientScope");
 const { pick } = require("../utils/pick");
+const { getObjectStream } = require("../lib/objectStorage");
 
 // totalAmount is deliberately absent: it is derived from the invoice's line
 // items. status is absent too — it moves through the approval workflow only.
@@ -105,6 +106,31 @@ const deleteMonthlyInvoice = async (req, res) => {
   }
 };
 
+/**
+ * Streams the stored invoice PDF. Admin, or the owning client.
+ *
+ * 404s a foreign invoice rather than 403ing, matching the other client-readable
+ * routes here, so a client cannot probe which invoice ids exist.
+ */
+const getMonthlyInvoicePdf = async (req, res) => {
+  try {
+    const ownClientId = await resolveOwnClientId(req.user);
+    const invoice = await monthlyInvoiceLogic.getMonthlyInvoiceById(req.params.id);
+    if (!invoice || (ownClientId && invoice.clientId !== ownClientId)) {
+      return res.status(404).json({ error: "Invoice not found." });
+    }
+
+    const { key } = await monthlyInvoiceLogic.ensureInvoicePdf(req.params.id);
+    const { stream } = await getObjectStream(key);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${key}"`);
+    stream.pipe(res);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
 // ─── Line Items ────────────────────────────────────────────────────────────────
 
 const getLineItemsForInvoice = async (req, res) => {
@@ -154,6 +180,7 @@ module.exports = {
   updateMonthlyInvoice,
   approveMonthlyInvoice,
   markMonthlyInvoicePaid,
+  getMonthlyInvoicePdf,
   deleteMonthlyInvoice,
   getLineItemsForInvoice,
   createLineItem,

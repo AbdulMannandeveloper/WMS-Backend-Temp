@@ -7,6 +7,10 @@ const { enqueueMail } = require("../utils/mailQueue");
 const { invoiceApprovedEmailTemplate } = require("../utils/emailTemplates");
 
 const auditLogLogic = require("./audit_log.logic");
+const { renderInvoicePdf, invoicePdfKey } = require("../utils/invoicePdf");
+// Held as a module rather than destructured: the storage functions are called
+// through it so the failure path stays reachable from a test.
+const objectStorage = require("../lib/objectStorage");
 
 const APP_BASE_URL = process.env.APP_BASE_URL || "https://myapp.com";
 
@@ -147,6 +151,19 @@ const approveMonthlyInvoice = async (id, actorUserId) => {
   // that blocks direct status changes from external callers.
   const approvedInvoice = await monthlyInvoiceRepository.updateMonthlyInvoice(id, updateData);
 
+  // Render and store the invoice document. Deliberately after the status change
+  // and outside its failure path: a missing PDF is recoverable by re-rendering,
+  // a half-approved invoice is not. Same reasoning as the approval email below.
+  try {
+    const forPdf = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+    const key = invoicePdfKey(forPdf);
+    await objectStorage.uploadBuffer(key, renderInvoicePdf(forPdf), "application/pdf");
+    await monthlyInvoiceRepository.updateMonthlyInvoice(id, { pdfLink: key });
+    approvedInvoice.pdfLink = key;
+  } catch (pdfError) {
+    console.error("Invoice PDF generation failed:", pdfError.message);
+  }
+
   await audit(actorUserId, "INVOICE_APPROVED", {
     invoiceId: id,
     clientId: existingInvoice.clientId,
@@ -240,7 +257,30 @@ const markMonthlyInvoicePaid = async (id, { paymentMethod, paymentReference } = 
   return paid;
 };
 
+/**
+ * Returns the stored PDF key, rendering and storing one if it is missing.
+ * Covers invoices approved before this existed, and a lost storage object.
+ */
+const ensureInvoicePdf = async (id) => {
+  const invoice = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+  if (!invoice) {
+    throw new Error("Monthly invoice not found.");
+  }
+
+  const key = invoice.pdfLink || invoicePdfKey(invoice);
+
+  if (!invoice.pdfLink || !(await objectStorage.objectExists(key))) {
+    await objectStorage.uploadBuffer(key, renderInvoicePdf(invoice), "application/pdf");
+    if (invoice.pdfLink !== key) {
+      await monthlyInvoiceRepository.updateMonthlyInvoice(id, { pdfLink: key });
+    }
+  }
+
+  return { key, invoice };
+};
+
 module.exports = {
+  ensureInvoicePdf,
   createMonthlyInvoice,
   getAllMonthlyInvoices,
   getMonthlyInvoiceById,
