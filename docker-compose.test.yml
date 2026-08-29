@@ -1,0 +1,30 @@
+# Disposable Postgres for the test suite.
+#
+# Only needed on machines without a native Postgres, and in CI. If you already
+# run Postgres locally, point DATABASE_URL in .env.test at it instead (with a
+# dedicated database name) and skip this file entirely.
+#
+#   npm run test:db:up      start
+#   npm test                run the suite
+#   npm run test:db:down    stop and delete the volume
+#
+# Port 5433 so it cannot collide with a Postgres already on 5432.
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: propackers
+      POSTGRES_PASSWORD: propackers
+      POSTGRES_DB: propackers_test
+    ports:
+      - "5433:5432"
+    # Data lives in RAM: the suite truncates everything between tests anyway,
+    # and this makes migrations noticeably faster.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U propackers -d propackers_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
