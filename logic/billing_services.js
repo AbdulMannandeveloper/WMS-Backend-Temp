@@ -19,7 +19,8 @@
  * period whether or not anything moved.
  */
 
-const serviceRepository = require('../repositories/service.repository');
+const monthlyInvoiceRepository = require('../repositories/monthly_invoice.repository');
+const { firstOfMonthUtc, addMonthsUtc } = require('../utils/dates');
 const clientServiceRepository = require('../repositories/client_service.repository');
 const invoiceLineItemRepository = require('../repositories/invoice_line_item.repository');
 const { prisma } = require('../lib/prisma');
@@ -28,6 +29,9 @@ const db = (tx) => tx || prisma;
 
 /** The catalogue code for the charge raised when a shipment is dispatched. */
 const SHIPMENT_SERVICE_CODE = 'SHIPMENT_DISPATCH';
+
+/** The catalogue code for an FDA consignment leaving. */
+const FDA_SERVICE_CODE = 'FDA_DISPATCH';
 
 /**
  * The shipment-dispatch service row, created on first use.
@@ -70,10 +74,8 @@ const countShippedItems = (shipmentItems) =>
  * services-only client stores and is handled here but ships through someone
  * else.
  */
-const getShipmentRateForClient = async (clientId, tx) => {
-  const service = await db(tx).service.findUnique({
-    where: { code: SHIPMENT_SERVICE_CODE },
-  });
+const getRateForClient = async (clientId, code, tx) => {
+  const service = await db(tx).service.findUnique({ where: { code } });
   if (!service) return null;
 
   const rate = await clientServiceRepository.getClientServiceByClientIdAndServiceId(
@@ -83,6 +85,28 @@ const getShipmentRateForClient = async (clientId, tx) => {
   if (!rate) return null;
 
   return { clientService: rate, unitPrice: rate.chargedPrice };
+};
+
+const getShipmentRateForClient = (clientId, tx) =>
+  getRateForClient(clientId, SHIPMENT_SERVICE_CODE, tx);
+
+/** The client's agreed per-item rate for an FDA consignment, or null. */
+const getFdaRateForClient = (clientId, tx) =>
+  getRateForClient(clientId, FDA_SERVICE_CODE, tx);
+
+/** The FDA charge service row, created on first use. Mirrors the dispatch one. */
+const ensureFdaService = async (tx) => {
+  const existing = await db(tx).service.findUnique({ where: { code: FDA_SERVICE_CODE } });
+  if (existing) return existing;
+
+  return await db(tx).service.create({
+    data: {
+      code: FDA_SERVICE_CODE,
+      description: 'FDA consignment (per item)',
+      ideaPrice: '0.00',
+      unit: 'item',
+    },
+  });
 };
 
 /**
@@ -135,10 +159,63 @@ const applyRecurringCharges = async (clientId, invoice, tx) => {
   return created;
 };
 
+/**
+ * Finds the invoice a new charge should land on, creating it if needed.
+ *
+ * Normally the current month's. If that has been APPROVED or PAID the charge
+ * rolls forward to the next open period rather than being refused: a closed
+ * accounting period should never block goods leaving, and the charge must not be
+ * silently dropped either. The line's dateOfService still records when the work
+ * happened, so a later-period invoice explains itself.
+ *
+ * Rolling forward rather than opening a second invoice for the same month is
+ * also forced by the schema — monthly_invoices is unique on (client, period).
+ *
+ * Lives here rather than in shipment.logic so FDA and ordinary dispatch resolve
+ * a period the same way. Two copies of this rule is how a client once ended up
+ * with two invoices for one month.
+ */
+const resolveOpenInvoiceFor = async (clientId, tx, maxLookahead = 12) => {
+  let period = firstOfMonthUtc();
+
+  for (let i = 0; i <= maxLookahead; i++) {
+    const existing = await monthlyInvoiceRepository.getMonthlyInvoiceByClientIdAndMonth(
+      clientId,
+      period,
+      tx,
+    );
+
+    if (!existing) {
+      const created = await monthlyInvoiceRepository.createMonthlyInvoice(
+        { clientId, billingPeriod: period, status: 'DRAFT' },
+        tx,
+      );
+      await applyRecurringCharges(clientId, created, tx);
+      return created;
+    }
+
+    if (existing.status === 'DRAFT') {
+      await applyRecurringCharges(clientId, existing, tx);
+      return existing;
+    }
+
+    period = addMonthsUtc(period, 1);
+  }
+
+  throw new Error(
+    'Could not find an open invoice to bill this to — every period for the next year is already closed.',
+  );
+};
+
 module.exports = {
   SHIPMENT_SERVICE_CODE,
+  FDA_SERVICE_CODE,
   ensureShipmentService,
+  ensureFdaService,
   countShippedItems,
+  getRateForClient,
   getShipmentRateForClient,
+  getFdaRateForClient,
   applyRecurringCharges,
+  resolveOpenInvoiceFor,
 };

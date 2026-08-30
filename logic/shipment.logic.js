@@ -13,7 +13,7 @@ const auditLogLogic = require("./audit_log.logic");
 const {
   countShippedItems,
   getShipmentRateForClient,
-  applyRecurringCharges,
+  resolveOpenInvoiceFor,
 } = require("./billing_services");
 const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
 
@@ -64,54 +64,10 @@ const requireShipment = async (id, tx) => {
   return shipment;
 };
 
-/**
- * Finds the invoice a new charge should land on, creating it if needed.
- *
- * Normally that is the current month's. If it has already been APPROVED or PAID
- * the charge rolls forward to the next open period rather than being refused:
- * a closed accounting period should never block goods leaving the warehouse,
- * and the charge must not be silently dropped either. The line's dateOfService
- * still records when the work happened, so a later-period invoice explains
- * itself.
- *
- * Rolling forward rather than opening a second invoice for the same month is
- * also forced by the schema — monthly_invoices is unique on (client, period).
- */
-const resolveOpenInvoice = async (clientId, tx, maxLookahead = 12) => {
-  let period = firstOfMonthUtc();
-
-  for (let i = 0; i <= maxLookahead; i++) {
-    const existing =
-      await monthlyInvoiceRepository.getMonthlyInvoiceByClientIdAndMonth(
-        clientId,
-        period,
-        tx,
-      );
-
-    if (!existing) {
-      const created = await monthlyInvoiceRepository.createMonthlyInvoice(
-        { clientId, billingPeriod: period, status: "DRAFT" },
-        tx,
-      );
-      // A newly opened period carries the client's standing charges from the
-      // moment it exists, so storage and retainers do not depend on something
-      // shipping. Idempotent, so the repeat calls on later dispatches are safe.
-      await applyRecurringCharges(clientId, created, tx);
-      return created;
-    }
-
-    if (existing.status === "DRAFT") {
-      await applyRecurringCharges(clientId, existing, tx);
-      return existing;
-    }
-
-    period = addMonthsUtc(period, 1);
-  }
-
-  throw new Error(
-    "Could not find an open invoice to bill this shipment to — every period for the next year is already closed.",
-  );
-};
+// resolveOpenInvoice moved to ./billing_services, so FDA consignments and
+// ordinary dispatch resolve a billing period through the same code. Two copies
+// of that rule is how a client once ended up with two invoices for one month.
+const resolveOpenInvoice = resolveOpenInvoiceFor;
 
 /** Audit failures must never roll back the operation they describe. */
 const audit = (actorUserId, action, details) => {
