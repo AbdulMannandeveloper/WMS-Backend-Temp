@@ -14,21 +14,25 @@ const MAIL_DEBUG = String(process.env.MAIL_DEBUG || '').toLowerCase() === 'true'
 
 let transporter;
 
+/** Exported so the IPv4 default can be asserted without opening a socket. */
+const buildTransportOptions = () => ({
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_SECURE,
+  auth: { user: SMTP_USER, pass: SMTP_PASS },
+  // 4 or 6 only. Number('nonsense') is NaN, and an unset family is exactly the
+  // condition this exists to prevent — so a typo falls back to IPv4 rather than
+  // quietly restoring the bug.
+  family: process.env.SMTP_IP_FAMILY === '6' ? 6 : 4,
+});
+
 const getTransporter = () => {
   if (!transporter) {
     if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
       throw new Error('SMTP configuration is missing. Set SMTP_HOST, SMTP_USER, and SMTP_PASS.');
     }
 
-    transporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_SECURE,
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS,
-      },
-    });
+    transporter = nodemailer.createTransport(buildTransportOptions());
   }
 
   return transporter;
@@ -63,4 +67,5 @@ const sendMail = async ({ to, subject, html, text }) => {
 
 module.exports = {
   sendMail,
+  buildTransportOptions,
 };
