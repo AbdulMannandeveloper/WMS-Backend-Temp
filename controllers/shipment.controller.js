@@ -1,3 +1,4 @@
+const { canAccessClientId } = require("../utils/clientScope");
 const shipmentLogic = require("../logic/shipment.logic");
 const { pick } = require("../utils/pick");
 
@@ -126,9 +127,24 @@ const getShipmentByField = async (req, res) => {
   }
 };
 
+/**
+ * A client's shipments. Staff may read any; a client only their own.
+ *
+ * 404 rather than 403 for someone else's, matching the invoice and FDA reads —
+ * a 403 would confirm the client id exists, which is a probe.
+ *
+ * The rows carry sourceLocationId on their items. That is our warehouse layout
+ * rather than the client's business, so the portal does not render it; if this
+ * ever needs to be airtight the trimming belongs here, not in the browser.
+ */
 const getShipmentsByClientId = async (req, res) => {
   try {
     const { clientId } = req.params;
+
+    if (!(await canAccessClientId(req.user, clientId))) {
+      return res.status(404).json({ error: "Client not found." });
+    }
+
     const shipments = await shipmentLogic.getShipmentsByClientId(clientId);
     res.status(200).json(shipments);
   } catch (error) {

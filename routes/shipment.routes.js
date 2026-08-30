@@ -15,7 +15,14 @@ const adminOnly = authorizeRoles('admin');
 // Reads
 router.get('/', staffOnly, shipmentController.getAllShipments);
 router.get('/field/:field/:value', staffOnly, shipmentController.getShipmentByField);
-router.get('/client/:clientId', staffOnly, shipmentController.getShipmentsByClientId);
+// A client sees their own shipments in the portal — the answer to "where is my
+// order?", which until now the portal could not give. The controller scopes it;
+// staff still read any client's.
+router.get(
+  '/client/:clientId',
+  authorizeRoles('admin', 'employee', 'client'),
+  shipmentController.getShipmentsByClientId,
+);
 
 router.post('/', staffOnly, shipmentController.createShipment);
 
