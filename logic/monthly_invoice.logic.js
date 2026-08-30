@@ -7,6 +7,7 @@ const { enqueueMail } = require("../utils/mailQueue");
 const { invoiceApprovedEmailTemplate } = require("../utils/emailTemplates");
 
 const auditLogLogic = require("./audit_log.logic");
+const { getTaxRate, taxOn } = require("./settings.logic");
 const { renderInvoicePdf, invoicePdfKey } = require("../utils/invoicePdf");
 // Held as a module rather than destructured: the storage functions are called
 // through it so the failure path stays reachable from a test.
@@ -135,6 +136,53 @@ const updateMonthlyInvoice = async (id, data) => {
     );
   }
   return await monthlyInvoiceRepository.updateMonthlyInvoice(id, data);
+};
+
+/**
+ * Applies or removes tax on an invoice.
+ *
+ * DRAFT only. Once an invoice is approved it has been sent to a client, and the
+ * amount they were asked to pay must not move underneath them — the same reason
+ * a line item's unit price is frozen when it is raised.
+ *
+ * The platform rate is snapshotted onto the invoice at the moment tax is applied
+ * rather than read live when the invoice is rendered. Otherwise changing the
+ * rate next April would silently restate every invoice ever issued.
+ */
+const setInvoiceTax = async (id, applied, actorUserId) => {
+  const invoice = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+  if (!invoice) {
+    throw new Error("Monthly invoice not found.");
+  }
+
+  if (invoice.status !== "DRAFT") {
+    throw new Error(
+      `Tax can only be changed while an invoice is DRAFT — this one is ${invoice.status}.`,
+    );
+  }
+
+  const wantTax = Boolean(applied);
+  const rate = wantTax ? await getTaxRate() : null;
+  const subtotal = Number(invoice.totalAmount ?? 0);
+
+  const updated = await monthlyInvoiceRepository.updateMonthlyInvoice(id, {
+    taxApplied: wantTax,
+    // Kept when removing tax so the invoice still records the rate it was
+    // briefly issued at; taxAmount going to zero is what stops it being charged.
+    taxRate: wantTax ? rate : invoice.taxRate,
+    taxAmount: wantTax ? taxOn(subtotal, rate) : 0,
+  });
+
+  await auditLogLogic
+    .createAuditLog(actorUserId, wantTax ? "INVOICE_TAX_APPLIED" : "INVOICE_TAX_REMOVED", {
+      invoiceId: id,
+      rate: wantTax ? rate : null,
+      subtotal,
+      taxAmount: wantTax ? taxOn(subtotal, rate) : 0,
+    })
+    .catch((err) => console.error("Audit log error:", err.message));
+
+  return updated;
 };
 
 const approveMonthlyInvoice = async (id, actorUserId) => {
@@ -287,6 +335,7 @@ module.exports = {
   getMonthlyInvoiceByClientIdForMonth,
   getMonthlyInvoiceByField,
   updateMonthlyInvoice,
+  setInvoiceTax,
   approveMonthlyInvoice,
   markMonthlyInvoicePaid,
   deleteMonthlyInvoice,

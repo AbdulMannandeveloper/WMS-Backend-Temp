@@ -92,6 +92,18 @@ const deleteMonthlyInvoice = async (id, tx) => {
  * Pass `tx` to join the caller's transaction — the total must land in the same
  * commit as the line item that changed it.
  */
+/**
+ * Re-derives the invoice total from its line items.
+ *
+ * totalAmount is EX-TAX — the sum of the lines and nothing else. Tax is held
+ * separately because profit_loss reads totalAmount as company earnings, and VAT
+ * is collected for HMRC rather than earned.
+ *
+ * When tax is applied, taxAmount is recomputed here too. That matters: a
+ * dispatch during the month adds a line, which moves the subtotal, and a tax
+ * figure calculated once at the moment the checkbox was ticked would quietly go
+ * stale and undercharge for the rest of the period.
+ */
 const recalculateInvoiceTotal = async (invoiceId, tx) => {
   const { _sum } = await db(tx).invoiceLineItem.aggregate({
     where: { invoiceId },
@@ -99,9 +111,21 @@ const recalculateInvoiceTotal = async (invoiceId, tx) => {
   });
 
   // _sum.totalPrice is null when an invoice has no line items.
+  const subtotal = _sum.totalPrice ?? 0;
+
+  const invoice = await db(tx).monthlyInvoice.findUnique({
+    where: { id: invoiceId },
+    select: { taxApplied: true, taxRate: true },
+  });
+
+  const taxAmount =
+    invoice?.taxApplied && invoice.taxRate != null
+      ? Number(((Number(subtotal) * Number(invoice.taxRate)) / 100).toFixed(2))
+      : 0;
+
   return await db(tx).monthlyInvoice.update({
     where: { id: invoiceId },
-    data: { totalAmount: _sum.totalPrice ?? 0 },
+    data: { totalAmount: subtotal, taxAmount },
     include: includeRelations,
   });
 };

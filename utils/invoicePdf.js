@@ -113,9 +113,34 @@ const renderInvoicePdf = (invoice) => {
 
   const finalY = doc.lastAutoTable?.finalY || 120;
 
+  // Subtotal, tax and total shown separately when tax applies. invoice
+  // .totalAmount is EX-TAX throughout the system, so printing it alone as
+  // "Total" on a taxed invoice would understate what the client owes.
+  const subtotal = Number(invoice.totalAmount ?? 0);
+  const taxAmount = Number(invoice.taxAmount ?? 0);
+  const taxed = Boolean(invoice.taxApplied) && taxAmount > 0;
+  const grandTotal = subtotal + taxAmount;
+
+  let y = finalY + 10;
+
+  if (taxed) {
+    doc.setFontSize(10);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Subtotal: £${money(subtotal)}`, 14, y);
+    y += 6;
+    const ratePart =
+      invoice.taxRate != null ? ` (${Number(invoice.taxRate)}%)` : '';
+    doc.text(`Tax${ratePart}: £${money(taxAmount)}`, 14, y);
+    y += 8;
+  }
+
   doc.setFontSize(12);
   doc.setTextColor(15, 23, 42);
-  doc.text(`Total Amount: £${money(invoice.totalAmount)}`, 14, finalY + 10);
+  doc.text(
+    `${taxed ? 'Total Due' : 'Total Amount'}: £${money(grandTotal)}`,
+    14,
+    y,
+  );
 
   if (invoice.status === 'PAID' && invoice.paidAt) {
     doc.setFontSize(9);
@@ -125,7 +150,7 @@ const renderInvoicePdf = (invoice) => {
     doc.text(
       `PAID ${new Date(invoice.paidAt).toLocaleDateString('en-GB')}${method}${ref}`,
       14,
-      finalY + 17,
+      y + 7,
     );
   }
 

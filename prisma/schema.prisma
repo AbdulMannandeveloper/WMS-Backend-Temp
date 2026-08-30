@@ -383,18 +383,45 @@ model ProfitLossLog {
   @@map("profit_loss_logs")
 }
 
+/**
+ * Platform-wide settings, as key/value.
+ * A table rather than an environment variable so the value can be changed
+ * without a redeploy and carries who changed it and when — a tax rate is the
+ * kind of number somebody will eventually need to account for.
+ */
+model Setting {
+  key         String   @id @db.VarChar(60)
+  value       String   @db.VarChar(255)
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+}
+
 model MonthlyInvoice {
   id       String @id @default(uuid()) @db.Uuid
   clientId String @map("client_id") @db.Uuid
 
   // Always normalize this to the 1st of the month in your code (e.g., 2026-05-01)
   billingPeriod DateTime      @map("billing_period") @db.Date
+  // The sum of the line items, EXCLUDING tax. Deliberately ex-tax: profit_loss
+  // reads this as company earnings, and VAT is collected for HMRC rather than
+  // earned, so folding it in here would overstate profit by the tax rate.
   totalAmount   Decimal       @default(0.0) @map("total_amount") @db.Decimal(14, 2)
   status        InvoiceStatus @default(DRAFT)
-  pdfLink       String?       @map("pdf_link")
-  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
-  approvedAt    DateTime?     @map("approved_at") @db.Timestamptz(6)
+
+  // Tax, opted into per invoice while it is still DRAFT.
+  //
+  // taxRate is snapshotted when tax is applied rather than read live at render
+  // time: an invoice already sent to a client must not silently change because
+  // the platform rate moved afterwards.
+  taxApplied Boolean   @default(false) @map("tax_applied")
+  taxRate    Decimal?  @map("tax_rate") @db.Decimal(5, 2)
+  taxAmount  Decimal   @default(0.0) @map("tax_amount") @db.Decimal(14, 2)
+  pdfLink    String?   @map("pdf_link")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  approvedAt DateTime? @map("approved_at") @db.Timestamptz(6)
 
   // Set together when the invoice is marked paid. Method and reference are what
   // a payment query gets answered from, so they are worth capturing at the time

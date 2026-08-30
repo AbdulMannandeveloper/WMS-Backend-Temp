@@ -2,6 +2,7 @@ const monthlyInvoiceLogic = require("../logic/monthly_invoice.logic");
 const invoiceLineItemLogic = require("../logic/invoice_line_item.logic");
 const { resolveOwnClientId, canAccessClientId } = require("../utils/clientScope");
 const { chargeServiceToClient } = require("../logic/billing_services");
+const settingsLogic = require("../logic/settings.logic");
 const { pick } = require("../utils/pick");
 const { getObjectStream } = require("../lib/objectStorage");
 
@@ -183,6 +184,39 @@ const chargeService = async (req, res) => {
   }
 };
 
+/** The platform tax rate. Readable by staff so the invoices screen can show it. */
+const getTaxRate = async (req, res) => {
+  try {
+    res.status(200).json({ rate: await settingsLogic.getTaxRate() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+const updateTaxRate = async (req, res) => {
+  try {
+    const rate = await settingsLogic.setTaxRate(req.body?.rate, req.user.id);
+    res.status(200).json({ rate });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+/** Applies or removes tax on a DRAFT invoice. */
+const setTax = async (req, res) => {
+  try {
+    const updated = await monthlyInvoiceLogic.setInvoiceTax(
+      req.params.id,
+      req.body?.applied,
+      req.user.id,
+    );
+    res.status(200).json(updated);
+  } catch (err) {
+    const notFound = /not found/i.test(err.message);
+    res.status(notFound ? 404 : 400).json({ error: err.message });
+  }
+};
+
 const deleteLineItem = async (req, res) => {
   try {
     await invoiceLineItemLogic.deleteInvoiceLineItem(req.params.lineItemId);
@@ -205,5 +239,8 @@ module.exports = {
   getLineItemsForInvoice,
   createLineItem,
   chargeService,
+  getTaxRate,
+  updateTaxRate,
+  setTax,
   deleteLineItem,
 };
