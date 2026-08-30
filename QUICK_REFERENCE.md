@@ -168,10 +168,10 @@ APP_BASE_URL=http://localhost:5000
 INVITE_EXPIRY_HOURS=24
 
 # Email service
-SMTP_HOST=smtp.gmail.com
+SMTP_HOST=smtp.example.com
 SMTP_PORT=587
-SMTP_USER=ubaidmohammad901@gmail.com
-SMTP_PASS=hqyhnjzwvqbgdwna
+SMTP_USER=your-smtp-user@example.com
+SMTP_PASS=your-smtp-app-password
 ```
 
 ---

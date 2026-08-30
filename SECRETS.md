@@ -1,47 +1,107 @@
-# Secrets — outstanding rotation
+# Secrets — one confirmed exposure, one unverified claim
 
-## Rotate these before going near production
+> An earlier version of this file asserted that a production Aiven connection string "was
+> committed to git history". That was repeated from a comment in `.env` and **had not been
+> verified**. It is not true of this repository. Checking it properly turned up a *different*
+> exposure that is real, and that nobody had recorded.
 
-`.env` in this repo carries the note that **a production Aiven connection string was
-committed to git history and its credentials were exposed**. Removing the line from `.env`
-does not undo that: anyone with a clone of the repository can still read it out of an old
-commit.
+---
 
-Three secrets shared that file and should all be treated as compromised:
+## 1. CONFIRMED — SMTP credentials, committed and pushed
 
-| Variable | Why it needs rotating | Effect of rotating |
+`QUICK_REFERENCE.md` contained a worked example with live values:
+
+```
+SMTP_HOST=…      identical to the value in .env
+SMTP_USER=…      a 26-character address
+SMTP_PASS=…      16 characters — the shape of a Google App Password
+```
+
+- Introduced in commit **`e6031f5`** ("Implement complete authentication").
+- **Pushed.** That commit is reachable from at least five remote branches — `origin/auth`,
+  `origin/authentication`, `origin/authentication-flow-issue-resolved`,
+  `origin/client-services-module`, `origin/fixes-for-reset-password`.
+- `SMTP_USER` and `SMTP_PASS` in the local `.env` are now **empty**, which is consistent with
+  someone clearing `.env` at some point and not realising the same values were in a document.
+
+The values have been replaced with placeholders in the working tree. **That is not the fix.**
+The commit is on the remote and in every clone anyone has taken.
+
+### What actually needs doing
+
+1. **Revoke the app password.** In the Google account that owns `SMTP_USER`:
+   Security → 2-Step Verification → App passwords → revoke it. Revoking is instant and does not
+   require touching this repo.
+2. Generate a replacement, put it in `.env` on each environment (never in a tracked file), and
+   restart.
+3. Check the mailbox's recent activity for sends you do not recognise. An SMTP credential is
+   most often abused to send phishing from a domain people already trust.
+
+Rotation is the fix. Rewriting history is optional tidying afterwards, and it cannot reach a
+clone somebody already has.
+
+---
+
+## 2. UNVERIFIED — the Aiven note in `.env`
+
+`.env` carries this comment:
+
+> `# NOTE: The previous production Aiven connection string was removed from this file.`
+> `# The credentials it contained were exposed in git history and MUST be rotated in Aiven.`
+
+That claim is **not reproducible in this repository**:
+
+| Question | Answer |
+|---|---|
+| Was `.env` ever committed? | **No** — never added, in either repo, across all 66 commits |
+| Does `aivencloud` appear anywhere in history? | **No** |
+| Any real connection string in history? | **No.** Only the placeholder `postgres://user:password@localhost` in `.env.example` and the local dev pair `propackers:propackers` in `docker-compose.yml` |
+
+Three explanations fit: it refers to a history rewritten before this clone (which would *not*
+reach existing clones or forks), to a repository not on this machine, or to a leak that was never
+in git at all — a chat paste, a screenshot, a CI log. None of those are checkable from here.
+
+**Ask whoever wrote that comment what they saw.** "Not in this repo" is not "never leaked", and
+given finding #1 the instinct behind the note was clearly sound.
+
+If it did leak, `.env` holds three secrets and an exposure of the file is an exposure of all of
+them:
+
+| Variable | Why | Cost of rotating |
 |---|---|---|
-| `DATABASE_URL` | The exposed credential itself | Update every environment before restarting |
+| `DATABASE_URL` | The credential itself | Update every environment, then restart — Prisma reads it at client construction |
 | `JWT_SECRET` | Anyone holding it can mint a valid admin session token | **Signs every user out.** That is the point |
-| `OTP_PEPPER` | Lets an attacker with a DB dump brute-force the 6-digit OTP hashes | Invalidates OTPs in flight; users request a new code |
-
-## Generating replacements
+| `OTP_PEPPER` | Lets anyone with a DB dump brute-force the 6-digit OTP hashes | OTPs in flight stop working; users request a new code |
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
 ```
 
-Run it once per secret. Never reuse a value across environments.
+One run per secret. Never reuse a value across environments.
 
-## Rotating the database password
+---
 
-Do this in the Aiven console — reset the service user's password, then update
-`DATABASE_URL` everywhere it is set (deployment environment, CI, any developer `.env`).
-Restart the API afterwards; Prisma reads the URL at client construction.
-
-## Why the history cannot simply be cleaned
-
-Rewriting history with `git filter-repo` or BFG would remove the string from this
-repository, but it does not reach clones, forks, or anything that mirrored it. Rotation is
-the only reliable fix; history rewriting is optional tidying afterwards, and it breaks every
-outstanding branch.
-
-## Checking nothing new has leaked
+## 3. How this was checked, so you can re-check
 
 ```bash
-git log -p --all -S "postgres://" -- .env .env.example
+git log --all --oneline --diff-filter=A -- .env    # was .env ever added?
+git log --all --oneline -S "aivencloud"            # the Aiven host, anywhere in history
+git log --all --oneline -S "postgres://"           # any connection string
+git branch -r --contains <commit>                  # is a commit on a remote?
 ```
 
-`.env` is gitignored (`.gitignore` covers `.env` and `.env.*`, with `.env.example` and
-`.env.test.example` explicitly re-included), so the exposure is historical rather than
-ongoing — but the credentials in that history are still live until rotated.
+And, going forward:
+
+```bash
+npm run check:secrets
+```
+
+Scans every git-tracked file for credential shapes — connection strings carrying a password,
+long hex secrets, populated `SMTP_PASS`/`*_TOKEN`/`*_SECRET` assignments, AWS keys, private key
+blocks. Placeholders in `.env.example` are allow-listed, and findings print redacted so the
+output is safe in a CI log.
+
+**It is what found #1.** Worth running before a push, and worth wiring into CI when there is one.
+
+Note it reads the current tree, not history — it will not tell you what is already published.
+`git log -S` does that.
