@@ -25,7 +25,7 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const DIRS = ['controllers', 'logic'];
 
-// const fooLogic = require('../logic/foo.logic');
+// Matches a binding like:  const fooLogic = <require of ../logic/foo.logic>
 const REQUIRE_RE =
   /(?:const|let|var)\s+(\w+)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/g;
 
