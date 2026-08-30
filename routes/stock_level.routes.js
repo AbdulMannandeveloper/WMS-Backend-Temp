@@ -3,14 +3,16 @@ const express = require('express');
 const { authorizeRoles } = require('../middlewares/authorize');
 const router = express.Router();
 
-router.use(authorizeRoles('admin', 'employee'));
+const staffOnly = authorizeRoles('admin', 'employee');
 
-router.post('/', stockLevelController.createStockLevel);
-router.get('/', stockLevelController.getAllStockLevels);
-router.get('/product/:productId', stockLevelController.getStockLevelByProductId);
-router.get('/location/:locationId', stockLevelController.getStockLevelByLocationId);
-router.put('/:id', stockLevelController.updateStockLevel);
-router.put('/product/:productId/location/:locationId', stockLevelController.updateStockLevelByProductAndLocation);
-router.delete('/:id', stockLevelController.deleteStockLevel);
+// Clients may read the stock list only; the controller narrows it to their own products.
+router.get('/', authorizeRoles('admin', 'employee', 'client'), stockLevelController.getAllStockLevels);
+
+router.post('/', staffOnly, stockLevelController.createStockLevel);
+router.get('/product/:productId', staffOnly, stockLevelController.getStockLevelByProductId);
+router.get('/location/:locationId', staffOnly, stockLevelController.getStockLevelByLocationId);
+router.put('/:id', staffOnly, stockLevelController.updateStockLevel);
+router.put('/product/:productId/location/:locationId', staffOnly, stockLevelController.updateStockLevelByProductAndLocation);
+router.delete('/:id', staffOnly, stockLevelController.deleteStockLevel);
 
 module.exports = router;

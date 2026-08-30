@@ -1,5 +1,6 @@
 const productLogic = require("../logic/product.logic");
 const { pick } = require("../utils/pick");
+const { resolveOwnClientId } = require("../utils/clientScope");
 
 const PRODUCT_FIELDS = [
   "clientId",
@@ -13,11 +14,22 @@ const PRODUCT_FIELDS = [
   "isDeactivated",
 ];
 
+const INITIAL_STOCK_FIELDS = ["locationId", "quantity", "notes"];
+
 const createProduct = async (req, res) => {
   try {
     const productData = pick(req.body, PRODUCT_FIELDS);
-    const adminUserId = req.user.id;
-    const product = await productLogic.addNewProduct(productData, adminUserId);
+    // Opening stock is optional and deliberately outside PRODUCT_FIELDS, so `pick`
+    // keeps it out of the product row; it is read straight off the body instead.
+    const initialStock = req.body.initialStock
+      ? pick(req.body.initialStock, INITIAL_STOCK_FIELDS)
+      : undefined;
+    const actorUserId = req.user.id;
+    const product = await productLogic.addNewProduct(
+      productData,
+      actorUserId,
+      initialStock,
+    );
     res.status(201).json(product);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -26,7 +38,11 @@ const createProduct = async (req, res) => {
 
 const getAllProducts = async (req, res) => {
   try {
-    const products = await productLogic.getAllProducts();
+    // Clients see only their own catalog; staff see everything.
+    const ownClientId = await resolveOwnClientId(req.user);
+    const products = ownClientId
+      ? await productLogic.getProductByClientId(ownClientId)
+      : await productLogic.getAllProducts();
     res.status(200).json(products);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -36,8 +52,11 @@ const getAllProducts = async (req, res) => {
 const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
+    const ownClientId = await resolveOwnClientId(req.user);
     const product = await productLogic.getProductById(id);
-    if (!product) {
+    // 404 rather than 403 for a foreign product, so a client cannot probe which
+    // SKU ids exist outside their own account.
+    if (!product || (ownClientId && product.clientId !== ownClientId)) {
       return res.status(404).json({ error: "Product not found." });
     }
     res.status(200).json(product);
@@ -63,8 +82,8 @@ const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = pick(req.body, PRODUCT_FIELDS);
-    const adminUserId = req.user.id;
-    const product = await productLogic.updateProduct(id, updateData, adminUserId);
+    const actorUserId = req.user.id;
+    const product = await productLogic.updateProduct(id, updateData, actorUserId);
     if (!product) {
       return res.status(404).json({ error: "Product not found." });
     }
@@ -77,13 +96,17 @@ const updateProduct = async (req, res) => {
 const deactivateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const product = await productLogic.deactivateProduct(id);
+    const actorUserId = req.user.id;
+    const product = await productLogic.deactivateProduct(id, actorUserId);
     if (!product) {
       return res.status(404).json({ error: "Product not found." });
     }
-    res
-      .status(200)
-      .json({ message: "Product deactivated successfully.", product });
+    res.status(200).json({
+      message: product.isDeactivated
+        ? "Product deactivated successfully."
+        : "Product reactivated successfully.",
+      product,
+    });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -92,8 +115,8 @@ const deactivateProduct = async (req, res) => {
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const adminUserId = req.user.id;
-    const product = await productLogic.deleteProduct(id, adminUserId);
+    const actorUserId = req.user.id;
+    const product = await productLogic.deleteProduct(id, actorUserId);
     if (!product) {
       return res.status(404).json({ error: "Product not found." });
     }
@@ -142,7 +165,11 @@ const lookupProductByBarcode = async (req, res) => {
 const getProductandStockLevelById = async (req, res) => {
   try {
     const { id } = req.params;
+    const ownClientId = await resolveOwnClientId(req.user);
     const result = await productLogic.getProductandStockLevelById(id);
+    if (!result || (ownClientId && result.product.clientId !== ownClientId)) {
+      return res.status(404).json({ error: "Product not found." });
+    }
     res.status(200).json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });

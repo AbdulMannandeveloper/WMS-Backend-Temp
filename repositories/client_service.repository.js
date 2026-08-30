@@ -15,6 +15,9 @@ const getClientServiceByField = async (field, value) => {
     where: {
       [field]: value,
     },
+    // The service relation carries the description/unit, so callers can render a
+    // client's assigned services without reading the full admin-only price book.
+    include: { service: true },
   });
 };
 

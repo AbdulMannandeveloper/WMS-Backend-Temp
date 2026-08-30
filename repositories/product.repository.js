@@ -2,8 +2,11 @@ const { prisma } = require('../lib/prisma');
 
 const prismaProduct = prisma.product;
 
-const createProduct = async (productData) => {
-  return await prismaProduct.create({
+// Pass `tx` to join an interactive transaction (e.g. create product + opening stock).
+const db = (tx) => (tx ? tx.product : prismaProduct);
+
+const createProduct = async (productData, tx) => {
+  return await db(tx).create({
     data: productData,
     include: { client: true },
   });

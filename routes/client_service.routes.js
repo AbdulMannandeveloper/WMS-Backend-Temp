@@ -12,13 +12,16 @@ const { authorizeRoles } = require('../middlewares/authorize');
 
 const router = express.Router();
 
-router.use(authorizeRoles('admin'));
+const adminOnly = authorizeRoles('admin');
 
-router.post('/', createClientServiceEntry);
-router.get('/', getAllClientServices);
-router.get('/client/:clientId', getClientServicesByClientId);
-router.get('/service/:serviceId', getClientServicesByServiceId);
-router.put('/:id', updateClientService);
-router.delete('/:id', deleteClientService);
+// A client reads its own assigned services in the portal; the controller verifies
+// ownership of :clientId. Everything else stays admin-only.
+router.get('/client/:clientId', authorizeRoles('admin', 'client'), getClientServicesByClientId);
+
+router.post('/', adminOnly, createClientServiceEntry);
+router.get('/', adminOnly, getAllClientServices);
+router.get('/service/:serviceId', adminOnly, getClientServicesByServiceId);
+router.put('/:id', adminOnly, updateClientService);
+router.delete('/:id', adminOnly, deleteClientService);
 
 module.exports = router;

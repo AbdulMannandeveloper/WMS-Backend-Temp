@@ -82,10 +82,10 @@ const createStockLevel = async (stockLevelData, tx) => {
   return await enrichStockLevelsWithZoneShelfBin(result);
 };
 
-const getAllStockLevels = async (pagination) => {
-  const { items, total } = await stockLevelRepository.getAllStockLevels(pagination);
+const getAllStockLevels = async (options) => {
+  const { items, total } = await stockLevelRepository.getAllStockLevels(options);
   const enriched = await enrichStockLevelsWithZoneShelfBin(items);
-  if (pagination && pagination.take != null) {
+  if (options && options.take != null) {
     return { items: enriched, total };
   }
   return enriched;

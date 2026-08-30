@@ -22,6 +22,27 @@ const getAllClients = async (req, res) => {
   }
 };
 
+// Slim client list for employee-facing dropdowns (id + companyName only).
+const getClientLookup = async (req, res) => {
+  try {
+    const clients = await clientLogic.getClientLookupList();
+    res.status(200).json(clients);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// A client reads its own record. The id comes from the session, never the request,
+// so a client can never resolve another client's details.
+const getMyClient = async (req, res) => {
+  try {
+    const client = await clientLogic.getClientByUserId(req.user.id);
+    res.status(200).json(client);
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+};
+
 const getClientById = async (req, res) => {
   try {
     const client = await clientLogic.getClientById(req.params.id);
@@ -49,4 +70,12 @@ const deleteClient = async (req, res) => {
   }
 };
 
-module.exports = { addClient, getAllClients, getClientById, updateClient, deleteClient };
+module.exports = {
+  addClient,
+  getAllClients,
+  getClientLookup,
+  getMyClient,
+  getClientById,
+  updateClient,
+  deleteClient,
+};

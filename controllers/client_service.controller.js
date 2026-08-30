@@ -1,4 +1,5 @@
 const clientServiceLogic = require("../logic/client_service.logic");
+const { canAccessClientId } = require("../utils/clientScope");
 
 const createClientServiceEntry = async (req, res) => {
   try {
@@ -23,6 +24,12 @@ const getAllClientServices = async (req, res) => {
 const getClientServicesByClientId = async (req, res) => {
   try {
     const { clientId } = req.params;
+
+    // A client may only read their own assigned services. Staff may read any.
+    if (!(await canAccessClientId(req.user, clientId))) {
+      return res.status(403).json({ error: "You do not have access to this client's records." });
+    }
+
     const clientServices =
       await clientServiceLogic.getClientServicesByClientId(clientId);
     res.status(200).json(clientServices);

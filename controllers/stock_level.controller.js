@@ -1,6 +1,7 @@
 const stockLevelLogic = require("../logic/stock_level.logic");
 const { pick } = require("../utils/pick");
 const { parsePagination, paginatedResponse } = require("../utils/pagination");
+const { resolveOwnClientId } = require("../utils/clientScope");
 
 const STOCK_CREATE_FIELDS = [
   "productId",
@@ -41,7 +42,12 @@ const createStockLevel = async (req, res) => {
 const getAllStockLevels = async (req, res) => {
   try {
     const pagination = parsePagination(req.query);
-    const result = await stockLevelLogic.getAllStockLevels(pagination);
+    // Clients see stock for their own products only; staff see everything.
+    const clientId = await resolveOwnClientId(req.user);
+    const result = await stockLevelLogic.getAllStockLevels({
+      ...pagination,
+      ...(clientId ? { clientId } : {}),
+    });
     if (result && result.items) {
       return res.status(200).json(
         paginatedResponse(result.items, result.total, pagination),

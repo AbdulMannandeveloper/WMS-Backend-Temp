@@ -130,6 +130,27 @@ const getAllClients = async () => {
 };
 
 /**
+ * Slim id + companyName list for dropdowns.
+ * Used by employees, who need to attribute a product to a client but have no
+ * business seeing client contact details, addresses or negotiated rates.
+ */
+const getClientLookupList = async () => {
+  const clients = await clientRepository.getAllClients();
+  return clients.map(({ id, companyName }) => ({ id, companyName }));
+};
+
+/**
+ * Get the client record linked to a given user login.
+ */
+const getClientByUserId = async (userId) => {
+  const client = await clientRepository.getClientByField('userId', userId);
+  if (!client) {
+    throw new Error('No client account is linked to this login.');
+  }
+  return client;
+};
+
+/**
  * Get a single client by their client record ID.
  */
 const getClientById = async (clientId) => {
@@ -188,6 +209,8 @@ const deleteClient = async (clientId) => {
 module.exports = {
   addClient,
   getAllClients,
+  getClientLookupList,
+  getClientByUserId,
   getClientById,
   updateClient,
   deleteClient,

@@ -1,7 +1,9 @@
+const { prisma } = require("../lib/prisma");
 const prodcutRepository = require("../repositories/product.repository");
 const clientRepository = require("../repositories/client.repository");
 const stockLevelRepository = require("../repositories/stock_level.repository");
 const auditLogLogic = require("./audit_log.logic");
+const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const { assertAllowedField } = require("../utils/pick");
 
 const PRODUCT_QUERY_FIELDS = [
@@ -14,7 +16,17 @@ const PRODUCT_QUERY_FIELDS = [
   "size",
 ];
 
-const addNewProduct = async (productData, adminUserId) => {
+/**
+ * Creates a product, optionally placing its opening stock in the same transaction.
+ *
+ * @param {object} productData
+ * @param {string} actorUserId - who performed this (admin or employee)
+ * @param {{ locationId: string, quantity: number, notes?: string }} [initialStock]
+ *   When supplied, a CHECKIN ledger entry is recorded so the stock level, the
+ *   arrived-today counter and the double-entry trail all stay consistent. Product
+ *   and stock are committed together or not at all.
+ */
+const addNewProduct = async (productData, actorUserId, initialStock) => {
   if (!productData.productName || !productData.clientId || !productData.skuCode) {
     throw new Error(
       "Name, Client ID, and SKU Code are required to create a product.",
@@ -38,12 +50,50 @@ const addNewProduct = async (productData, adminUserId) => {
     productData.isDeactivated = false; // Default to active if not provided
   }
 
-  const newProduct = await prodcutRepository.createProduct(productData);
-  if (adminUserId) {
-    await auditLogLogic.createAuditLog(adminUserId, "CREATE_PRODUCT", {
+  if (initialStock) {
+    if (!initialStock.locationId) {
+      throw new Error("A destination location is required to add opening stock.");
+    }
+    if (!Number.isInteger(Number(initialStock.quantity)) || Number(initialStock.quantity) <= 0) {
+      throw new Error("Opening stock quantity must be a positive whole number.");
+    }
+    if (!actorUserId) {
+      throw new Error("An authenticated user is required to add opening stock.");
+    }
+  }
+
+  const newProduct = initialStock
+    ? await prisma.$transaction(
+        async (tx) => {
+          const created = await prodcutRepository.createProduct(productData, tx);
+          await inventoryLedgerLogic.createInventoryLedger(
+            {
+              productId: created.id,
+              userId: actorUserId,
+              movementType: "CHECKIN",
+              quantity: Number(initialStock.quantity),
+              toLocationId: initialStock.locationId,
+              notes: initialStock.notes || "Opening stock",
+            },
+            { tx },
+          );
+          return created;
+        },
+        { maxWait: 10_000, timeout: 30_000 },
+      )
+    : await prodcutRepository.createProduct(productData);
+
+  if (actorUserId) {
+    await auditLogLogic.createAuditLog(actorUserId, "CREATE_PRODUCT", {
       productId: newProduct.id,
       skuCode: newProduct.skuCode,
       productName: newProduct.productName,
+      ...(initialStock
+        ? {
+            openingQuantity: Number(initialStock.quantity),
+            openingLocationId: initialStock.locationId,
+          }
+        : {}),
     }).catch(err => console.error("Audit log error:", err.message));
   }
   return newProduct;
@@ -117,7 +167,7 @@ const getProductByField = async (field, value) => {
   return await prodcutRepository.getProductsByField(queryField, value);
 };
 
-const updateProduct = async (id, updateData, adminUserId) => {
+const updateProduct = async (id, updateData, actorUserId) => {
   if (updateData.size && updateData.size <= 0) {
     throw new Error("Size must be a positive number.");
   }
@@ -145,8 +195,8 @@ const updateProduct = async (id, updateData, adminUserId) => {
   }
 
   const updatedProduct = await prodcutRepository.updateProduct(id, updateData);
-  if (adminUserId) {
-    await auditLogLogic.createAuditLog(adminUserId, "EDIT_PRODUCT", {
+  if (actorUserId) {
+    await auditLogLogic.createAuditLog(actorUserId, "EDIT_PRODUCT", {
       productId: id,
       skuCode: updatedProduct.skuCode,
       changes: updateData,
@@ -155,10 +205,38 @@ const updateProduct = async (id, updateData, adminUserId) => {
   return updatedProduct;
 };
 
-const deleteProduct = async (id, adminUserId) => {
+/**
+ * Toggles a product between active and deactivated.
+ * Deactivation is the reversible alternative to deleteProduct, which is a hard delete.
+ */
+const deactivateProduct = async (id, actorUserId) => {
+  const product = await prodcutRepository.getProductById(id);
+  if (!product) {
+    return null;
+  }
+
+  const updatedProduct = await prodcutRepository.updateProduct(id, {
+    isDeactivated: !product.isDeactivated,
+  });
+
+  if (actorUserId) {
+    await auditLogLogic.createAuditLog(
+      actorUserId,
+      updatedProduct.isDeactivated ? "DEACTIVATE_PRODUCT" : "REACTIVATE_PRODUCT",
+      {
+        productId: id,
+        skuCode: updatedProduct.skuCode,
+        productName: updatedProduct.productName,
+      },
+    ).catch(err => console.error("Audit log error:", err.message));
+  }
+  return updatedProduct;
+};
+
+const deleteProduct = async (id, actorUserId) => {
   const deletedProduct = await prodcutRepository.deleteProduct(id);
-  if (adminUserId) {
-    await auditLogLogic.createAuditLog(adminUserId, "DELETE_PRODUCT", {
+  if (actorUserId) {
+    await auditLogLogic.createAuditLog(actorUserId, "DELETE_PRODUCT", {
       productId: id,
       skuCode: deletedProduct?.skuCode,
       productName: deletedProduct?.productName,
@@ -169,16 +247,35 @@ const deleteProduct = async (id, adminUserId) => {
 
 
 
+const RECENT_MOVEMENT_LIMIT = 20;
+
+/**
+ * Everything the product detail view needs, in one round trip: the product, its
+ * stock broken down by location, the total on hand, and its recent movements.
+ *
+ * @returns {null} when no product matches, so the caller can answer 404
+ */
 const getProductandStockLevelById = async (id) => {
   const product = await prodcutRepository.getProductByField("id", id);
   if (!product) {
-    throw new Error("Product not found.");
+    return null;
   }
+
   const stockLevels = await stockLevelRepository.getStockLevelByField("productId", id);
+  const totalQuantity = stockLevels.reduce(
+    (sum, level) => sum + (level.currentQuantity || 0),
+    0,
+  );
+
+  const recentMovements = await inventoryLedgerLogic
+    .getLedgerWithFilters({ productId: id }, { skip: 0, take: RECENT_MOVEMENT_LIMIT })
+    .catch(() => ({ items: [] }));
 
   return {
     product,
     stockLevels,
+    totalQuantity,
+    recentMovements: recentMovements.items || recentMovements,
   };
 };
 
@@ -193,6 +290,7 @@ module.exports = {
   getProductByClientId,
   getProductByField,
   updateProduct,
+  deactivateProduct,
   deleteProduct,
   getProductandStockLevelById
 };

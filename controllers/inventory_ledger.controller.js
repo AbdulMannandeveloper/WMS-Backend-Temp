@@ -1,7 +1,7 @@
 const inventoryLedgerLogic = require("../logic/inventory_ledger.logic");
 const auditLogLogic = require("../logic/audit_log.logic");
-const clientRepository = require("../repositories/client.repository");
 const { parsePagination, paginatedResponse } = require("../utils/pagination");
+const { canAccessClientId } = require("../utils/clientScope");
 
 const createInventoryLedgerEntry = async (req, res) => {
   try {
@@ -57,11 +57,8 @@ const getInventoryLedgerByClientId = async (req, res) => {
     const { clientId } = req.params;
 
     // A client may only read their own ledger. Staff (admin/employee) may read any.
-    if (req.user.role === "client") {
-      const ownClient = await clientRepository.getClientByField("userId", req.user.id);
-      if (!ownClient || ownClient.id !== clientId) {
-        return res.status(403).json({ error: "You do not have access to this client's records." });
-      }
+    if (!(await canAccessClientId(req.user, clientId))) {
+      return res.status(403).json({ error: "You do not have access to this client's records." });
     }
 
     const ledgers = await inventoryLedgerLogic.getInventoryLedgersByClientId(clientId);

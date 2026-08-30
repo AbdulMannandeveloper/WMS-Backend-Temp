@@ -22,15 +22,19 @@ const createStockLevel = async (stockLevelData, tx) => {
   });
 };
 
-const getAllStockLevels = async ({ skip, take } = {}, tx) => {
+const getAllStockLevels = async ({ skip, take, clientId } = {}, tx) => {
   const client = db(tx);
+  // Narrowing by owning client happens in the query (not in JS) so the paginated
+  // total stays consistent with the rows returned.
+  const where = clientId ? { product: { clientId } } : {};
   const [items, total] = await Promise.all([
     client.stockLevel.findMany({
+      where,
       include: includeRelations,
       ...(take != null ? { skip: skip || 0, take } : {}),
       orderBy: { id: 'asc' },
     }),
-    client.stockLevel.count(),
+    client.stockLevel.count({ where }),
   ]);
   return { items, total };
 };
