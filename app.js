@@ -13,6 +13,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
+const cookieParser = require("cookie-parser");
 const morgan = require("morgan");
 const pinoHttp = require("pino-http");
 
@@ -83,6 +84,8 @@ app.use(
 app.use(compression());
 app.use(express.json({ limit: BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
+// The refresh token arrives as an httpOnly cookie.
+app.use(cookieParser());
 
 if (process.env.NODE_ENV === "production") {
   app.use(

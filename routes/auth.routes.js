@@ -14,12 +14,21 @@ const {
 	setupPasswordWithToken,
 	resetPasswordForUser,
 	forgotPassword,
+	refreshSession,
+	logout,
+	logoutEverywhere,
 } = require('../controllers/auth.controller');
 
 const router = express.Router();
 
 router.post('/login', authLimiter, loginUser);
 router.post('/verify-otp', authLimiter, verifyOTP);
+
+// Session lifecycle. Refresh is rate limited like the other credential
+// endpoints — it accepts a bearer-equivalent secret from the cookie.
+router.post('/refresh', authLimiter, refreshSession);
+router.post('/logout', logout);
+router.post('/logout-all', authorizeRoles(), logoutEverywhere);
 
 router.post('/admin-signup/request-otp', authLimiter, requestAdminSignupOtp);
 

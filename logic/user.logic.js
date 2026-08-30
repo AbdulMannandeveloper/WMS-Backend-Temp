@@ -142,6 +142,17 @@ const updateUser = async (id, rawUpdateData) => {
         throw new Error("Invalid role.");
     }
 
+    // Deactivating an account, or moving someone between roles, has to end the
+    // sessions they already hold. Without this a deactivated user keeps working
+    // until their access token expires, and a demoted admin keeps admin rights
+    // in the token they are already carrying.
+    const revokes =
+        (updateData.isActive === false && user.isActive) ||
+        (updateData.role && updateData.role !== user.role);
+    if (revokes) {
+        updateData.tokenVersion = (user.tokenVersion ?? 0) + 1;
+    }
+
     if (updateData.email && !/\S+@\S+\.\S+/.test(updateData.email)) {
         throw new Error("Invalid email format");
     }

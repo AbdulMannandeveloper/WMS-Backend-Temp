@@ -7,7 +7,11 @@ const invitationTokenRepository = require("../repositories/invitation-token.repo
 const attendanceLogLogic = require("./attendance_log.logic");
 const { enqueueMail } = require("../utils/mailQueue");
 const { invalidateCachedUser } = require("../utils/authUserCache");
-const { signAuthToken } = require("../utils/jwt");
+const {
+  signAuthToken,
+  signRefreshToken,
+  verifyRefreshToken,
+} = require("../utils/jwt");
 const {
   otpEmailTemplate,
   inviteEmailTemplate,
@@ -58,6 +62,64 @@ const createOtpAndSendEmail = async (userId, email) => {
     html: emailContent.html,
     text: emailContent.text,
   });
+};
+
+/**
+ * Ends every session this user currently has.
+ *
+ * Bumping tokenVersion invalidates every access and refresh token already
+ * issued, because each carries the version it was minted at. Called wherever a
+ * session should not survive: a password change, a deactivation, an explicit
+ * "sign out everywhere".
+ *
+ * The cached user record has to go too — middlewares/authorize.js holds it for
+ * 45s, so without this the bump would be ignored for that long and reopen the
+ * hole from the other side.
+ */
+const revokeUserSessions = async (userId) => {
+  const user = await userRepository.getUserByField("id", userId);
+  if (!user) return null;
+
+  const updated = await userRepository.updateUser(userId, {
+    tokenVersion: (user.tokenVersion ?? 0) + 1,
+  });
+  invalidateCachedUser(userId);
+  return updated;
+};
+
+/**
+ * Exchanges a refresh token for a new access token, rotating the refresh token
+ * as it goes so a stolen one stops working the moment the real user refreshes.
+ */
+const refreshSession = async (refreshToken) => {
+  if (!refreshToken) {
+    throw new Error("No session to refresh.");
+  }
+
+  let payload;
+  try {
+    payload = verifyRefreshToken(refreshToken);
+  } catch {
+    throw new Error("Session expired. Please sign in again.");
+  }
+
+  const user = await userRepository.getUserByField("id", payload.sub);
+  if (!user) {
+    throw new Error("Session expired. Please sign in again.");
+  }
+  if (!user.isActive) {
+    throw new Error("The account is not active.");
+  }
+  // The revoked case: a password reset or deactivation moved the version on.
+  if (payload.tv !== user.tokenVersion) {
+    throw new Error("Session has been revoked. Please sign in again.");
+  }
+
+  return {
+    accessToken: signAuthToken(user),
+    refreshToken: signRefreshToken(user),
+    user,
+  };
 };
 
 const authenticateUser = async (identifier, password) => {
@@ -247,6 +309,9 @@ const verifyOTP = async (userId, otp) => {
   return {
     verified: true,
     token,
+    // The controller signs the refresh cookie from this and strips it from the
+    // response body — it must never reach the client as JSON.
+    user: updatedUser,
     userId: updatedUser.id,
     firstName: updatedUser.firstName,
     lastName: updatedUser.lastName,
@@ -358,9 +423,13 @@ const setupPasswordWithToken = async ({ token, password }) => {
 
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
+  // Setting a password ends any session held under the old one — which is the
+  // point of an admin-triggered reset for a compromised account.
+  const current = await userRepository.getUserByField("id", tokenRecord.userId);
   await userRepository.updateUser(tokenRecord.userId, {
     passwordHash,
     isActive: true,
+    tokenVersion: (current?.tokenVersion ?? 0) + 1,
   });
   invalidateCachedUser(tokenRecord.userId);
 
@@ -499,6 +568,8 @@ const forgotPassword = async ({ email }) => {
 };
 
 module.exports = {
+  revokeUserSessions,
+  refreshSession,
   authenticateUser,
   verifyOTP,
   requestAdminSignupOtp,

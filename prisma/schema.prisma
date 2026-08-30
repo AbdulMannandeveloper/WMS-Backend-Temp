@@ -16,6 +16,10 @@ model User {
   passwordHash               String?                    @map("password_hash")
   role                       UserRole
   isActive                   Boolean                    @default(false) @map("is_active")
+  // Bumped to invalidate every token already issued to this user. Tokens carry
+  // the version they were minted at, so a password reset or a deactivation ends
+  // live sessions instead of merely changing a value the holder no longer needs.
+  tokenVersion               Int                        @default(0) @map("token_version")
   createdAt                  DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
   client                     Client?

@@ -65,6 +65,20 @@ const authorizeRoles = (...allowedRoles) => {
                 return res.status(403).json({ error: 'Account is not active.' });
             }
 
+            // The revocation check. A token carries the tokenVersion it was
+            // minted at; bumping the user's version invalidates every token
+            // already out there. Without this a leaked token stays valid for its
+            // full life and a password reset cannot end the session.
+            //
+            // Tokens issued before this column existed have no `tv`, so they are
+            // treated as stale and the holder logs in again once.
+            const tokenVersion = payload.tv;
+            if (tokenVersion === undefined || tokenVersion !== user.tokenVersion) {
+                return res
+                    .status(401)
+                    .json({ error: 'Session has been revoked. Please sign in again.' });
+            }
+
             if (normalizedAllowedRoles.length > 0 && !normalizedAllowedRoles.includes(user.role)) {
                 return res.status(403).json({ error: 'You do not have permission to perform this action.' });
             }
