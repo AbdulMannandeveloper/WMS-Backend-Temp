@@ -4,6 +4,10 @@ const { connectDB, prisma } = require("./lib/prisma");
 const { getRedisClient, disconnectRedis } = require("./lib/redis");
 const { app, setShuttingDown, isShuttingDown } = require("./app");
 const { recoverStranded } = require("./utils/mailQueue");
+const {
+  ensureShipmentService,
+  ensureFdaService,
+} = require("./logic/billing_services");
 
 const PORT = process.env.PORT || 5000;
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 15_000);
@@ -45,6 +49,14 @@ const startServer = async () => {
     // Mail a previous worker had claimed but not finished when it died goes back
     // on the queue. No-op without Redis.
     await recoverStranded();
+
+    // The two services the system raises for itself. Without these rows in the
+    // catalogue they never appear in a client's rate card, so no dispatch and no
+    // FDA consignment can be priced — which is exactly what had happened: both
+    // helpers existed and neither was ever called. Idempotent, so every worker
+    // and every restart is safe.
+    await ensureShipmentService();
+    await ensureFdaService();
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

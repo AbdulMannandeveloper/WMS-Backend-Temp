@@ -16,7 +16,8 @@
     "test:redis": "node scripts/test-redis.js",
     "check:secrets": "node scripts/check-secrets.js",
     "check:imports": "node scripts/check-imports.js",
-    "check:calls": "node scripts/check-calls.js"
+    "check:calls": "node scripts/check-calls.js",
+    "backfill:employees": "node scripts/backfill-employee-profiles.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.787.0",

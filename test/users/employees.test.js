@@ -22,6 +22,76 @@ import { prisma } from '../helpers/db.js';
 import { as, anon } from '../helpers/auth.js';
 import { makeAdmin, makeEmployee, makeClient } from '../factories/index.js';
 
+describe('creating an employee login', () => {
+  it('creates the profile too, so they can be assigned work', async () => {
+    // Two routes created employees and only one made the profile. Anyone added
+    // through the Users page got a login and nothing else — and a Shipment
+    // references the profile, not the user, so they could not be assigned any
+    // work. The result was two employee logins, zero profiles, and a
+    // create-shipment dialog that refused to open for want of an operator.
+    const admin = await makeAdmin();
+
+    const res = await as(admin).post('/api/users/add').send({
+      firstName: 'New',
+      lastName: 'Operative',
+      email: 'operative@example.test',
+      role: 'employee',
+    });
+
+    expect(res.status).toBe(201);
+    const user = await prisma.user.findUnique({
+      where: { email: 'operative@example.test' },
+      include: { employee: true },
+    });
+    expect(user.employee).not.toBeNull();
+    expect(user.employee.employeeUniqueNumber).toBeTruthy();
+  });
+
+  it('makes them immediately visible to the operator lookup', async () => {
+    // The end the fix exists for.
+    const admin = await makeAdmin();
+    await as(admin).post('/api/users/add').send({
+      firstName: 'Pick',
+      lastName: 'Packer',
+      email: 'packer@example.test',
+      role: 'employee',
+    });
+
+    const res = await as(admin).get('/api/employees/lookup');
+
+    expect(res.body.some((e) => e.lastName === 'Packer')).toBe(true);
+  });
+
+  it('does not create a profile for an admin or a client', async () => {
+    const admin = await makeAdmin();
+
+    await as(admin).post('/api/users/add').send({
+      firstName: 'Ann', lastName: 'Admin', email: 'ann@example.test', role: 'admin',
+    });
+
+    const user = await prisma.user.findUnique({
+      where: { email: 'ann@example.test' },
+      include: { employee: true },
+    });
+    expect(user.employee).toBeNull();
+  });
+
+  it('gives each new employee a distinct number', async () => {
+    const admin = await makeAdmin();
+    for (const n of [1, 2, 3]) {
+      await as(admin).post('/api/users/add').send({
+        firstName: 'Emp', lastName: `N${n}`, email: `emp${n}@example.test`, role: 'employee',
+      });
+    }
+
+    const numbers = (
+      await prisma.employee.findMany({ select: { employeeUniqueNumber: true } })
+    ).map((e) => e.employeeUniqueNumber);
+
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+});
+
 describe('employee records', () => {
   it('are listed for an admin only', async () => {
     const admin = await makeAdmin();

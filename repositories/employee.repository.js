@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { prisma } = require('../lib/prisma');
 
 const prismaEmployee = prisma.employee;
@@ -14,9 +15,24 @@ const PUBLIC_USER_SELECT = {
     isActive: true,
 };
 
+/**
+ * Generates an employee number: EMP-XXXXXXXX.
+ *
+ * The schema declares @default(dbgenerated()) on employee_unique_number, but the
+ * column has no database default and is NOT NULL — the number has always come
+ * from application code. Generated here rather than at each call site so it is
+ * impossible to write an Employee without one; forgetting it is a null
+ * constraint violation surfaced to the user as a 400 with a Prisma stack trace.
+ */
+const generateEmployeeNumber = () =>
+    'EMP-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+
 const createEmployee = async (employeeData) => {
     return await prismaEmployee.create({
-        data: employeeData,
+        data: {
+            employeeUniqueNumber: generateEmployeeNumber(),
+            ...employeeData,
+        },
     });
 }
 
@@ -50,6 +66,7 @@ const deleteEmployee = async (id) => {
 
 module.exports = {
     createEmployee,
+    generateEmployeeNumber,
     getAllEmployees,
     getEmployeeByField,
     updateEmployee,

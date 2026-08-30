@@ -1,3 +1,4 @@
+const employeeRepository = require('../repositories/employee.repository');
 const userRepository = require('../repositories/user.repository');
 const authLogic = require('./auth.logic');
 const invitationTokenRepository = require("../repositories/invitation-token.repository");
@@ -66,6 +67,24 @@ const addNewUser = async (userData) => {
 
     if (!newUser) {
         throw new Error("Failed to create user");
+    }
+
+    // An employee login without an Employee profile is a person who cannot be
+    // assigned any work: shipments reference the profile, not the user, so the
+    // operator dropdown is built from profiles. This route created only the
+    // login, the Employees page created both, and the result was two employee
+    // users with zero profiles and a create-shipment dialog that refused to open
+    // because it could find nobody to assign. Created here so the two can never
+    // drift apart again; addEmployee remains the richer path for job title,
+    // salary and the rest.
+    if (newUser.role === "employee") {
+        const existingProfile = await employeeRepository.getEmployeeByField(
+            "userId",
+            newUser.id,
+        );
+        if (!existingProfile) {
+            await employeeRepository.createEmployee({ userId: newUser.id });
+        }
     }
 
     const plainToken = crypto.randomBytes(32).toString("hex");
