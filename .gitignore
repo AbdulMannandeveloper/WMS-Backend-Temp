@@ -138,3 +138,9 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Runtime output: invoice PDFs and uploaded receipts are written here by the
+# app. One got swept into a commit; they are generated per invoice and can
+# contain a client's commercial detail, so they do not belong in the repository.
+uploads/
+!uploads/.gitkeep
