@@ -5,6 +5,16 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+
+  // Migrations cannot run through a transaction-mode connection pooler:
+  // pgbouncer does not support the session-level advisory locks Prisma takes to
+  // stop two deploys migrating at once. Supabase's pooler (port 6543) is exactly
+  // that, so `prisma migrate deploy` needs a direct connection (port 5432).
+  //
+  // Prisma requires this to be set, it does not fall back to DATABASE_URL. Where
+  // there is no pooler — local development, CI — point it at the same database
+  // as DATABASE_URL.
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
