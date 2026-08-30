@@ -18,6 +18,11 @@ router.put("/:id/unpick", staffOnly, shimpentItemController.unpickShipmentItem);
 // itself — changing what is going out is a commercial decision.
 router.put("/:id", adminOnly, shimpentItemController.updateShipmentItem);
 
+// Returning goods that went out and came back. Admin only — it puts stock on
+// the shelf and is a commercial decision, not warehouse routine. Deliberately
+// does not touch the invoice: the dispatch happened and was charged for.
+router.post("/:id/return", adminOnly, shimpentItemController.returnShipmentItem);
+
 // -----------------------------NOT EXPOSED FOR NOW-----------------------------
 // router.post('/', shimpentItemController.createShipmentItem);
 // router.get('/field/:field/:value', shimpentItemController.getShipmentItemsByField);

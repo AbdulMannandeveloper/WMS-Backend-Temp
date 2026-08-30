@@ -53,6 +53,11 @@ const validateLedgerInput = async (newData, tx) => {
     CHECKIN: { requireFrom: false, requireTo: true },
     INTERNAL_MOVE: { requireFrom: true, requireTo: true },
     CHECKOUT: { requireFrom: true, requireTo: false },
+    // Goods coming back after dispatch. Same shape as a CHECKIN — they arrive
+    // into a bin from outside — but a distinct type, because a customer return
+    // and a supplier delivery are different events and folding them together
+    // makes every goods-in figure wrong.
+    RETURN: { requireFrom: false, requireTo: true },
   };
 
   const req = movementRequirements[newData.movementType];
@@ -107,6 +112,20 @@ const adjustStockLevels = async (ledgerEntry, tx) => {
       ledgerEntry.quantity,
       tx,
       { countAsArrival: true },
+    );
+    return true;
+  }
+
+  if (ledgerEntry.movementType === "RETURN") {
+    // Back onto the shelf. Same shape as a CHECKIN, but deliberately NOT
+    // counted as an arrival: arrivedTodayQuantity drives the goods-in view, and
+    // a customer return is not a delivery.
+    await stockLevelRepository.increaseOrCreateStockAtomically(
+      ledgerEntry.productId,
+      ledgerEntry.toLocationId,
+      ledgerEntry.quantity,
+      tx,
+      { countAsArrival: false },
     );
     return true;
   }

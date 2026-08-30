@@ -12,6 +12,7 @@ const shipmentRepository = require("../repositories/shipment.repository");
 const productLogic = require("./product.logic");
 const stockLevelLogic = require("./stock_level.logic");
 const auditLogLogic = require("./audit_log.logic");
+const inventoryLedgerLogic = require("./inventory_ledger.logic");
 
 /**
  * Adds a line to a shipment and reserves its stock.
@@ -242,6 +243,103 @@ const unpickShipmentItem = async (id, actorUserId) => {
   return updated;
 };
 
+/**
+ * Returns some or all of a dispatched line to the shelf.
+ *
+ * Goods that went out and came back. Only from a DISPATCHED shipment: before
+ * that, unpick and cancel already put reserved stock back, and a second path
+ * doing the same job is how the two end up disagreeing about what is on the
+ * shelf.
+ *
+ * The stock goes back to the bin it was picked from, which the line already
+ * records, and is logged as a RETURN rather than a CHECKIN — goods coming back
+ * from a customer and goods arriving from a supplier are different events, and
+ * folding them together makes every inbound report wrong.
+ *
+ * THE INVOICE IS NOT TOUCHED. No line is added, amended or reversed, and the
+ * total is not recalculated. The dispatch happened and was charged for; what
+ * happens to the goods afterwards is a separate commercial conversation, and
+ * silently crediting an invoice from a warehouse action is not this system's
+ * decision to make.
+ */
+const returnShipmentItem = async (id, quantity, reason, actorUserId) => {
+  const items = await shipmentItemRepository.getShipmentItemsByField("id", id);
+  const item = Array.isArray(items) ? items[0] : items;
+  if (!item) {
+    throw new Error("Shipment item not found.");
+  }
+
+  const shipment = await shipmentRepository.getShipmentByField(
+    "id",
+    item.shipmentId,
+  );
+  if (!shipment) {
+    throw new Error("Shipment not found.");
+  }
+
+  if (shipment.status !== "DISPATCHED") {
+    throw new Error(
+      `Only a dispatched shipment can have items returned — this one is ${shipment.status}. Use unpick or cancel instead.`,
+    );
+  }
+
+  const alreadyReturned = item.returnedQuantity ?? 0;
+  const outstanding = item.quantity - alreadyReturned;
+
+  const amount = Number(quantity);
+  if (!Number.isInteger(amount) || amount <= 0) {
+    throw new Error("Return quantity must be a whole number above zero.");
+  }
+  if (amount > outstanding) {
+    throw new Error(
+      alreadyReturned > 0
+        ? `Only ${outstanding} of this line is still out — ${alreadyReturned} of ${item.quantity} has already been returned.`
+        : `Cannot return ${amount}; the line was only ${item.quantity}.`,
+    );
+  }
+
+  return await prisma.$transaction(async (tx) => {
+    const updated = await shipmentItemRepository.updateShipmentItem(
+      id,
+      { returnedQuantity: alreadyReturned + amount },
+      tx,
+    );
+
+    // The ledger applies the stock change itself, the same way CHECKOUT does at
+    // dispatch — putting it back here as well would credit the shelf twice.
+    await inventoryLedgerLogic.createInventoryLedger(
+      {
+        productId: item.productId,
+        userId: actorUserId,
+        movementType: "RETURN",
+        quantity: amount,
+        toLocationId: item.sourceLocationId,
+        referenceId: item.shipmentId,
+        notes: reason ? String(reason) : "Returned after dispatch",
+      },
+      { tx },
+    );
+
+    if (actorUserId) {
+      await auditLogLogic
+        .createAuditLog(actorUserId, "SHIPMENT_ITEM_RETURNED", {
+          shipmentItemId: id,
+          shipmentId: item.shipmentId,
+          productId: item.productId,
+          toLocationId: item.sourceLocationId,
+          quantity: amount,
+          returnedTotal: alreadyReturned + amount,
+          ofLineQuantity: item.quantity,
+          reason: reason ?? null,
+          invoiceChanged: false,
+        })
+        .catch((err) => console.error("Audit log error:", err.message));
+    }
+
+    return updated;
+  });
+};
+
 const deleteShipmentItem = async (id) => {
   return await shipmentItemRepository.deleteShipmentItem(id);
 };
@@ -252,5 +350,6 @@ module.exports = {
   updateShipmentItem,
   pickShipmentItem,
   unpickShipmentItem,
+  returnShipmentItem,
   deleteShipmentItem,
 };

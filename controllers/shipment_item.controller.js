@@ -50,6 +50,25 @@ const pickShipmentItem = async (req, res) => {
   }
 };
 
+/**
+ * Returns part or all of a dispatched line to the shelf. Admin only, and the
+ * invoice is deliberately untouched.
+ */
+const returnShipmentItem = async (req, res) => {
+  try {
+    const updated = await shipmentItemLogic.returnShipmentItem(
+      req.params.id,
+      req.body?.quantity,
+      req.body?.reason,
+      req.user.id,
+    );
+    res.status(200).json(updated);
+  } catch (error) {
+    const notFound = /not found/i.test(error.message);
+    res.status(notFound ? 404 : 400).json({ error: error.message });
+  }
+};
+
 const unpickShipmentItem = async (req, res) => {
   try {
     const item = await shipmentItemLogic.unpickShipmentItem(
@@ -79,4 +98,5 @@ module.exports = {
   pickShipmentItem,
   unpickShipmentItem,
   deleteShipmentItem,
+  returnShipmentItem,
 };

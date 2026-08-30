@@ -324,6 +324,11 @@ model ShipmentItem {
   productId        String             @map("product_id") @db.Uuid
   sourceLocationId String             @map("source_location_id") @db.Uuid // Where it's reserved from
   quantity         Int
+  // How much of this line has come back after dispatch. Kept per line rather
+  // than as a separate table because a return is a correction to what went out,
+  // and capping at (quantity - returnedQuantity) is what stops the same ten
+  // units being returned twice.
+  returnedQuantity Int                @default(0) @map("returned_quantity")
   status           ShipmentItemStatus @default(PENDING)
   // Set when this line ships under its own consignment number, e.g. an oversized
   // piece travelling separately. Falls back to the shipment's when null.
@@ -492,6 +497,7 @@ enum InventoryMovementType {
   CHECKIN // Items arriving from a supplier
   INTERNAL_MOVE // Items moving between storage bins
   CHECKOUT // Items leaving the building
+  RETURN // Items coming back after dispatch — distinct from CHECKIN, which is a supplier delivery
 }
 
 enum InvoiceStatus {
