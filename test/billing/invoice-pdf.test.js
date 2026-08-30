@@ -143,15 +143,43 @@ describe('invoice PDF', () => {
     expect(after.pdfLink).toBeTruthy();
   });
 
-  it('labels every line type, including SHIPMENT_CHARGE', async () => {
+  it('labels every line type there is', async () => {
     const { ITEM_TYPE_LABELS } = await import('../../utils/invoicePdf.js').then(
       (m) => m.default
     );
 
-    // The browser version tested only for AUTOMATED_SERVICE and called
-    // everything else "Manual", so 2.1's shipment charges were mislabelled.
-    expect(ITEM_TYPE_LABELS.AUTOMATED_SERVICE).toBe('Service');
-    expect(ITEM_TYPE_LABELS.SHIPMENT_CHARGE).toBe('Shipment');
-    expect(ITEM_TYPE_LABELS.MANUAL_CHARGE).toBe('Manual');
+    // Enumerated from the schema rather than listed by hand. This test used to
+    // check three of them, so RECURRING_SERVICE and FDA_CHARGE were added later
+    // with no label and fell through to the raw enum — a client's invoice read
+    // "FDA_CHARGE" in the Type column. Walking the whole enum means the next
+    // line type cannot be added without one.
+    const ALL_TYPES = [
+      'AUTOMATED_SERVICE',
+      'SHIPMENT_CHARGE',
+      'MANUAL_CHARGE',
+      'RECURRING_SERVICE',
+      'FDA_CHARGE',
+    ];
+
+    for (const type of ALL_TYPES) {
+      expect(ITEM_TYPE_LABELS[type], `no label for ${type}`).toBeTruthy();
+      // A label that is just the enum name back again is not a label.
+      expect(ITEM_TYPE_LABELS[type]).not.toBe(type);
+      expect(ITEM_TYPE_LABELS[type]).not.toMatch(/_/);
+    }
+  });
+
+  it('covers exactly the types the database can produce', async () => {
+    // Catches a type being removed from the schema and left here, and a new one
+    // being added to the schema and missed.
+    const { ITEM_TYPE_LABELS } = await import('../../utils/invoicePdf.js').then(
+      (m) => m.default
+    );
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT unnest(enum_range(NULL::"LineItemType"))::text AS value`
+    );
+    const fromDb = rows.map((r) => r.value).sort();
+
+    expect(Object.keys(ITEM_TYPE_LABELS).sort()).toEqual(fromDb);
   });
 });
