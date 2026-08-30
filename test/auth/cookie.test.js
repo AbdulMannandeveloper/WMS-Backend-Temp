@@ -13,6 +13,23 @@ import jwtUtil from '../../utils/jwt.js';
 
 const { refreshCookieOptions, refreshCookieClearOptions } = jwtUtil;
 
+const withEnv = (vars, fn) => {
+  const previous = {};
+  for (const [k, v] of Object.entries(vars)) {
+    previous[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of Object.entries(previous)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+};
+
 describe('clear options', () => {
   it('carry no maxAge', () => {
     // The deprecation, in one assertion.
@@ -56,5 +73,62 @@ describe('set options', () => {
     // Without it the cookie is a session cookie and closing the tab signs you
     // out — which is what clearCookie must NOT copy.
     expect(refreshCookieOptions().maxAge).toBeGreaterThan(0);
+  });
+});
+
+describe('cross-site deployment', () => {
+  it('uses Lax by default, which is the safer setting', () => {
+    // Same-origin deployments get CSRF protection for free, so it has to be
+    // what you get without opting out.
+    withEnv({ CROSS_SITE_COOKIES: undefined }, () => {
+      expect(refreshCookieOptions().sameSite).toBe('lax');
+    });
+  });
+
+  it('switches to None when the frontend is on another site', () => {
+    // Vercel + Render are cross-site: .vercel.app and .onrender.com are on the
+    // Public Suffix List, so each subdomain is its own site and a Lax cookie is
+    // never sent to the API at all.
+    withEnv({ CROSS_SITE_COOKIES: 'true' }, () => {
+      expect(refreshCookieOptions().sameSite).toBe('none');
+    });
+  });
+
+  it('forces Secure with None, even outside production', () => {
+    // A SameSite=None cookie without Secure is dropped by the browser — which
+    // would look exactly like the bug this setting exists to fix.
+    withEnv({ CROSS_SITE_COOKIES: 'true', NODE_ENV: 'development' }, () => {
+      const options = refreshCookieOptions();
+      expect(options.sameSite).toBe('none');
+      expect(options.secure).toBe(true);
+    });
+  });
+
+  it('leaves local development on Lax without Secure', () => {
+    // Browsers refuse a Secure cookie over plain http, so turning it on here
+    // would mean no cookie is set at all.
+    withEnv({ CROSS_SITE_COOKIES: undefined, NODE_ENV: 'development' }, () => {
+      const options = refreshCookieOptions();
+      expect(options.sameSite).toBe('lax');
+      expect(options.secure).toBe(false);
+    });
+  });
+
+  it('only accepts a literal "true", not any truthy string', () => {
+    // Otherwise CROSS_SITE_COOKIES=false would enable it.
+    for (const value of ['false', '0', 'no', '']) {
+      withEnv({ CROSS_SITE_COOKIES: value }, () => {
+        expect(refreshCookieOptions().sameSite).toBe('lax');
+      });
+    }
+  });
+
+  it('clears the cookie with the same SameSite it was set with', () => {
+    // A cookie is only cleared when the attributes match; a mismatch here
+    // leaves a stale refresh token in the browser after logout.
+    withEnv({ CROSS_SITE_COOKIES: 'true' }, () => {
+      expect(refreshCookieClearOptions().sameSite).toBe('none');
+      expect(refreshCookieClearOptions().secure).toBe(true);
+    });
   });
 });
