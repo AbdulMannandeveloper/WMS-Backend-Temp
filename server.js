@@ -1,5 +1,15 @@
 require("dotenv").config();
 
+// Prefer IPv4 when a host publishes both.
+//
+// Several hosts — Render among them — have no IPv6 route, so resolving a
+// dual-stack name like smtp.gmail.com to its AAAA record fails with
+// ENETUNREACH before a connection is even attempted. This has now cost us twice:
+// once on the database host, once on outbound mail. Preferring A records costs
+// nothing where IPv6 works, and prevents a class of failure whose error message
+// points at the network rather than at the lookup.
+require("node:dns").setDefaultResultOrder("ipv4first");
+
 const { connectDB, prisma } = require("./lib/prisma");
 const { getRedisClient, disconnectRedis } = require("./lib/redis");
 const { app, setShuttingDown, isShuttingDown } = require("./app");
