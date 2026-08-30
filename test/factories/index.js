@@ -203,6 +203,147 @@ export const makeShift = (overrides = {}) =>
     },
   });
 
+// ─── Money & operations ───────────────────────────────────────────────────────
+// Every @db.Date field below is built in UTC. Constructing one from local time
+// stores the previous day east of UTC, which is how a month-boundary row ends up
+// filed under the wrong month — the bug that made "August" return two rows.
+
+/** A date-only value, safe to put in a @db.Date column from any timezone. */
+export const utcDate = (y, m, d) => new Date(Date.UTC(y, m - 1, d));
+
+export const makeExpenseCategory = (overrides = {}) =>
+  prisma.expenseCategory.create({
+    data: { categoryName: uniq('Category'), ...overrides },
+  });
+
+export const makeExpense = async (categoryId, overrides = {}) => {
+  const category = categoryId || (await makeExpenseCategory()).id;
+  return prisma.expense.create({
+    data: {
+      categoryId: category,
+      amount: '100.00',
+      description: 'Test expense',
+      date: utcDate(2026, 8, 15),
+      ...overrides,
+    },
+  });
+};
+
+export const makeHoliday = (overrides = {}) =>
+  prisma.holiday.create({
+    data: {
+      name: uniq('Holiday'),
+      startDate: utcDate(2026, 12, 25),
+      endDate: utcDate(2026, 12, 25),
+      ...overrides,
+    },
+  });
+
+export const makeAttendanceLog = (userId, overrides = {}) =>
+  prisma.employeeAttendanceLog.create({
+    data: {
+      userId,
+      status: 'on-time',
+      date: utcDate(2026, 8, 3),
+      loginTimestamp: new Date('2026-08-03T08:00:00.000Z'),
+      logoutTimestamp: new Date('2026-08-03T17:00:00.000Z'),
+      ...overrides,
+    },
+  });
+
+export const makeAttendanceSummary = (userId, overrides = {}) =>
+  prisma.monthlyAttendanceSummary.create({
+    data: {
+      userId,
+      monthYear: utcDate(2026, 8, 1),
+      totalDaysPresent: 20,
+      totalHoursWorked: '160.00',
+      ...overrides,
+    },
+  });
+
+export const makePayrollRecord = (userId, overrides = {}) =>
+  prisma.payrollRecord.create({
+    data: {
+      userId,
+      baseSalary: '2000.00',
+      fines: '0.00',
+      rewards: '0.00',
+      netPay: '2000.00',
+      monthYear: utcDate(2026, 8, 1),
+      ...overrides,
+    },
+  });
+
+export const makeFineRule = (overrides = {}) =>
+  prisma.fineRule.create({
+    data: { lateMinutes: 15, fineType: 'FIXED', amount: '10.00', ...overrides },
+  });
+
+export const makeEmployeeFine = (userId, overrides = {}) =>
+  prisma.employeeFine.create({
+    data: {
+      userId,
+      reason: 'Late arrival',
+      amount: '10.00',
+      date: utcDate(2026, 8, 5),
+      ...overrides,
+    },
+  });
+
+export const makeEmployeeBonus = (userId, overrides = {}) =>
+  prisma.employeeBonus.create({
+    data: {
+      userId,
+      reason: 'Overtime',
+      amount: '50.00',
+      date: utcDate(2026, 8, 5),
+      ...overrides,
+    },
+  });
+
+// ─── Stock movement & billing detail ──────────────────────────────────────────
+
+/**
+ * A ledger row. movementType is the InventoryMovementType enum; from/to are
+ * nullable because a check-in has no origin and a dispatch has no destination.
+ */
+export const makeLedgerEntry = (productId, userId, overrides = {}) =>
+  prisma.inventoryLedger.create({
+    data: {
+      productId,
+      userId,
+      movementType: 'CHECKIN',
+      quantity: 10,
+      ...overrides,
+    },
+  });
+
+export const makeInvoiceLineItem = (invoiceId, overrides = {}) =>
+  prisma.invoiceLineItem.create({
+    data: {
+      invoiceId,
+      itemType: 'MANUAL_CHARGE',
+      dateOfService: utcDate(2026, 8, 10),
+      description: 'Test line',
+      quantity: '1.00',
+      unitPrice: '10.00',
+      totalPrice: '10.00',
+      ...overrides,
+    },
+  });
+
+export const makeShipmentServiceMapping = (shipmentId, serviceId, overrides = {}) =>
+  prisma.shipmentServiceMapping.create({
+    data: {
+      shipmentId,
+      serviceId,
+      quantity: '1.00',
+      appliedUnitPrice: '3.00',
+      ...overrides,
+    },
+  });
+
 /**
  * The cast most warehouse tests need: an admin, an employee, a client, one
  * product sitting in one bin with stock on hand.
