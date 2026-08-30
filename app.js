@@ -17,6 +17,7 @@ const morgan = require("morgan");
 const pinoHttp = require("pino-http");
 
 const { prisma } = require("./lib/prisma");
+const { globalLimiter } = require("./middlewares/rateLimit");
 
 const userRoutes = require("./routes/user.routes");
 const authRoutes = require("./routes/auth.routes");
@@ -41,6 +42,16 @@ const profitLossRoutes = require("./routes/profit_loss.routes");
 
 const app = express();
 const BODY_LIMIT = process.env.JSON_BODY_LIMIT || "1mb";
+
+// deploy/nginx.conf sits in front and sets X-Forwarded-For. Without this Express
+// reports nginx's address as req.ip for every request, and express-rate-limit
+// keys on req.ip — so every user shares one bucket and ten failed logins from
+// anybody locks out everybody.
+//
+// The hop count matters: `true` is refused by express-rate-limit
+// (ERR_ERL_PERMISSIVE_TRUST_PROXY) because it lets a client spoof the header and
+// sidestep the limiter entirely. One hop, one nginx.
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 1));
 
 // Flipped by server.js during graceful shutdown so the probes below start
 // failing before the listener actually closes.
@@ -86,6 +97,11 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.use(express.static("public"));
+
+// Scoped to /api, which is what keeps /healthz and /readyz out of it — an
+// orchestrator polling health must never be throttled. Mount order is
+// irrelevant here; the path is doing the work.
+app.use("/api", globalLimiter());
 
 app.get("/", (req, res) => {
   res.status(200).json({

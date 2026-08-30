@@ -1,37 +1,9 @@
 const express = require('express');
-const rateLimit = require('express-rate-limit');
 const { authorizeRoles } = require('../middlewares/authorize');
+// Shared factory: same Redis store as the global limiter, same test behaviour.
+const { authLimiter: authLimiterFactory } = require('../middlewares/rateLimit');
 
-const buildAuthLimiter = () => {
-	const options = {
-		windowMs: 15 * 60 * 1000,
-		max: 10,
-		standardHeaders: true,
-		legacyHeaders: false,
-		message: { error: 'Too many attempts. Please try again later.' },
-	};
-
-	if (process.env.REDIS_URL) {
-		try {
-			const Redis = require('ioredis');
-			const { RedisStore } = require('rate-limit-redis');
-			const client = new Redis(process.env.REDIS_URL, {
-				maxRetriesPerRequest: 3,
-			});
-			options.store = new RedisStore({
-				sendCommand: (...args) => client.call(...args),
-				prefix: 'rl:auth:',
-			});
-			console.log('[RateLimit] Auth limiter using Redis store');
-		} catch (err) {
-			console.error('[RateLimit] Redis store unavailable, using memory:', err.message);
-		}
-	}
-
-	return rateLimit(options);
-};
-
-const authLimiter = buildAuthLimiter();
+const authLimiter = authLimiterFactory();
 
 const {
 	loginUser,

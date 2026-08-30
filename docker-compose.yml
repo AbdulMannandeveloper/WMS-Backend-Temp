@@ -64,6 +64,11 @@ services:
       - "8000:80"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # The built frontend, served from the same origin as the API so the
+      # refresh cookie can stay SameSite=Lax. Build it with:
+      #   cd ../ProPackers-WMS-Frontend && npm run build
+      # and point FRONTEND_DIST at the dist/ it produces.
+      - ${FRONTEND_DIST:-../ProPackers-WMS-Frontend/dist}:/usr/share/nginx/html:ro
     depends_on:
       - api
 
