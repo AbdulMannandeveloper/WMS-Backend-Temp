@@ -25,6 +25,11 @@ router.delete("/:id", adminOnly, invoiceController.deleteMonthlyInvoice);
 
 // Line Items (nested under invoice, admin only)
 router.post("/:id/line-items", adminOnly, invoiceController.createLineItem);
+
+// Charging a quantity of a service a client has already agreed a rate for, onto
+// whichever period is open. Declared before nothing in particular, but note it
+// is a collection route rather than /:id/ — the invoice is resolved, not chosen.
+router.post("/charge-service", adminOnly, invoiceController.chargeService);
 router.delete("/:id/line-items/:lineItemId", adminOnly, invoiceController.deleteLineItem);
 
 module.exports = router;

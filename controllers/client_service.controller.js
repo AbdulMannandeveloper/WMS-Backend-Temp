@@ -59,7 +59,13 @@ const updateClientService = async (req, res) => {
     );
     res.status(200).json(clientService);
   } catch (error) {
-    res.status(404).json({ error: error.message });
+    // A rejected price or quantity is a bad request, not a missing record. It
+    // was returning 404 for both, so a validation message arrived looking like
+    // the rate had vanished.
+    const missing =
+      /not found/i.test(error.message) ||
+      error.code === 'P2025'; // Prisma: record to update does not exist
+    res.status(missing ? 404 : 400).json({ error: error.message });
   }
 };
 

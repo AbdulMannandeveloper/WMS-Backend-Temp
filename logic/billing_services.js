@@ -207,6 +207,70 @@ const resolveOpenInvoiceFor = async (clientId, tx, maxLookahead = 12) => {
   );
 };
 
+/**
+ * Charges a quantity of a service a client has already agreed a rate for,
+ * straight onto their open invoice.
+ *
+ * For work that happened once and is not tied to a shipment — an hour of
+ * re-labelling, a pallet rewrapped, a special delivery. The recurring flag
+ * covers the predictable monthly charges; this covers everything else, and
+ * between them a client with no shipments at all can still be billed.
+ *
+ * Only services the client already has a rate for: inventing a price at the
+ * point of charging is how a client gets billed something nobody agreed.
+ */
+const chargeServiceToClient = async (
+  { clientId, clientServiceId, quantity, description },
+  tx,
+) => {
+  const amount = Number(quantity);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Quantity must be above zero.');
+  }
+
+  const rate = await db(tx).clientService.findUnique({
+    where: { id: clientServiceId },
+    include: { service: true },
+  });
+  if (!rate) {
+    throw new Error('That agreed rate does not exist.');
+  }
+  if (rate.clientId !== clientId) {
+    throw new Error('That rate belongs to a different client.');
+  }
+
+  const unitPrice = Number(rate.chargedPrice);
+  const invoice = await resolveOpenInvoiceFor(clientId, tx);
+
+  const line = await invoiceLineItemRepository.createInvoiceLineItem(
+    {
+      invoiceId: invoice.id,
+      clientServiceId: rate.id,
+      quantity: amount,
+      unitPrice,
+      totalPrice: Number((amount * unitPrice).toFixed(2)),
+      description:
+        description ||
+        `${rate.service?.description || 'Service'} — ${amount} ${rate.unit || 'unit'}(s)`,
+      dateOfService: new Date(),
+      itemType: 'MANUAL_CHARGE',
+    },
+    tx,
+  );
+
+  // Derived from the lines, never accumulated.
+  const { _sum } = await db(tx).invoiceLineItem.aggregate({
+    where: { invoiceId: invoice.id },
+    _sum: { totalPrice: true },
+  });
+  await db(tx).monthlyInvoice.update({
+    where: { id: invoice.id },
+    data: { totalAmount: _sum.totalPrice ?? 0 },
+  });
+
+  return { line, invoice };
+};
+
 module.exports = {
   SHIPMENT_SERVICE_CODE,
   FDA_SERVICE_CODE,
@@ -218,4 +282,5 @@ module.exports = {
   getFdaRateForClient,
   applyRecurringCharges,
   resolveOpenInvoiceFor,
+  chargeServiceToClient,
 };

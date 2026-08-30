@@ -1,6 +1,7 @@
 const monthlyInvoiceLogic = require("../logic/monthly_invoice.logic");
 const invoiceLineItemLogic = require("../logic/invoice_line_item.logic");
 const { resolveOwnClientId, canAccessClientId } = require("../utils/clientScope");
+const { chargeServiceToClient } = require("../logic/billing_services");
 const { pick } = require("../utils/pick");
 const { getObjectStream } = require("../lib/objectStorage");
 
@@ -163,6 +164,25 @@ const createLineItem = async (req, res) => {
   }
 };
 
+/**
+ * Charges a quantity of a service the client has already agreed a rate for,
+ * onto whichever invoice period is currently open.
+ */
+const chargeService = async (req, res) => {
+  try {
+    const { clientId, clientServiceId, quantity, description } = req.body || {};
+    const result = await chargeServiceToClient({
+      clientId,
+      clientServiceId,
+      quantity,
+      description,
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
 const deleteLineItem = async (req, res) => {
   try {
     await invoiceLineItemLogic.deleteInvoiceLineItem(req.params.lineItemId);
@@ -184,5 +204,6 @@ module.exports = {
   deleteMonthlyInvoice,
   getLineItemsForInvoice,
   createLineItem,
+  chargeService,
   deleteLineItem,
 };
