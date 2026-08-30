@@ -21,8 +21,17 @@ const getClientServiceByField = async (field, value) => {
   });
 };
 
+/**
+ * The agreed rate for one service on one client, or null.
+ *
+ * findFirst, not findMany. This used to hand back an array, which is a quiet
+ * trap: an empty array is truthy, so every `if (!clientService) throw` guard
+ * downstream was dead code and the price was read off the array as undefined —
+ * a shipment billed at nothing. The schema's @@unique(clientId, serviceId)
+ * guarantees at most one row, so the singular name is the honest one.
+ */
 const getClientServiceByClientIdAndServiceId = async (clientId, serviceId) => {
-  return await prismaClientService.findMany({
+  return await prismaClientService.findFirst({
     where: {
       clientId: clientId,
       serviceId: serviceId,

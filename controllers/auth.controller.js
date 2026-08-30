@@ -1,5 +1,6 @@
 const {
     refreshCookieOptions,
+    refreshCookieClearOptions,
     REFRESH_COOKIE_NAME,
     signRefreshToken,
 } = require('../utils/jwt');
@@ -56,14 +57,14 @@ const refreshSession = async (req, res) => {
             email: user.email,
         });
     } catch (err) {
-        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieClearOptions());
         res.status(401).json({ error: err.message });
     }
 };
 
 /** This device only. The access token expires on its own within minutes. */
 const logout = async (req, res) => {
-    res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+    res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieClearOptions());
     res.status(200).json({ message: 'Signed out.' });
 };
 
@@ -71,7 +72,7 @@ const logout = async (req, res) => {
 const logoutEverywhere = async (req, res) => {
     try {
         await authLogic.revokeUserSessions(req.user.id);
-        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieClearOptions());
         res.status(200).json({ message: 'Signed out on all devices.' });
     } catch (err) {
         res.status(400).json({ error: err.message });

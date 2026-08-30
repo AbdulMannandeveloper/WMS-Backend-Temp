@@ -85,6 +85,20 @@ const refreshCookieOptions = () => {
   };
 };
 
+/**
+ * Options for *clearing* the refresh cookie.
+ *
+ * Same attributes minus maxAge. A cookie is only cleared when the attributes
+ * match the ones it was set with, so path/sameSite/secure have to stay — but
+ * Express deprecates maxAge on clearCookie and ignores it outright in v5, and
+ * passing it printed a deprecation on every logout.
+ */
+const refreshCookieClearOptions = () => {
+  const { maxAge, ...rest } = refreshCookieOptions();
+  void maxAge;
+  return rest;
+};
+
 const REFRESH_COOKIE_NAME = 'pp_refresh';
 
 module.exports = {
@@ -93,6 +107,7 @@ module.exports = {
   verifyAuthToken,
   verifyRefreshToken,
   refreshCookieOptions,
+  refreshCookieClearOptions,
   REFRESH_COOKIE_NAME,
   ACCESS_TTL,
   REFRESH_TTL,

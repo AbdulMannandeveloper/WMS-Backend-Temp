@@ -34,20 +34,13 @@ const createShipmentServiceMapping = async (data, tx) => {
     throw new Error("Shipment not found.");
   }
 
-  // That repository call is a findMany, so it hands back an array. Normalising
-  // here rather than changing it, because an empty array is truthy: the original
-  // `if (!clientService) throw` never fired, and appliedUnitPrice was silently
-  // read off the array as undefined. The schema's unique(clientId, serviceId)
-  // means there is at most one row.
-  //
   // Read outside `tx` deliberately — an agreed rate is reference data set up long
   // before this transaction, not something it mutates.
-  const matches =
+  const clientService =
     await clientServiceRepository.getClientServiceByClientIdAndServiceId(
       shipment.clientId,
       data.serviceId,
     );
-  const clientService = Array.isArray(matches) ? matches[0] : matches;
 
   if (!clientService) {
     throw new Error(
