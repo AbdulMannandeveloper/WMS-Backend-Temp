@@ -427,6 +427,70 @@ const cancelShipment = async (shipmentId, actorUserId, reason) => {
  *
  * `status` is deliberately not editable here; use the transitions above.
  */
+/**
+ * Sets, corrects or clears a shipment's courier consignment number.
+ *
+ * Separate from updateShipment on purpose. A shipment's commercial details are
+ * frozen once DISPATCHED, but the tracking number is the one thing that
+ * legitimately arrives *at* dispatch or shortly after it — the courier issues it
+ * when they take the parcel. Routing it through the generic update meant it
+ * could never be recorded on the shipments that actually have one.
+ *
+ * Open to employees as well as admins: whoever hands the parcel over is the
+ * person holding the label. Refused only once CANCELLED, where there is no
+ * parcel to track.
+ *
+ * Passing null or an empty string clears it, for a mis-key.
+ */
+const TRACKING_ID_MAX = 64; // matches shipments.tracking_id VarChar(64)
+const TRACKING_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
+const normaliseTrackingId = (raw) => {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "string") {
+    throw new Error("Tracking number must be text.");
+  }
+
+  // Couriers print these in spaced groups; operators copy them that way.
+  const cleaned = raw.replace(/\s+/g, "");
+  if (cleaned === "") return null;
+
+  if (cleaned.length > TRACKING_ID_MAX) {
+    throw new Error(
+      `Tracking number is too long — ${TRACKING_ID_MAX} characters maximum.`,
+    );
+  }
+  if (!TRACKING_ID_PATTERN.test(cleaned)) {
+    throw new Error(
+      "Tracking number may contain only letters, numbers and hyphens.",
+    );
+  }
+  return cleaned;
+};
+
+const setShipmentTracking = async (id, trackingId, actorUserId) => {
+  const shipment = await requireShipment(id);
+
+  if (shipment.status === "CANCELLED") {
+    throw new Error(
+      "A cancelled shipment has no parcel to track.",
+    );
+  }
+
+  const next = normaliseTrackingId(trackingId);
+
+  const updated = await shipmentRepositry.updateShipment(id, { trackingId: next });
+
+  await audit(actorUserId, next ? "SHIPMENT_TRACKING_SET" : "SHIPMENT_TRACKING_CLEARED", {
+    shipmentId: id,
+    from: shipment.trackingId ?? null,
+    to: next,
+    status: shipment.status,
+  });
+
+  return updated;
+};
+
 const updateShipment = async (id, data, actorUserId) => {
   const shipment = await requireShipment(id);
 
@@ -518,9 +582,11 @@ module.exports = {
   getShipmentByField,
   getShipmentsByClientId,
   updateShipment,
+  setShipmentTracking,
   deleteShipment,
   // Exported for tests and for the item logic's own guards.
   SHIPMENT_TRANSITIONS,
   SHIPMENT_STATUSES,
   assertTransition,
+  normaliseTrackingId,
 };

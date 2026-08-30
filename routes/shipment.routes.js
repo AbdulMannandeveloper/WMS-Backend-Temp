@@ -7,8 +7,8 @@ const router = express.Router();
 const { authorizeRoles } = require('../middlewares/authorize');
 
 // Employees run the warehouse sequence — read, create, pick, mark ready,
-// dispatch. Only an admin changes what a shipment *is* (client, courier, type,
-// tracking id) or removes it.
+// dispatch, and record the tracking number. Only an admin changes what a
+// shipment *is* (client, courier, type) or removes it.
 const staffOnly = authorizeRoles('admin', 'employee');
 const adminOnly = authorizeRoles('admin');
 
@@ -25,6 +25,12 @@ router.post('/:id/ready', staffOnly, shipmentController.markShipmentReady);
 router.post('/:shipmentId/dispatch', staffOnly, shipmentController.dispatchShipment);
 router.post('/:id/cancel', adminOnly, shipmentController.cancelShipment);
 router.post('/:id/reopen', adminOnly, shipmentController.reopenShipment);
+
+// The courier consignment number. Staff, not admin-only: the person handing the
+// parcel over is the one holding the label. Allowed in every status but
+// CANCELLED — a courier typically issues the number at the moment of dispatch,
+// so freezing it with the rest of the shipment made it unrecordable.
+router.put('/:id/tracking', staffOnly, shipmentController.setShipmentTracking);
 
 // Billable services on a shipment. Staff may see what will be charged; only an
 // admin changes it, and only while the shipment is still PENDING.

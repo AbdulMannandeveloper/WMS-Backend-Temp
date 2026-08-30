@@ -213,7 +213,23 @@ describe('shipment lifecycle', () => {
       expect(res.status).toBe(403);
     });
 
-    it('an admin can change the courier and tracking id', async () => {
+    it('an admin can change the courier', async () => {
+      const { admin, shipment } = await arrange();
+
+      const res = await as(admin)
+        .put(`/api/shipments/${shipment.id}`)
+        .send({ courierName: 'DPD' });
+
+      expect(res.status).toBe(200);
+      const after = await prisma.shipment.findUnique({ where: { id: shipment.id } });
+      expect(after.courierName).toBe('DPD');
+    });
+
+    it('ignores a tracking id sent to the generic update', async () => {
+      // It used to be settable here. It moved to PUT /:id/tracking, which staff
+      // may also use and which stays open after dispatch — see
+      // test/shipments/tracking.test.js. Silently dropped rather than rejected,
+      // the same way every other unknown field on this endpoint is.
       const { admin, shipment } = await arrange();
 
       const res = await as(admin)
@@ -223,7 +239,7 @@ describe('shipment lifecycle', () => {
       expect(res.status).toBe(200);
       const after = await prisma.shipment.findUnique({ where: { id: shipment.id } });
       expect(after.courierName).toBe('DPD');
-      expect(after.trackingId).toBe('H00CXH0012345678');
+      expect(after.trackingId).toBeNull();
     });
 
     it('an employee cannot cancel, reopen or delete', async () => {

@@ -13,11 +13,13 @@ const SHIPMENT_CREATE_FIELDS = [
 ];
 // status is deliberately absent — it moves only through the transition
 // endpoints below, which enforce the state machine. Admin-only at the route.
+// trackingId is deliberately absent — it has its own endpoint, because it is
+// the one field that legitimately changes after dispatch, and because staff (not
+// just admins) need to record it.
 const SHIPMENT_UPDATE_FIELDS = [
   "shipmentType",
   "packagingType",
   "courierName",
-  "trackingId",
 ];
 
 const createShipment = async (req, res) => {
@@ -42,6 +44,25 @@ const createShipment = async (req, res) => {
     res.status(201).json(newShipment);
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+};
+
+/**
+ * Records the courier consignment number. Staff, and allowed after dispatch —
+ * that is usually when the courier issues it.
+ */
+const setShipmentTracking = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updated = await shipmentLogic.setShipmentTracking(
+      id,
+      req.body?.trackingId ?? null,
+      req.user.id,
+    );
+    res.status(200).json(updated);
+  } catch (error) {
+    const notFound = error.message === "Shipment not found.";
+    res.status(notFound ? 404 : 400).json({ error: error.message });
   }
 };
 
@@ -159,5 +180,6 @@ module.exports = {
   reopenShipment,
   cancelShipment,
   updateShipment,
+  setShipmentTracking,
   deleteShipment,
 };
