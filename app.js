@@ -23,6 +23,7 @@ const { globalLimiter } = require("./middlewares/rateLimit");
 const userRoutes = require("./routes/user.routes");
 const authRoutes = require("./routes/auth.routes");
 const clientRoutes = require("./routes/client.routes");
+const employeeRoutes = require("./routes/employee.routes");
 const serviceRoutes = require("./routes/service.routes");
 const clientServiceRoutes = require("./routes/client_service.routes");
 const productRoutes = require("./routes/product.routes");
@@ -135,6 +136,7 @@ app.get("/readyz", async (req, res) => {
 app.use("/api/users", userRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/clients", clientRoutes);
+app.use("/api/employees", employeeRoutes);
 app.use("/api/services", serviceRoutes);
 app.use("/api/client-services", clientServiceRoutes);
 app.use("/api/products", productRoutes);

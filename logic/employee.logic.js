@@ -126,18 +126,48 @@ const getAllEmployees = async () => {
 };
 
 /**
- * Get a single employee by their employee record ID.
+ * Names and ids only, for populating a dropdown.
+ *
+ * The full Employee record carries a National Insurance number, date of birth,
+ * home address and salary. Staff need to pick an operator when raising a
+ * shipment; they do not need any of that, and sending it to a browser to render
+ * a <select> would be a disclosure with no purpose. Mirrors
+ * getClientLookupList().
  */
-const getEmployeeById = async (employeeId) => {
+const getEmployeeLookupList = async () => {
+  const employees = await employeeRepository.getAllEmployees();
+  return employees.map(({ id, user }) => ({
+    id,
+    firstName: user?.firstName ?? null,
+    lastName: user?.lastName ?? null,
+  }));
+};
+
+/**
+ * Get a single employee by their employee record ID.
+ *
+ * Scoped: an employee may read only their own record. Without this any member
+ * of staff could read a colleague's NI number, date of birth, home address and
+ * salary by walking ids — the route has always allowed the employee role.
+ */
+const getEmployeeById = async (employeeId, actor) => {
   const employee = await employeeRepository.getEmployeeByField('id', employeeId);
   if (!employee) {
     throw new Error('Employee not found.');
   }
+
+  if (actor && actor.role !== 'admin' && employee.userId !== actor.id) {
+    const err = new Error('You may only view your own employee record.');
+    err.status = 403;
+    throw err;
+  }
+
   return employee;
 };
 
 module.exports = {
   addEmployee,
   getAllEmployees,
+  getEmployeeLookupList,
   getEmployeeById,
 };

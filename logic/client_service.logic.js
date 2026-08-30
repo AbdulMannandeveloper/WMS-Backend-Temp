@@ -45,6 +45,22 @@ const getClientServicesByField = async (field, value) => {
   return await clientServiceRepository.getClientServiceByField(field, value);
 };
 
+/**
+ * Every agreed rate for one client — what the client portal shows.
+ *
+ * The controller has always called this name; it never existed, so
+ * GET /api/client-services/client/:clientId failed with "is not a function"
+ * for every caller since the route was written.
+ */
+const getClientServicesByClientId = async (clientId) => {
+  return await clientServiceRepository.getClientServiceByField('clientId', clientId);
+};
+
+/** Every client who has an agreed rate for one service. Same story. */
+const getClientServicesByServiceId = async (serviceId) => {
+  return await clientServiceRepository.getClientServiceByField('serviceId', serviceId);
+};
+
 const getClientServiceByClientIdAndServiceId = async (clientId, serviceId) => {
   return await clientServiceRepository.getClientServiceByClientIdAndServiceId(
     clientId,
@@ -64,6 +80,8 @@ module.exports = {
   addClientService,
   getAllClientServices,
   getClientServicesByField,
+  getClientServicesByClientId,
+  getClientServicesByServiceId,
   getClientServiceByClientIdAndServiceId,
   updateClientService,
   deleteClientService,
