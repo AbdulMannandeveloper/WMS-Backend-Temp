@@ -46,7 +46,6 @@ model Client {
   email              String           @db.VarChar(255)
   mobile             String?          @db.VarChar(25)
   address            String?
-  fixedShipmentRate  Decimal          @default(0.0) @map("fixed_shipment_rate") @db.Decimal(12, 2)
   user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   shipments          Shipment[]
   clientServices     ClientService[]
@@ -77,6 +76,10 @@ model Service {
   description      String
   ideaPrice        Decimal                  @map("idea_price") @db.Decimal(12, 2)
   unit             String                   @db.VarChar(30)
+  // Stable identifier for services the system itself raises, so the code can
+  // find one without matching on a description an admin may rename.
+  // Today: SHIPMENT_DISPATCH. Null for ordinary catalogue entries.
+  code             String?                  @unique @db.VarChar(40)
   clientServices   ClientService[]
   shipmentMappings ShipmentServiceMapping[]
 
@@ -84,11 +87,16 @@ model Service {
 }
 
 model ClientService {
-  id           String  @id @default(uuid()) @db.Uuid
-  clientId     String  @map("client_id") @db.Uuid
-  serviceId    String  @map("service_id") @db.Uuid
-  chargedPrice Decimal @map("charged_price") @db.Decimal(12, 2)
-  unit         String  @db.VarChar(30)
+  id                String  @id @default(uuid()) @db.Uuid
+  clientId          String  @map("client_id") @db.Uuid
+  serviceId         String  @map("service_id") @db.Uuid
+  chargedPrice      Decimal @map("charged_price") @db.Decimal(12, 2)
+  unit              String  @db.VarChar(30)
+  // Billed every period whether or not anything shipped — storage, retainers,
+  // subscriptions. A client who takes only these never dispatches a shipment,
+  // and before this had no automated route to an invoice at all.
+  isRecurring       Boolean @default(false) @map("is_recurring")
+  recurringQuantity Decimal @default(1) @map("recurring_quantity") @db.Decimal(10, 2)
 
   client           Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   service          Service                  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -494,7 +502,8 @@ enum InvoiceStatus {
 enum LineItemType {
   AUTOMATED_SERVICE // Logged automatically by operational triggers
   MANUAL_CHARGE // Added manually by an admin
-  SHIPMENT_CHARGE // Billing for shipment dispatch
+  SHIPMENT_CHARGE // Billing for shipment dispatch, per item shipped
+  RECURRING_SERVICE // A standing monthly charge, raised whether or not anything shipped
 }
 
 model FineRule {

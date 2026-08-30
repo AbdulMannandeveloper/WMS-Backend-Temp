@@ -29,6 +29,7 @@ import {
   makeShipmentItem,
   makeService,
   makeClientService,
+  makeShipmentRate,
 } from '../factories/index.js';
 
 const thisMonthUtc = () => {
@@ -70,7 +71,11 @@ describe('billing periods', () => {
       .send({ clientId: client.id });
     expect(created.status).toBe(201);
 
-    // 2. A shipment carrying a billable service, dispatched.
+    // 2. A shipment carrying a billable service, dispatched. The dispatch rate
+    // is set up explicitly — it used to come from a factory default on a Client
+    // column that no longer exists, which made this test depend on something it
+    // never mentioned.
+    await makeShipmentRate(client.id, '5.00');
     const service = await makeService({ description: 'Wrapping' });
     await makeClientService(client.id, service.id, { chargedPrice: '5.00' });
 
@@ -106,8 +111,8 @@ describe('billing periods', () => {
     expect(invoices).toHaveLength(1);
     expect(invoices[0].id).toBe(created.body.id);
 
-    // It carries both charges dispatch raises: the client's flat shipment rate
-    // and the mapped service.
+    // It carries both charges dispatch raises: the per-item shipment charge and
+    // the mapped service.
     expect(invoices[0].lineItems.map((l) => l.itemType).sort()).toEqual([
       'AUTOMATED_SERVICE',
       'SHIPMENT_CHARGE',

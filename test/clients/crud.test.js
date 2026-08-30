@@ -131,6 +131,58 @@ describe('adding a client', () => {
   });
 });
 
+describe('editing a client', () => {
+  it('is possible at all — the route was missing entirely', async () => {
+    // updateClient and deleteClient existed in the controller and logic with no
+    // route pointing at either, so a client's details could never be corrected
+    // after creation.
+    const admin = await makeAdmin();
+    const { client } = await makeClient();
+
+    const res = await as(admin)
+      .put(`/api/clients/${client.id}`)
+      .send({ companyName: 'Renamed Ltd' });
+
+    expect(res.status).toBe(200);
+    const after = await prisma.client.findUnique({ where: { id: client.id } });
+    expect(after.companyName).toBe('Renamed Ltd');
+  });
+
+  it('is admin only', async () => {
+    const { user: employeeUser } = await makeEmployee();
+    const { client } = await makeClient();
+
+    const res = await as(employeeUser)
+      .put(`/api/clients/${client.id}`)
+      .send({ companyName: 'Nope' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('a client cannot rename themselves', async () => {
+    const { client, user: clientUser } = await makeClient();
+
+    const res = await as(clientUser)
+      .put(`/api/clients/${client.id}`)
+      .send({ companyName: 'Self Service Ltd' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('ignores fields outside the allowlist', async () => {
+    const admin = await makeAdmin();
+    const { client } = await makeClient();
+
+    await as(admin)
+      .put(`/api/clients/${client.id}`)
+      .send({ companyName: 'Fine', clientUniqueNumber: 'CLT-HACKED' });
+
+    const after = await prisma.client.findUnique({ where: { id: client.id } });
+    expect(after.companyName).toBe('Fine');
+    expect(after.clientUniqueNumber).not.toBe('CLT-HACKED');
+  });
+});
+
 describe('who may do what', () => {
   it('only an admin adds a client', async () => {
     const { user: employeeUser } = await makeEmployee();

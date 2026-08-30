@@ -6,6 +6,8 @@ const {
   getClientLookup,
   getMyClient,
   getClientById,
+  updateClient,
+  deleteClient,
 } = require('../controllers/client.controller');
 
 const router = express.Router();
@@ -27,5 +29,11 @@ router.get('/', authorizeRoles('admin'), getAllClients);
 
 // Get a single client by ID
 router.get('/:id', authorizeRoles('admin'), getClientById);
+
+// Editing a client's details. The controller and logic for these have existed
+// all along with no route pointing at them, so a client's company name, contact
+// or address could never be corrected after creation.
+router.put('/:id', authorizeRoles('admin'), updateClient);
+router.delete('/:id', authorizeRoles('admin'), deleteClient);
 
 module.exports = router;

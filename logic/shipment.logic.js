@@ -10,6 +10,11 @@ const clientLogic = require("./client.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const ShipmentServiceMappingLogic = require("./shipment_service_mapping.logic");
 const auditLogLogic = require("./audit_log.logic");
+const {
+  countShippedItems,
+  getShipmentRateForClient,
+  applyRecurringCharges,
+} = require("./billing_services");
 const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
 
 /**
@@ -84,13 +89,19 @@ const resolveOpenInvoice = async (clientId, tx, maxLookahead = 12) => {
       );
 
     if (!existing) {
-      return await monthlyInvoiceRepository.createMonthlyInvoice(
+      const created = await monthlyInvoiceRepository.createMonthlyInvoice(
         { clientId, billingPeriod: period, status: "DRAFT" },
         tx,
       );
+      // A newly opened period carries the client's standing charges from the
+      // moment it exists, so storage and retainers do not depend on something
+      // shipping. Idempotent, so the repeat calls on later dispatches are safe.
+      await applyRecurringCharges(clientId, created, tx);
+      return created;
     }
 
     if (existing.status === "DRAFT") {
+      await applyRecurringCharges(clientId, existing, tx);
       return existing;
     }
 
@@ -242,12 +253,16 @@ const dispatchShipment = async (shipmentId, actorUserId) => {
         tx,
       );
 
-    // The client's flat per-shipment rate, read at dispatch and written onto the
+    // The client's agreed per-item dispatch rate, read now and written onto the
     // line, so a later rate change cannot rewrite a charge already raised.
-    // Skipped at zero: fixedShipmentRate defaults to 0.00, and billing it
-    // unconditionally would put a £0.00 row on every invoice forever.
-    const shipmentRate = Number(shipment.client?.fixedShipmentRate ?? 0);
-    const hasShipmentCharge = shipmentRate > 0;
+    //
+    // Null when the client has not bought that service, which is a real
+    // arrangement rather than an error: a services-only client is stored and
+    // handled here but ships through someone else.
+    const shipmentRate = await getShipmentRateForClient(shipment.clientId, tx);
+    const shippedItemCount = countShippedItems(shipmentItems);
+    const hasShipmentCharge =
+      shipmentRate !== null && shippedItemCount > 0 && Number(shipmentRate.unitPrice) > 0;
 
     // Nothing to charge at all: the goods still move, but do not open an empty
     // invoice just to hold no lines.
@@ -256,14 +271,18 @@ const dispatchShipment = async (shipmentId, actorUserId) => {
       const dispatchedAt = new Date();
 
       if (hasShipmentCharge) {
+        const unitPrice = Number(shipmentRate.unitPrice);
         await invoiceLineItemRepository.createInvoiceLineItem(
           {
             invoiceId: monthlyInvoice.id,
-            clientServiceId: null,
-            quantity: 1,
-            unitPrice: shipmentRate,
-            totalPrice: shipmentRate,
-            description: `Shipment dispatch — ${shipment.courierName} (${shipment.shipmentType}), shipment ${shipment.id}`,
+            // Points at the agreed rate it came from, like every other line.
+            clientServiceId: shipmentRate.clientService.id,
+            // Per item, not per shipment. This was hardcoded to 1, so a
+            // five-hundred-item shipment billed the same as a single-item one.
+            quantity: shippedItemCount,
+            unitPrice,
+            totalPrice: Number((shippedItemCount * unitPrice).toFixed(2)),
+            description: `Shipment dispatch — ${shippedItemCount} item(s), ${shipment.courierName} (${shipment.shipmentType}), shipment ${shipment.id}`,
             dateOfService: dispatchedAt,
             itemType: "SHIPMENT_CHARGE",
           },

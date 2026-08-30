@@ -28,18 +28,13 @@ import {
 /**
  * A shipment at READY_FOR_DISPATCH with 10 units reserved in one bin.
  *
- * The client's fixedShipmentRate is zeroed so these tests see only the service
- * charges they are about. The per-shipment rate has its own suite in
- * test/billing/shipment-charge.test.js.
+ * No dispatch rate is set up for this client, so these tests see only the
+ * service charges they are about. The per-item shipment charge has its own
+ * suite in test/billing/shipment-charge.test.js.
  */
 const arrangeReady = async () => {
   const scenario = await makeWarehouseScenario({ quantity: 100 });
   const { employee, client, product, location, stock } = scenario;
-
-  await prisma.client.update({
-    where: { id: client.id },
-    data: { fixedShipmentRate: '0.00' },
-  });
 
   const shipment = await makeShipment(employee.id, client.id, {
     status: 'READY_FOR_DISPATCH',

@@ -79,7 +79,6 @@ export const makeClient = async (overrides = {}) => {
       companyName: 'Acme Logistics Ltd',
       contactName: 'Cara Client',
       email: user.email,
-      fixedShipmentRate: '5.00',
       ...clientOverrides,
     },
   });
@@ -107,6 +106,57 @@ export const makeClientService = (clientId, serviceId, overrides = {}) =>
       ...overrides,
     },
   });
+
+/**
+ * The catalogue row for the dispatch charge, plus this client's agreed per-item
+ * rate for it.
+ *
+ * Dispatch bills through the rate card now, not a column on Client. A client
+ * without this simply is not charged for shipping — a real arrangement, so it
+ * has to be opted into rather than assumed.
+ */
+export const makeShipmentRate = async (clientId, chargedPrice = '2.00') => {
+  const service = await prisma.service.upsert({
+    where: { code: 'SHIPMENT_DISPATCH' },
+    update: {},
+    create: {
+      code: 'SHIPMENT_DISPATCH',
+      description: 'Shipment dispatch (per item)',
+      ideaPrice: '0.00',
+      unit: 'item',
+    },
+  });
+
+  const rate = await prisma.clientService.create({
+    data: { clientId, serviceId: service.id, chargedPrice, unit: 'item' },
+  });
+
+  return { service, rate };
+};
+
+/** A standing monthly charge — storage, a retainer, anything not shipment-driven. */
+export const makeRecurringService = async (clientId, overrides = {}) => {
+  const service = await prisma.service.create({
+    data: {
+      description: overrides.description || uniq('Storage'),
+      ideaPrice: '25.00',
+      unit: 'month',
+    },
+  });
+
+  const rate = await prisma.clientService.create({
+    data: {
+      clientId,
+      serviceId: service.id,
+      chargedPrice: overrides.chargedPrice || '25.00',
+      unit: 'month',
+      isRecurring: true,
+      recurringQuantity: overrides.recurringQuantity || '1',
+    },
+  });
+
+  return { service, rate };
+};
 
 export const makeLocationClass = (overrides = {}) =>
   prisma.warehouseLocationClass.create({
