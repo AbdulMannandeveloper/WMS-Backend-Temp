@@ -69,6 +69,43 @@ const getProductBySkuCode = async (skuCode) => {
   return await prodcutRepository.getProductsByField("skuCode", skuCode);
 };
 
+/**
+ * Resolves a scanned code to the products it could mean.
+ *
+ * Barcode first: that column is globally unique, so a hit is unambiguous and is
+ * returned alone. Only when it misses do we fall back to SKU — and skuCode is
+ * unique *per client*, not globally, so two clients can legitimately stock the
+ * same SKU.
+ *
+ * That is why this returns every match rather than the first one. Silently
+ * picking one would check stock in against the wrong client's product, which
+ * lands in their inventory and eventually on their invoice, and nobody notices
+ * until it is disputed.
+ */
+const lookupByBarcodeOrSku = async (value) => {
+  const code = String(value ?? "").trim();
+  if (!code) {
+    return { matches: [], matchedOn: null };
+  }
+
+  const byBarcode = await prodcutRepository.getProductsByFieldWithStock(
+    "barcode",
+    code,
+  );
+  if (byBarcode.length > 0) {
+    return { matches: byBarcode, matchedOn: "barcode" };
+  }
+
+  const bySku = await prodcutRepository.getProductsByFieldWithStock(
+    "skuCode",
+    code,
+  );
+  return {
+    matches: bySku,
+    matchedOn: bySku.length > 0 ? "skuCode" : null,
+  };
+};
+
 const getProductByClientId = async (clientId) => {
   return await prodcutRepository.getProductsByField("clientId", clientId);
 };
@@ -87,6 +124,24 @@ const updateProduct = async (id, updateData, adminUserId) => {
 
   if (updateData.weight && updateData.weight <= 0) {
     throw new Error("Weight must be a positive number.");
+  }
+
+  // Binding a scanned barcode to a product is a normal action from the scanner,
+  // and colliding with one already in use is a normal mistake. Name the other
+  // product rather than letting a raw unique-constraint error reach the UI.
+  if (updateData.barcode) {
+    const existing = await prodcutRepository.getProductsByField(
+      "barcode",
+      updateData.barcode,
+    );
+    const other = existing.find((p) => p.id !== id);
+    if (other) {
+      throw new Error(
+        `That barcode is already assigned to ${other.skuCode}${
+          other.productName ? ` (${other.productName})` : ""
+        }. Scan it to open that product, or clear it there first.`,
+      );
+    }
   }
 
   const updatedProduct = await prodcutRepository.updateProduct(id, updateData);
@@ -134,6 +189,7 @@ module.exports = {
   getProductByName,
   getProductByBarcode,
   getProductBySkuCode,
+  lookupByBarcodeOrSku,
   getProductByClientId,
   getProductByField,
   updateProduct,

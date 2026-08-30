@@ -26,6 +26,28 @@ const getProductsByField = async (field, value) => {
   });
 };
 
+/**
+ * Products matching a field, with enough context for a scan result to be acted
+ * on without a second round trip: which client owns it, and how much sits where.
+ *
+ * Separate from getProductsByField because that one feeds list views, and stock
+ * levels would bloat every one of them.
+ */
+const getProductsByFieldWithStock = async (field, value, tx) => {
+  return await (tx || prisma).product.findMany({
+    where: { [field]: value },
+    include: {
+      client: { select: { id: true, companyName: true } },
+      stockLevels: {
+        include: {
+          location: { select: { id: true, locationName: true, materializedPath: true } },
+        },
+      },
+    },
+    orderBy: { skuCode: "asc" },
+  });
+};
+
 const getProductByField = async (field, value) => {
   return await prismaProduct.findFirst({
     where: { [field]: value },
@@ -62,6 +84,7 @@ module.exports = {
   createProduct,
   getAllProducts,
   getProductsByField,
+  getProductsByFieldWithStock,
   getProductByField,
   getProductById,
   updateProduct,
