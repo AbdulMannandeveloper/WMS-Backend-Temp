@@ -13,7 +13,7 @@ beforeEach(async () => {
 
   // middlewares/authorize.js caches users in an in-process Map for 45s. Without
   // this, a user truncated away above would still authenticate on the next test.
-  clearAuthUserCache();
+  await clearAuthUserCache();
 });
 
 afterAll(async () => {

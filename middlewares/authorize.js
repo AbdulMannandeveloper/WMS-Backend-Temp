@@ -49,11 +49,11 @@ const authorizeRoles = (...allowedRoles) => {
                 return res.status(401).json({ error: 'Invalid session.' });
             }
 
-            let user = getCachedUser(actorId);
+            let user = await getCachedUser(actorId);
             if (!user) {
                 user = await userRepository.getUserByField('id', actorId);
                 if (user) {
-                    setCachedUser(actorId, user);
+                    await setCachedUser(actorId, user);
                 }
             }
 

@@ -3,6 +3,7 @@ require("dotenv").config();
 const { connectDB, prisma } = require("./lib/prisma");
 const { getRedisClient, disconnectRedis } = require("./lib/redis");
 const { app, setShuttingDown, isShuttingDown } = require("./app");
+const { recoverStranded } = require("./utils/mailQueue");
 
 const PORT = process.env.PORT || 5000;
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 15_000);
@@ -41,6 +42,9 @@ const startServer = async () => {
   try {
     await connectDB();
     await getRedisClient();
+    // Mail a previous worker had claimed but not finished when it died goes back
+    // on the queue. No-op without Redis.
+    await recoverStranded();
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

@@ -83,7 +83,7 @@ const revokeUserSessions = async (userId) => {
   const updated = await userRepository.updateUser(userId, {
     tokenVersion: (user.tokenVersion ?? 0) + 1,
   });
-  invalidateCachedUser(userId);
+  await invalidateCachedUser(userId);
   return updated;
 };
 
@@ -257,7 +257,7 @@ const verifyAdminSignupOtp = async ({ email, otp }) => {
 
   await otpRepository.deleteOtpById(record.id);
   await userRepository.updateUser(user.id, { isActive: true });
-  invalidateCachedUser(user.id);
+  await invalidateCachedUser(user.id);
 
   return { verified: true, userId: user.id };
 };
@@ -371,7 +371,7 @@ const inviteUserByAdmin = async ({
       isActive: false,
       passwordHash: null,
     });
-    invalidateCachedUser(targetUser.id);
+    await invalidateCachedUser(targetUser.id);
   }
 
   await invitationTokenRepository.invalidateUnusedUserTokens(targetUser.id);
@@ -431,7 +431,7 @@ const setupPasswordWithToken = async ({ token, password }) => {
     isActive: true,
     tokenVersion: (current?.tokenVersion ?? 0) + 1,
   });
-  invalidateCachedUser(tokenRecord.userId);
+  await invalidateCachedUser(tokenRecord.userId);
 
   await invitationTokenRepository.markTokenUsed(tokenRecord.id);
 

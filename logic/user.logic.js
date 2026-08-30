@@ -108,7 +108,7 @@ const completeUserRegistration = async (email, registrationData) => {
     registrationData.isActive = true; // Activate the user account
 
     const updated = await userRepository.updateUser(user.id, registrationData);
-    invalidateCachedUser(user.id);
+    await invalidateCachedUser(user.id);
     return updated;
 };
 
@@ -166,7 +166,7 @@ const updateUser = async (id, rawUpdateData) => {
     }
 
     const updated = sanitizeUser(await userRepository.updateUser(user.id, updateData));
-    invalidateCachedUser(user.id);
+    await invalidateCachedUser(user.id);
     return updated;
 };
 
@@ -176,7 +176,7 @@ const deleteUser = async (id) => {
         throw new Error("User not found");
     }
     const deleted = await userRepository.deleteUser(user.id);
-    invalidateCachedUser(user.id);
+    await invalidateCachedUser(user.id);
     return deleted;
 };
 

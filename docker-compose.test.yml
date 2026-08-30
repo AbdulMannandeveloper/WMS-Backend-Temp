@@ -28,3 +28,19 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Needed by test/platform/shared-state.test.js to exercise the Redis-backed
+  # auth cache and mail queue. Those tests skip without REDIS_URL and report as
+  # skipped rather than passing silently, so the fallback path is still covered
+  # on a machine without Docker.
+  #
+  #   REDIS_URL=redis://localhost:6380 npm test
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
