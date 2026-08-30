@@ -10,6 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -61,6 +62,12 @@ const applyMigrations = () => {
   });
 };
 
+/** Where UPLOAD_DIR resolves to, so teardown removes the right thing. */
+const uploadDir = () =>
+  process.env.UPLOAD_DIR
+    ? path.resolve(projectRoot, process.env.UPLOAD_DIR)
+    : null;
+
 export default async function setup() {
   await ensureDatabaseExists();
 
@@ -75,4 +82,17 @@ export default async function setup() {
   }
 
   console.log(`[test] Database "${databaseName}" ready`);
+
+  // Vitest runs a returned function after the last test file. Without it the
+  // suite leaves its written files behind in a working directory — the invoice
+  // PDF tests alone had accumulated over a hundred.
+  return () => {
+    const dir = uploadDir();
+    if (!dir) return;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`[test] Could not clean ${dir}: ${err.message}`);
+    }
+  };
 }

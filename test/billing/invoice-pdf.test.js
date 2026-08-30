@@ -105,8 +105,15 @@ describe('invoice PDF', () => {
     });
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const stored = path.default.join(process.cwd(), 'uploads', pdfLink);
-    if (fs.default.existsSync(stored)) fs.default.unlinkSync(stored);
+    // Resolve the same way lib/objectStorage.js does, so this keeps working
+    // wherever UPLOAD_DIR points — the suite writes to a disposable directory.
+    const storageRoot = process.env.UPLOAD_DIR
+      ? path.default.resolve(process.cwd(), process.env.UPLOAD_DIR)
+      : path.default.join(process.cwd(), 'uploads');
+    const stored = path.default.join(storageRoot, pdfLink);
+
+    expect(fs.default.existsSync(stored)).toBe(true); // it was written on approval
+    fs.default.unlinkSync(stored);
 
     const res = await as(admin).get(`/api/monthly-invoices/${invoice.id}/pdf`);
 
