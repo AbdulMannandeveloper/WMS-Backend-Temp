@@ -14,6 +14,7 @@ const { connectDB, prisma } = require("./lib/prisma");
 const { getRedisClient, disconnectRedis } = require("./lib/redis");
 const { app, setShuttingDown, isShuttingDown } = require("./app");
 const { recoverStranded } = require("./utils/mailQueue");
+const { describeMailTransport } = require("./utils/mailer");
 const {
   ensureShipmentService,
   ensureFdaService,
@@ -59,6 +60,10 @@ const startServer = async () => {
     // Mail a previous worker had claimed but not finished when it died goes back
     // on the queue. No-op without Redis.
     await recoverStranded();
+
+    // Say what will happen to email. Mock mode is the default, and a silent
+    // default is what makes a mail misconfiguration cost an afternoon.
+    console.log(describeMailTransport());
 
     // The two services the system raises for itself. Without these rows in the
     // catalogue they never appear in a client's rate card, so no dispatch and no

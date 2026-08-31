@@ -1,4 +1,4 @@
-const { canAccessClientId } = require("../utils/clientScope");
+  const { canAccessClientId } = require("../utils/clientScope");
 const shipmentLogic = require("../logic/shipment.logic");
 const { pick } = require("../utils/pick");
 
