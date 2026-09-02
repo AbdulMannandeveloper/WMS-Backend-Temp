@@ -46,3 +46,28 @@ if (!/test/i.test(databaseName)) {
       `name a dedicated database with "test" in it (e.g. propackers_test).`
   );
 }
+
+/**
+ * Second guard rail: the suite must never send real email.
+ *
+ * The database guard above exists because the tests truncate every table. This
+ * one exists for the same reason in a different direction — the tests enqueue
+ * invitations, OTPs and invoice notifications, and a live transport would
+ * deliver them, burn the sending quota, and put real addresses in a provider's
+ * logs.
+ *
+ * It is not hypothetical. The real .env reaches this process through
+ * prisma.config.ts, which does `import 'dotenv/config'`, so MAIL_TRANSPORT=brevo
+ * and a live API key were being picked up by the suite until .env.test set them
+ * explicitly. Two mail tests failed and that is the only reason it was noticed.
+ */
+const transport = String(process.env.MAIL_TRANSPORT || '').toLowerCase();
+
+if (transport === 'smtp' || transport === 'brevo') {
+  throw new Error(
+    `Refusing to run tests with MAIL_TRANSPORT="${transport}". ` +
+      `The suite would send real email. Set MAIL_TRANSPORT= (empty) in .env.test ` +
+      `for mock mode.`
+  );
+}
+

@@ -2,6 +2,8 @@ const crypto = require('crypto');
 
 const userRepository = require('../repositories/user.repository');
 const employeeRepository = require('../repositories/employee.repository');
+const auditLogLogic = require('./audit_log.logic');
+const { toUtcDateOnly } = require('../utils/dates');
 const invitationTokenRepository = require('../repositories/invitation-token.repository');
 const { enqueueMail } = require('../utils/mailQueue');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
@@ -165,9 +167,106 @@ const getEmployeeById = async (employeeId, actor) => {
   return employee;
 };
 
+/**
+ * Fields an admin may change on an employment record.
+ *
+ * baseSalary is deliberately absent. Payroll owns it, through
+ * PUT /api/payroll/employees/:id/base-salary, and it is the figure payroll
+ * multiplies out into net pay — two screens writing one number is how they end
+ * up disagreeing. userId and employeeUniqueNumber are absent for the same
+ * reason the client-service allowlist exists: a request body should not be able
+ * to move a record onto a different person.
+ */
+const EMPLOYEE_UPDATE_FIELDS = [
+  'jobTitle',
+  'nationalInsuranceNumber',
+  'dateOfBirth',
+  'wageRate',
+  'address',
+];
+
+/**
+ * Updates an employment record.
+ *
+ * These are the columns the schema has always had and nothing could write:
+ * there was no update endpoint at all, so job title, NI number, date of birth,
+ * wage rate and address could never be filled in.
+ */
+const updateEmployee = async (id, rawUpdateData, actorUserId) => {
+  const employee = await employeeRepository.getEmployeeByField('id', id);
+  if (!employee) {
+    throw new Error('Employee not found.');
+  }
+
+  const updateData = {};
+  for (const field of EMPLOYEE_UPDATE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(rawUpdateData, field)) {
+      updateData[field] = rawUpdateData[field];
+    }
+  }
+
+  if (Object.keys(updateData).length === 0) {
+    return employee;
+  }
+
+  // Blanks clear a field rather than storing an empty string, so an NI number
+  // removed in the UI does not collide with the next empty one on the unique
+  // index.
+  for (const field of ['jobTitle', 'nationalInsuranceNumber', 'address']) {
+    if (typeof updateData[field] === 'string') {
+      const trimmed = updateData[field].trim();
+      updateData[field] = trimmed === '' ? null : trimmed;
+    }
+  }
+
+  if (updateData.wageRate !== undefined && updateData.wageRate !== null) {
+    const rate = Number(updateData.wageRate);
+    if (!Number.isFinite(rate) || rate < 0) {
+      throw new Error('Wage rate must be a number of zero or more.');
+    }
+    updateData.wageRate = rate;
+  }
+
+  if (updateData.dateOfBirth !== undefined && updateData.dateOfBirth !== null) {
+    const dob = new Date(updateData.dateOfBirth);
+    if (Number.isNaN(dob.getTime())) {
+      throw new Error('Date of birth is not a valid date.');
+    }
+    if (dob > new Date()) {
+      throw new Error('Date of birth cannot be in the future.');
+    }
+    // @db.Date built from local time stores the previous day east of UTC.
+    updateData.dateOfBirth = toUtcDateOnly(dob);
+  }
+
+  try {
+    const updated = await employeeRepository.updateEmployee(id, updateData);
+
+    await auditLogLogic
+      .createAuditLog(actorUserId, 'EMPLOYEE_UPDATED', {
+        employeeId: id,
+        changed: Object.keys(updateData),
+      })
+      .catch((err) => console.error('Audit log error:', err.message));
+
+    return updated;
+  } catch (err) {
+    // nationalInsuranceNumber is @unique. Left to Prisma this surfaces as a
+    // 500 with a constraint name, which tells an admin nothing about what to do.
+    if (err.code === 'P2002') {
+      throw new Error(
+        'That National Insurance number is already recorded against another employee.',
+      );
+    }
+    throw err;
+  }
+};
+
 module.exports = {
   addEmployee,
   getAllEmployees,
   getEmployeeLookupList,
   getEmployeeById,
+  updateEmployee,
+  EMPLOYEE_UPDATE_FIELDS,
 };
