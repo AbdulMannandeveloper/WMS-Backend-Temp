@@ -1,4 +1,4 @@
-const fdaLogic = require('../logic/fda.logic');
+const fbaLogic = require('../logic/fba.logic');
 const { resolveOwnClientId } = require('../utils/clientScope');
 
 const fail = (res, error) => {
@@ -10,7 +10,7 @@ const fail = (res, error) => {
 
 const createCategory = async (req, res) => {
   try {
-    res.status(201).json(await fdaLogic.addCategory(req.body, req.user.id));
+    res.status(201).json(await fbaLogic.addCategory(req.body, req.user.id));
   } catch (err) {
     fail(res, err);
   }
@@ -18,7 +18,7 @@ const createCategory = async (req, res) => {
 
 const listCategories = async (req, res) => {
   try {
-    res.status(200).json(await fdaLogic.getAllCategories());
+    res.status(200).json(await fbaLogic.getAllCategories());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -26,7 +26,7 @@ const listCategories = async (req, res) => {
 
 const updateCategory = async (req, res) => {
   try {
-    res.status(200).json(await fdaLogic.updateCategory(req.params.id, req.body, req.user.id));
+    res.status(200).json(await fbaLogic.updateCategory(req.params.id, req.body, req.user.id));
   } catch (err) {
     fail(res, err);
   }
@@ -34,7 +34,7 @@ const updateCategory = async (req, res) => {
 
 const deleteCategory = async (req, res) => {
   try {
-    res.status(200).json(await fdaLogic.deleteCategory(req.params.id, req.user.id));
+    res.status(200).json(await fbaLogic.deleteCategory(req.params.id, req.user.id));
   } catch (err) {
     fail(res, err);
   }
@@ -44,7 +44,7 @@ const deleteCategory = async (req, res) => {
 
 const recordArrival = async (req, res) => {
   try {
-    res.status(201).json(await fdaLogic.recordArrival(req.body, req.user.id));
+    res.status(201).json(await fbaLogic.recordArrival(req.body, req.user.id));
   } catch (err) {
     fail(res, err);
   }
@@ -58,8 +58,8 @@ const listShipments = async (req, res) => {
   try {
     const ownClientId = await resolveOwnClientId(req.user);
     const shipments = ownClientId
-      ? await fdaLogic.getShipmentsByClientId(ownClientId)
-      : await fdaLogic.getAllShipments();
+      ? await fbaLogic.getShipmentsByClientId(ownClientId)
+      : await fbaLogic.getAllShipments();
     res.status(200).json(shipments);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -69,7 +69,7 @@ const listShipments = async (req, res) => {
 const getShipment = async (req, res) => {
   try {
     const ownClientId = await resolveOwnClientId(req.user);
-    const shipment = await fdaLogic.getShipmentById(req.params.id);
+    const shipment = await fbaLogic.getShipmentById(req.params.id);
     // 404 rather than 403 for someone else's, so a client cannot probe which
     // consignment ids exist outside their own account.
     if (ownClientId && shipment.clientId !== ownClientId) {
@@ -83,7 +83,7 @@ const getShipment = async (req, res) => {
 
 const dispatchShipment = async (req, res) => {
   try {
-    res.status(200).json(await fdaLogic.recordDispatch(req.params.id, req.user.id));
+    res.status(200).json(await fbaLogic.recordDispatch(req.params.id, req.user.id));
   } catch (err) {
     fail(res, err);
   }
@@ -93,7 +93,7 @@ const cancelShipment = async (req, res) => {
   try {
     res
       .status(200)
-      .json(await fdaLogic.cancel(req.params.id, req.body?.reason, req.user.id));
+      .json(await fbaLogic.cancel(req.params.id, req.body?.reason, req.user.id));
   } catch (err) {
     fail(res, err);
   }

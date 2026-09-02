@@ -1,11 +1,11 @@
 /**
  * The two services the system raises for itself.
  *
- * SHIPMENT_DISPATCH and FDA_DISPATCH are priced per client through the ordinary
+ * SHIPMENT_DISPATCH and FBA_DISPATCH are priced per client through the ordinary
  * rate card, which means they have to exist as catalogue rows before anyone can
  * set a price against them. They did not. Both ensure* helpers were written and
  * neither was ever called, so the codes were absent from the database, absent
- * from the Clients → Services dropdown, and no shipment or FDA consignment had
+ * from the Clients → Services dropdown, and no shipment or FBA consignment had
  * ever been chargeable — while the whole billing suite passed, because its
  * fixtures create the rows themselves.
  *
@@ -20,9 +20,9 @@ import billingServices from '../../logic/billing_services.js';
 
 const {
   ensureShipmentService,
-  ensureFdaService,
+  ensureFbaService,
   SHIPMENT_SERVICE_CODE,
-  FDA_SERVICE_CODE,
+  FBA_SERVICE_CODE,
 } = billingServices;
 
 describe('seeding the catalogue', () => {
@@ -35,11 +35,11 @@ describe('seeding the catalogue', () => {
     ).toBe(1);
   });
 
-  it('creates the FDA service when it is missing', async () => {
-    const created = await ensureFdaService();
+  it('creates the FBA service when it is missing', async () => {
+    const created = await ensureFbaService();
 
-    expect(created.code).toBe(FDA_SERVICE_CODE);
-    expect(await prisma.service.count({ where: { code: FDA_SERVICE_CODE } })).toBe(1);
+    expect(created.code).toBe(FBA_SERVICE_CODE);
+    expect(await prisma.service.count({ where: { code: FBA_SERVICE_CODE } })).toBe(1);
   });
 
   it('running twice does not create a second row', async () => {
@@ -75,18 +75,18 @@ describe('seeding the catalogue', () => {
     // Both are multiplied by an item count, so anything but "item" would make
     // the invoice line read as nonsense.
     const shipment = await ensureShipmentService();
-    const fda = await ensureFdaService();
+    const fba = await ensureFbaService();
 
     expect(shipment.unit).toBe('item');
-    expect(fda.unit).toBe('item');
+    expect(fba.unit).toBe('item');
   });
 
   it('keeps them distinct, so one rate cannot be mistaken for the other', async () => {
     const shipment = await ensureShipmentService();
-    const fda = await ensureFdaService();
+    const fba = await ensureFbaService();
 
-    expect(shipment.id).not.toBe(fda.id);
-    expect(SHIPMENT_SERVICE_CODE).not.toBe(FDA_SERVICE_CODE);
+    expect(shipment.id).not.toBe(fba.id);
+    expect(SHIPMENT_SERVICE_CODE).not.toBe(FBA_SERVICE_CODE);
   });
 });
 
@@ -95,12 +95,12 @@ describe('what an admin sees to price', () => {
     // Clients → Services lists every Service. If these are not in it there is
     // nowhere in the product to set a dispatch price at all.
     await ensureShipmentService();
-    await ensureFdaService();
+    await ensureFbaService();
 
     const catalogue = await prisma.service.findMany();
     const codes = catalogue.map((s) => s.code).filter(Boolean);
 
     expect(codes).toContain(SHIPMENT_SERVICE_CODE);
-    expect(codes).toContain(FDA_SERVICE_CODE);
+    expect(codes).toContain(FBA_SERVICE_CODE);
   });
 });

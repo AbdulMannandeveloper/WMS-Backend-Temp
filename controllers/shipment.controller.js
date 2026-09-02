@@ -130,7 +130,7 @@ const getShipmentByField = async (req, res) => {
 /**
  * A client's shipments. Staff may read any; a client only their own.
  *
- * 404 rather than 403 for someone else's, matching the invoice and FDA reads —
+ * 404 rather than 403 for someone else's, matching the invoice and FBA reads —
  * a 403 would confirm the client id exists, which is a probe.
  *
  * The rows carry sourceLocationId on their items. That is our warehouse layout

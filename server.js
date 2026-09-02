@@ -17,7 +17,7 @@ const { recoverStranded } = require("./utils/mailQueue");
 const { describeMailTransport } = require("./utils/mailer");
 const {
   ensureShipmentService,
-  ensureFdaService,
+  ensureFbaService,
 } = require("./logic/billing_services");
 
 const PORT = process.env.PORT || 5000;
@@ -67,11 +67,11 @@ const startServer = async () => {
 
     // The two services the system raises for itself. Without these rows in the
     // catalogue they never appear in a client's rate card, so no dispatch and no
-    // FDA consignment can be priced — which is exactly what had happened: both
+    // FBA consignment can be priced — which is exactly what had happened: both
     // helpers existed and neither was ever called. Idempotent, so every worker
     // and every restart is safe.
     await ensureShipmentService();
-    await ensureFdaService();
+    await ensureFbaService();
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

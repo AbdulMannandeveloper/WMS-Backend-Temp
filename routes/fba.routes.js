@@ -1,6 +1,6 @@
 const express = require('express');
 
-const fdaController = require('../controllers/fda.controller');
+const fbaController = require('../controllers/fba.controller');
 const { authorizeRoles } = require('../middlewares/authorize');
 
 const router = express.Router();
@@ -13,22 +13,22 @@ const adminOnly = authorizeRoles('admin');
 
 // Categories. Staff read them because they have to choose one when recording an
 // arrival; only an admin decides what the list contains.
-router.get('/categories', staffOnly, fdaController.listCategories);
-router.post('/categories', adminOnly, fdaController.createCategory);
-router.put('/categories/:id', adminOnly, fdaController.updateCategory);
-router.delete('/categories/:id', adminOnly, fdaController.deleteCategory);
+router.get('/categories', staffOnly, fbaController.listCategories);
+router.post('/categories', adminOnly, fbaController.createCategory);
+router.put('/categories/:id', adminOnly, fbaController.updateCategory);
+router.delete('/categories/:id', adminOnly, fbaController.deleteCategory);
 
 // Consignments. Declared after /categories so "categories" is never parsed as
 // a consignment id.
-router.get('/', staffOrClient, fdaController.listShipments);
-router.post('/', staffOnly, fdaController.recordArrival);
-router.get('/:id', staffOrClient, fdaController.getShipment);
+router.get('/', staffOrClient, fbaController.listShipments);
+router.post('/', staffOnly, fbaController.recordArrival);
+router.get('/:id', staffOrClient, fbaController.getShipment);
 
 // Leaving is what triggers the charge, so staff can do it — the same people who
 // recorded it arriving.
-router.post('/:id/dispatch', staffOnly, fdaController.dispatchShipment);
+router.post('/:id/dispatch', staffOnly, fbaController.dispatchShipment);
 
 // Voiding one that was never really here.
-router.post('/:id/cancel', adminOnly, fdaController.cancelShipment);
+router.post('/:id/cancel', adminOnly, fbaController.cancelShipment);
 
 module.exports = router;

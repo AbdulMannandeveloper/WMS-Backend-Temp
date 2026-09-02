@@ -30,8 +30,8 @@ const db = (tx) => tx || prisma;
 /** The catalogue code for the charge raised when a shipment is dispatched. */
 const SHIPMENT_SERVICE_CODE = 'SHIPMENT_DISPATCH';
 
-/** The catalogue code for an FDA consignment leaving. */
-const FDA_SERVICE_CODE = 'FDA_DISPATCH';
+/** The catalogue code for an FBA consignment leaving. */
+const FBA_SERVICE_CODE = 'FBA_DISPATCH';
 
 /**
  * The shipment-dispatch service row, created on first use.
@@ -90,19 +90,19 @@ const getRateForClient = async (clientId, code, tx) => {
 const getShipmentRateForClient = (clientId, tx) =>
   getRateForClient(clientId, SHIPMENT_SERVICE_CODE, tx);
 
-/** The client's agreed per-item rate for an FDA consignment, or null. */
-const getFdaRateForClient = (clientId, tx) =>
-  getRateForClient(clientId, FDA_SERVICE_CODE, tx);
+/** The client's agreed per-item rate for an FBA consignment, or null. */
+const getFbaRateForClient = (clientId, tx) =>
+  getRateForClient(clientId, FBA_SERVICE_CODE, tx);
 
-/** The FDA charge service row, created on first use. Mirrors the dispatch one. */
-const ensureFdaService = async (tx) => {
-  const existing = await db(tx).service.findUnique({ where: { code: FDA_SERVICE_CODE } });
+/** The FBA charge service row, created on first use. Mirrors the dispatch one. */
+const ensureFbaService = async (tx) => {
+  const existing = await db(tx).service.findUnique({ where: { code: FBA_SERVICE_CODE } });
   if (existing) return existing;
 
   return await db(tx).service.create({
     data: {
-      code: FDA_SERVICE_CODE,
-      description: 'FDA consignment (per item)',
+      code: FBA_SERVICE_CODE,
+      description: 'FBA consignment (per item)',
       ideaPrice: '0.00',
       unit: 'item',
     },
@@ -171,7 +171,7 @@ const applyRecurringCharges = async (clientId, invoice, tx) => {
  * Rolling forward rather than opening a second invoice for the same month is
  * also forced by the schema — monthly_invoices is unique on (client, period).
  *
- * Lives here rather than in shipment.logic so FDA and ordinary dispatch resolve
+ * Lives here rather than in shipment.logic so FBA and ordinary dispatch resolve
  * a period the same way. Two copies of this rule is how a client once ended up
  * with two invoices for one month.
  */
@@ -273,13 +273,13 @@ const chargeServiceToClient = async (
 
 module.exports = {
   SHIPMENT_SERVICE_CODE,
-  FDA_SERVICE_CODE,
+  FBA_SERVICE_CODE,
   ensureShipmentService,
-  ensureFdaService,
+  ensureFbaService,
   countShippedItems,
   getRateForClient,
   getShipmentRateForClient,
-  getFdaRateForClient,
+  getFbaRateForClient,
   applyRecurringCharges,
   resolveOpenInvoiceFor,
   chargeServiceToClient,

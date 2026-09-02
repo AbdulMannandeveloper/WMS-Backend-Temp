@@ -37,8 +37,8 @@ const LOGO_PATH = path.join(__dirname, '..', 'assets', 'invoice-logo.png');
  * Human labels for the line types.
  *
  * Every value of the LineItemType enum must appear here. It previously listed
- * only three of them, so RECURRING_SERVICE and FDA_CHARGE — both added later —
- * fell through to the raw enum name and a client's invoice read "FDA_CHARGE" in
+ * only three of them, so RECURRING_SERVICE and FBA_CHARGE — both added later —
+ * fell through to the raw enum name and a client's invoice read "FBA_CHARGE" in
  * the Type column. There is a test walking the enum to keep this honest.
  */
 const ITEM_TYPE_LABELS = {
@@ -46,7 +46,7 @@ const ITEM_TYPE_LABELS = {
   SHIPMENT_CHARGE: 'Shipment',
   MANUAL_CHARGE: 'Manual',
   RECURRING_SERVICE: 'Monthly',
-  FDA_CHARGE: 'FDA',
+  FBA_CHARGE: 'FBA',
 };
 
 const money = (value) => Number(value ?? 0).toFixed(2);

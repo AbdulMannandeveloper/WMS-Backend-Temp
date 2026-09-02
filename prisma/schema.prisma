@@ -59,7 +59,7 @@ model Client {
   user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   shipments          Shipment[]
   clientServices     ClientService[]
-  fdaShipments       FdaShipment[]
+  fbaShipments       FbaShipment[]
   products           Product[]
   monthlyInvoices    MonthlyInvoice[]
 
@@ -544,44 +544,44 @@ enum InvoiceStatus {
 }
 
 /**
- * FDA consignments are recorded by hand, not scanned, and never stored against a
+ * FBA consignments are recorded by hand, not scanned, and never stored against a
  * warehouse location — the goods pass through rather than being put away. So
  * they carry no product, no stock level and no ledger movement: just what
  * arrived, for whom, and when it left.
  */
-enum FdaShipmentStatus {
+enum FbaShipmentStatus {
   RECEIVED
   DISPATCHED
   CANCELLED
 }
 
-model FdaCategory {
+model FbaCategory {
   id        String        @id @default(uuid()) @db.Uuid
   name      String        @unique @db.VarChar(120)
   createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  shipments FdaShipment[]
+  shipments FbaShipment[]
 
-  @@map("fda_categories")
+  @@map("fba_categories")
 }
 
-model FdaShipment {
+model FbaShipment {
   id           String            @id @default(uuid()) @db.Uuid
   categoryId   String            @map("category_id") @db.Uuid
   clientId     String            @map("client_id") @db.Uuid
   barcode      String            @db.VarChar(64)
   size         String            @db.VarChar(60)
   count        Int
-  status       FdaShipmentStatus @default(RECEIVED)
+  status       FbaShipmentStatus @default(RECEIVED)
   receivedAt   DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
   dispatchedAt DateTime?         @map("dispatched_at") @db.Timestamptz(6)
   notes        String?           @db.Text
 
-  category FdaCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  category FbaCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   client   Client      @relation(fields: [clientId], references: [id], onDelete: Restrict)
 
-  @@index([clientId, status], map: "idx_fda_shipments_client_status")
-  @@index([barcode], map: "idx_fda_shipments_barcode")
-  @@map("fda_shipments")
+  @@index([clientId, status], map: "idx_fba_shipments_client_status")
+  @@index([barcode], map: "idx_fba_shipments_barcode")
+  @@map("fba_shipments")
 }
 
 enum LineItemType {
@@ -589,7 +589,7 @@ enum LineItemType {
   MANUAL_CHARGE // Added manually by an admin
   SHIPMENT_CHARGE // Billing for shipment dispatch, per item shipped
   RECURRING_SERVICE // A standing monthly charge, raised whether or not anything shipped
-  FDA_CHARGE // An FDA consignment leaving, billed per item
+  FBA_CHARGE // An FBA consignment leaving, billed per item
 }
 
 model FineRule {
