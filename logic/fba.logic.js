@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * FDA consignments.
+ * FBA consignments.
  *
  * A separate flow from ordinary shipments, and deliberately a much smaller one:
  * goods arrive, they are recorded by hand, they leave. Nothing is scanned,
@@ -14,21 +14,21 @@
  * without any of the work dispatch is supposed to do.
  */
 
-const fdaRepository = require('../repositories/fda.repository');
+const fbaRepository = require('../repositories/fba.repository');
 const invoiceLineItemRepository = require('../repositories/invoice_line_item.repository');
 const clientRepository = require('../repositories/client.repository');
 const auditLogLogic = require('./audit_log.logic');
-const { getFdaRateForClient, resolveOpenInvoiceFor } = require('./billing_services');
+const { getFbaRateForClient, resolveOpenInvoiceFor } = require('./billing_services');
 const { prisma } = require('../lib/prisma');
 
-const FDA_TRANSITIONS = {
+const FBA_TRANSITIONS = {
   RECEIVED: ['DISPATCHED', 'CANCELLED'],
   DISPATCHED: [],
   CANCELLED: [],
 };
 
 const assertTransition = (from, to) => {
-  const allowed = FDA_TRANSITIONS[from];
+  const allowed = FBA_TRANSITIONS[from];
   if (!allowed) throw new Error(`Consignment has an unrecognised status: ${from}.`);
   if (!allowed.includes(to)) {
     const options = allowed.length ? allowed.join(', ') : 'nothing — it is final';
@@ -58,28 +58,28 @@ const addCategory = async ({ name }, actorUserId) => {
   if (!trimmed) throw new Error('A category name is required.');
   if (trimmed.length > 120) throw new Error('Category name is too long — 120 characters maximum.');
 
-  const existing = await fdaRepository.getCategoryByName(trimmed);
+  const existing = await fbaRepository.getCategoryByName(trimmed);
   if (existing) throw new Error(`A category called "${trimmed}" already exists.`);
 
-  const created = await fdaRepository.createCategory({ name: trimmed });
-  await audit(actorUserId, 'FDA_CATEGORY_CREATED', { categoryId: created.id, name: trimmed });
+  const created = await fbaRepository.createCategory({ name: trimmed });
+  await audit(actorUserId, 'FBA_CATEGORY_CREATED', { categoryId: created.id, name: trimmed });
   return created;
 };
 
-const getAllCategories = async () => await fdaRepository.getAllCategories();
+const getAllCategories = async () => await fbaRepository.getAllCategories();
 
 const updateCategory = async (id, { name }, actorUserId) => {
-  const category = await fdaRepository.getCategoryById(id);
+  const category = await fbaRepository.getCategoryById(id);
   if (!category) throw new Error('Category not found.');
 
   const trimmed = String(name ?? '').trim();
   if (!trimmed) throw new Error('A category name is required.');
 
-  const clash = await fdaRepository.getCategoryByName(trimmed);
+  const clash = await fbaRepository.getCategoryByName(trimmed);
   if (clash && clash.id !== id) throw new Error(`A category called "${trimmed}" already exists.`);
 
-  const updated = await fdaRepository.updateCategory(id, { name: trimmed });
-  await audit(actorUserId, 'FDA_CATEGORY_UPDATED', { categoryId: id, from: category.name, to: trimmed });
+  const updated = await fbaRepository.updateCategory(id, { name: trimmed });
+  await audit(actorUserId, 'FBA_CATEGORY_UPDATED', { categoryId: id, from: category.name, to: trimmed });
   return updated;
 };
 
@@ -89,25 +89,25 @@ const updateCategory = async (id, { name }, actorUserId) => {
  * handled and billed.
  */
 const deleteCategory = async (id, actorUserId) => {
-  const category = await fdaRepository.getCategoryById(id);
+  const category = await fbaRepository.getCategoryById(id);
   if (!category) throw new Error('Category not found.');
 
-  const inUse = await fdaRepository.countShipmentsInCategory(id);
+  const inUse = await fbaRepository.countShipmentsInCategory(id);
   if (inUse > 0) {
     throw new Error(
       `"${category.name}" is used by ${inUse} consignment(s) and cannot be deleted.`,
     );
   }
 
-  await fdaRepository.deleteCategory(id);
-  await audit(actorUserId, 'FDA_CATEGORY_DELETED', { categoryId: id, name: category.name });
+  await fbaRepository.deleteCategory(id);
+  await audit(actorUserId, 'FBA_CATEGORY_DELETED', { categoryId: id, name: category.name });
   return { message: 'Category deleted.' };
 };
 
 // ─── Consignments ─────────────────────────────────────────────────────────────
 
 const requireShipment = async (id) => {
-  const shipment = await fdaRepository.getShipmentById(id);
+  const shipment = await fbaRepository.getShipmentById(id);
   if (!shipment) throw new Error('Consignment not found.');
   return shipment;
 };
@@ -132,13 +132,13 @@ const recordArrival = async (data, actorUserId) => {
     throw new Error('Count must be a whole number above zero.');
   }
 
-  const category = await fdaRepository.getCategoryById(categoryId);
+  const category = await fbaRepository.getCategoryById(categoryId);
   if (!category) throw new Error('That category does not exist.');
 
   const client = await clientRepository.getClientByField('id', clientId);
   if (!client) throw new Error('That client does not exist.');
 
-  const created = await fdaRepository.createShipment({
+  const created = await fbaRepository.createShipment({
     categoryId,
     clientId,
     barcode: barcodeValue,
@@ -148,8 +148,8 @@ const recordArrival = async (data, actorUserId) => {
     status: 'RECEIVED',
   });
 
-  await audit(actorUserId, 'FDA_SHIPMENT_RECEIVED', {
-    fdaShipmentId: created.id,
+  await audit(actorUserId, 'FBA_SHIPMENT_RECEIVED', {
+    fbaShipmentId: created.id,
     clientId,
     barcode: barcodeValue,
     count: countValue,
@@ -161,8 +161,8 @@ const recordArrival = async (data, actorUserId) => {
 /**
  * Records goods leaving, and bills for them.
  *
- * The charge is count × the client's agreed FDA rate, frozen onto the line, so a
- * later rate change cannot rewrite what was already raised. A client with no FDA
+ * The charge is count × the client's agreed FBA rate, frozen onto the line, so a
+ * later rate change cannot rewrite what was already raised. A client with no FBA
  * rate is simply not charged — the same treatment as a client with no dispatch
  * rate, and a real arrangement rather than an error.
  */
@@ -173,13 +173,13 @@ const recordDispatch = async (id, actorUserId) => {
   return await prisma.$transaction(async (tx) => {
     const dispatchedAt = new Date();
 
-    const updated = await fdaRepository.updateShipment(
+    const updated = await fbaRepository.updateShipment(
       id,
       { status: 'DISPATCHED', dispatchedAt },
       tx,
     );
 
-    const rate = await getFdaRateForClient(shipment.clientId, tx);
+    const rate = await getFbaRateForClient(shipment.clientId, tx);
     const unitPrice = rate ? Number(rate.unitPrice) : 0;
 
     if (rate && unitPrice > 0) {
@@ -192,9 +192,9 @@ const recordDispatch = async (id, actorUserId) => {
           quantity: shipment.count,
           unitPrice,
           totalPrice: Number((shipment.count * unitPrice).toFixed(2)),
-          description: `FDA consignment — ${shipment.count} item(s), ${shipment.category?.name ?? 'uncategorised'}, barcode ${shipment.barcode}`,
+          description: `FBA consignment — ${shipment.count} item(s), ${shipment.category?.name ?? 'uncategorised'}, barcode ${shipment.barcode}`,
           dateOfService: dispatchedAt,
-          itemType: 'FDA_CHARGE',
+          itemType: 'FBA_CHARGE',
         },
         tx,
       );
@@ -210,8 +210,8 @@ const recordDispatch = async (id, actorUserId) => {
       });
     }
 
-    await audit(actorUserId, 'FDA_SHIPMENT_DISPATCHED', {
-      fdaShipmentId: id,
+    await audit(actorUserId, 'FBA_SHIPMENT_DISPATCHED', {
+      fbaShipmentId: id,
       clientId: shipment.clientId,
       count: shipment.count,
       charged: rate ? Number((shipment.count * unitPrice).toFixed(2)) : null,
@@ -226,14 +226,14 @@ const cancel = async (id, reason, actorUserId) => {
   const shipment = await requireShipment(id);
   assertTransition(shipment.status, 'CANCELLED');
 
-  const updated = await fdaRepository.updateShipment(id, { status: 'CANCELLED' });
-  await audit(actorUserId, 'FDA_SHIPMENT_CANCELLED', { fdaShipmentId: id, reason: reason ?? null });
+  const updated = await fbaRepository.updateShipment(id, { status: 'CANCELLED' });
+  await audit(actorUserId, 'FBA_SHIPMENT_CANCELLED', { fbaShipmentId: id, reason: reason ?? null });
   return updated;
 };
 
-const getAllShipments = async () => await fdaRepository.getAllShipments();
+const getAllShipments = async () => await fbaRepository.getAllShipments();
 const getShipmentsByClientId = async (clientId) =>
-  await fdaRepository.getShipmentsByClientId(clientId);
+  await fbaRepository.getShipmentsByClientId(clientId);
 const getShipmentById = async (id) => await requireShipment(id);
 
 module.exports = {
@@ -247,6 +247,6 @@ module.exports = {
   getAllShipments,
   getShipmentsByClientId,
   getShipmentById,
-  FDA_TRANSITIONS,
+  FBA_TRANSITIONS,
   assertTransition,
 };

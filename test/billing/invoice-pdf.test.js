@@ -149,16 +149,16 @@ describe('invoice PDF', () => {
     );
 
     // Enumerated from the schema rather than listed by hand. This test used to
-    // check three of them, so RECURRING_SERVICE and FDA_CHARGE were added later
+    // check three of them, so RECURRING_SERVICE and FBA_CHARGE were added later
     // with no label and fell through to the raw enum — a client's invoice read
-    // "FDA_CHARGE" in the Type column. Walking the whole enum means the next
+    // "FBA_CHARGE" in the Type column. Walking the whole enum means the next
     // line type cannot be added without one.
     const ALL_TYPES = [
       'AUTOMATED_SERVICE',
       'SHIPMENT_CHARGE',
       'MANUAL_CHARGE',
       'RECURRING_SERVICE',
-      'FDA_CHARGE',
+      'FBA_CHARGE',
     ];
 
     for (const type of ALL_TYPES) {

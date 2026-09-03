@@ -64,7 +64,7 @@ const requireShipment = async (id, tx) => {
   return shipment;
 };
 
-// resolveOpenInvoice moved to ./billing_services, so FDA consignments and
+// resolveOpenInvoice moved to ./billing_services, so FBA consignments and
 // ordinary dispatch resolve a billing period through the same code. Two copies
 // of that rule is how a client once ended up with two invoices for one month.
 const resolveOpenInvoice = resolveOpenInvoiceFor;

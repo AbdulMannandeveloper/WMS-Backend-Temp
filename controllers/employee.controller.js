@@ -44,9 +44,25 @@ const getEmployeeById = async (req, res) => {
   }
 };
 
+/** Employment details. Admin only — this is NI numbers and dates of birth. */
+const updateEmployee = async (req, res) => {
+  try {
+    const updated = await employeeLogic.updateEmployee(
+      req.params.id,
+      req.body || {},
+      req.user.id,
+    );
+    res.status(200).json(updated);
+  } catch (err) {
+    const notFound = /not found/i.test(err.message);
+    res.status(notFound ? 404 : 400).json({ error: err.message });
+  }
+};
+
 module.exports = {
   addEmployee,
   getAllEmployees,
   getEmployeeLookup,
   getEmployeeById,
+  updateEmployee,
 };
