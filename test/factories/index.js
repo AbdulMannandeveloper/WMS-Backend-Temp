@@ -134,29 +134,6 @@ export const makeShipmentRate = async (clientId, chargedPrice = '2.00') => {
   return { service, rate };
 };
 
-/** A standing monthly charge — storage, a retainer, anything not shipment-driven. */
-export const makeRecurringService = async (clientId, overrides = {}) => {
-  const service = await prisma.service.create({
-    data: {
-      description: overrides.description || uniq('Storage'),
-      ideaPrice: '25.00',
-      unit: 'month',
-    },
-  });
-
-  const rate = await prisma.clientService.create({
-    data: {
-      clientId,
-      serviceId: service.id,
-      chargedPrice: overrides.chargedPrice || '25.00',
-      unit: 'month',
-      isRecurring: true,
-      recurringQuantity: overrides.recurringQuantity || '1',
-    },
-  });
-
-  return { service, rate };
-};
 
 export const makeLocationClass = (overrides = {}) =>
   prisma.warehouseLocationClass.create({
