@@ -36,11 +36,9 @@ const createShipment = (actor, scenario, items) =>
   as(actor)
     .post('/api/shipments')
     .send({
-      clientId: scenario.client.id,
-      employeeId: scenario.employee.id,
-      shipmentType: 'Standard',
-      packagingType: 'Box',
-      courierName: 'Evri',
+      // The client is derived from the goods and the creator from the session.
+      // All that is left to send is the label and the picks.
+      reference: `SHP-${Math.random().toString(36).slice(2, 10)}`,
       shipmentItems: items,
     });
 
@@ -61,8 +59,9 @@ describe('a shipment drawn from two bins', () => {
     expect(items.map((i) => i.quantity).sort((a, b) => a - b)).toEqual([8, 12]);
   });
 
-  it('reserves from each bin separately', async () => {
+  it('takes from each bin separately', async () => {
     // The whole reason the split exists: 20 units when neither bin holds 20.
+    // Creation dispatches now, so the stock leaves rather than being reserved.
     const scenario = await arrangeTwoBins();
 
     await createShipment(scenario.admin, scenario, [
@@ -73,8 +72,8 @@ describe('a shipment drawn from two bins', () => {
     const first = await prisma.stockLevel.findUnique({ where: { id: scenario.stock.id } });
     const second = await prisma.stockLevel.findUnique({ where: { id: scenario.secondStock.id } });
 
-    expect(first.reservedQuantity).toBe(8);
-    expect(second.reservedQuantity).toBe(12);
+    expect(first.currentQuantity).toBe(2); // 10 - 8
+    expect(second.currentQuantity).toBe(3); // 15 - 12
   });
 
   it('refuses the whole shipment if one bin cannot cover its share', async () => {
@@ -89,7 +88,9 @@ describe('a shipment drawn from two bins', () => {
 
     expect(res.status).toBe(400);
     const first = await prisma.stockLevel.findUnique({ where: { id: scenario.stock.id } });
-    expect(first.reservedQuantity).toBe(0);
+    // Untouched: a partial take would leave the shelf short against a shipment
+    // that was never created.
+    expect(first.currentQuantity).toBe(10);
     expect(await prisma.shipment.count()).toBe(0);
   });
 
@@ -103,15 +104,6 @@ describe('a shipment drawn from two bins', () => {
       { productId: scenario.product.id, sourceLocationId: scenario.secondLocation.id, quantity: 12 },
     ]);
 
-    // Pick both lines, then send it.
-    const items = await prisma.shipmentItem.findMany({
-      where: { shipmentId: created.body.id },
-    });
-    for (const item of items) {
-      await as(scenario.admin).put(`/api/shipment-items/${item.id}/pick`);
-    }
-    await as(scenario.admin).post(`/api/shipments/${created.body.id}/ready`);
-    await as(scenario.admin).post(`/api/shipments/${created.body.id}/dispatch`);
 
     const invoice = await prisma.monthlyInvoice.findFirst({
       where: { clientId: scenario.client.id },
@@ -124,7 +116,7 @@ describe('a shipment drawn from two bins', () => {
     expect(Number(charges[0].totalPrice)).toBe(40);
   });
 
-  it('takes the stock out of both bins on dispatch', async () => {
+  it('takes the stock out of both bins as it is created', async () => {
     const scenario = await arrangeTwoBins();
 
     const created = await createShipment(scenario.admin, scenario, [
@@ -132,14 +124,6 @@ describe('a shipment drawn from two bins', () => {
       { productId: scenario.product.id, sourceLocationId: scenario.secondLocation.id, quantity: 12 },
     ]);
 
-    const items = await prisma.shipmentItem.findMany({
-      where: { shipmentId: created.body.id },
-    });
-    for (const item of items) {
-      await as(scenario.admin).put(`/api/shipment-items/${item.id}/pick`);
-    }
-    await as(scenario.admin).post(`/api/shipments/${created.body.id}/ready`);
-    await as(scenario.admin).post(`/api/shipments/${created.body.id}/dispatch`);
 
     const first = await prisma.stockLevel.findUnique({ where: { id: scenario.stock.id } });
     const second = await prisma.stockLevel.findUnique({ where: { id: scenario.secondStock.id } });
@@ -157,14 +141,6 @@ describe('a shipment drawn from two bins', () => {
       { productId: scenario.product.id, sourceLocationId: scenario.secondLocation.id, quantity: 12 },
     ]);
 
-    const items = await prisma.shipmentItem.findMany({
-      where: { shipmentId: created.body.id },
-    });
-    for (const item of items) {
-      await as(scenario.admin).put(`/api/shipment-items/${item.id}/pick`);
-    }
-    await as(scenario.admin).post(`/api/shipments/${created.body.id}/ready`);
-    await as(scenario.admin).post(`/api/shipments/${created.body.id}/dispatch`);
 
     const ledger = await prisma.inventoryLedger.findMany({
       where: { referenceId: created.body.id, movementType: 'CHECKOUT' },

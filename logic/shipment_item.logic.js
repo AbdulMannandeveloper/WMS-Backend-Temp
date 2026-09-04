@@ -13,6 +13,9 @@ const productLogic = require("./product.logic");
 const stockLevelLogic = require("./stock_level.logic");
 const auditLogLogic = require("./audit_log.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
+const billingServices = require("./billing_services");
+const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
+const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
 
 /**
  * Adds a line to a shipment and reserves its stock.
@@ -262,7 +265,30 @@ const unpickShipmentItem = async (id, actorUserId) => {
  * silently crediting an invoice from a warehouse action is not this system's
  * decision to make.
  */
-const returnShipmentItem = async (id, quantity, reason, actorUserId) => {
+/**
+ * Takes some of a dispatched line back.
+ *
+ * Two things stay true whatever else happens: the stock goes back on the shelf,
+ * and **the shipment's own invoice line is never touched**. What was dispatched
+ * was dispatched, and rewriting a charge already raised is how an invoice stops
+ * matching what the client was told.
+ *
+ * The return may carry its own cost, which is a separate line rather than an
+ * adjustment to the old one. It is optional twice: a client with no agreed
+ * ITEM_RETURN rate is never charged, and even with one the admin decides per
+ * return — so `chargeReturn` defaults to false. Forgetting to untick would
+ * bill a client for a return meant to be absorbed, and an unnoticed charge is
+ * worse than an unnoticed omission.
+ *
+ * @param {{ chargeReturn?: boolean }} [options]
+ */
+const returnShipmentItem = async (
+  id,
+  quantity,
+  reason,
+  actorUserId,
+  { chargeReturn = false } = {},
+) => {
   const items = await shipmentItemRepository.getShipmentItemsByField("id", id);
   const item = Array.isArray(items) ? items[0] : items;
   if (!item) {
@@ -320,6 +346,43 @@ const returnShipmentItem = async (id, quantity, reason, actorUserId) => {
       { tx },
     );
 
+    // The return's own cost, when there is one and it was asked for. A
+    // separate line: the dispatch charge above it stays exactly as raised.
+    let returnCharge = null;
+    if (chargeReturn) {
+      const rate = await billingServices.getReturnRateForClient(
+        shipment.clientId,
+        tx,
+      );
+
+      if (rate && Number(rate.unitPrice) > 0) {
+        const unitPrice = Number(rate.unitPrice);
+        const invoice = await billingServices.resolveOpenInvoiceFor(
+          shipment.clientId,
+          tx,
+        );
+
+        await invoiceLineItemRepository.createInvoiceLineItem(
+          {
+            invoiceId: invoice.id,
+            clientServiceId: rate.clientService.id,
+            quantity: amount,
+            unitPrice,
+            totalPrice: Number((amount * unitPrice).toFixed(2)),
+            description: `Return handling — ${amount} item(s) from shipment ${shipment.reference}`,
+            dateOfService: new Date(),
+            itemType: "MANUAL_CHARGE",
+          },
+          tx,
+        );
+
+        await monthlyInvoiceRepository.recalculateInvoiceTotal(invoice.id, tx);
+        returnCharge = Number((amount * unitPrice).toFixed(2));
+      }
+      // No rate: silently not charged is wrong, so the caller is told by the
+      // returnCharge staying null and the audit recording the ask.
+    }
+
     if (actorUserId) {
       await auditLogLogic
         .createAuditLog(actorUserId, "SHIPMENT_ITEM_RETURNED", {
@@ -331,12 +394,16 @@ const returnShipmentItem = async (id, quantity, reason, actorUserId) => {
           returnedTotal: alreadyReturned + amount,
           ofLineQuantity: item.quantity,
           reason: reason ?? null,
-          invoiceChanged: false,
+          // The dispatch charge is never rewritten. A return fee, when one
+          // applies, is its own line.
+          dispatchChargeChanged: false,
+          chargeRequested: chargeReturn,
+          returnCharge,
         })
         .catch((err) => console.error("Audit log error:", err.message));
     }
 
-    return updated;
+    return { ...updated, returnCharge };
   });
 };
 

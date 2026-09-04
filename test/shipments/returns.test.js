@@ -295,6 +295,9 @@ describe('the audit trail', () => {
     });
     expect(log).not.toBeNull();
     expect(log.details).toContain('Damaged in transit');
-    expect(log.details).toContain('invoiceChanged');
+    // Renamed when returns learned to carry their own optional fee: the
+    // shipment's dispatch charge is the thing that must never move, and the
+    // field now says so rather than implying the whole invoice is frozen.
+    expect(log.details).toContain('dispatchChargeChanged');
   });
 });

@@ -77,26 +77,171 @@ const audit = (actorUserId, action, details) => {
     .catch((err) => console.error(`Audit log error (${action}):`, err.message));
 };
 
-const createShipment = async (data) => {
-  if (!data.employeeId || !data.clientId || !data.shipmentType) {
-    throw new Error(
-      "Employee ID, Client ID, and Shipment Type are required to create a shipment.",
+
+/**
+ * Everything dispatching a shipment does beyond setting its status: the stock
+ * leaves, and the client is charged.
+ *
+ * Shared because a shipment is now dispatched at the moment it is created, and
+ * the old two-step path still exists for the rows that predate that. Two copies
+ * of this would be two chances for the shelves and the invoice to disagree.
+ *
+ * @param actorUserId whoever is signed in — the ledger records a person, and
+ *   that person is a User. It used to be read off the shipment's Employee,
+ *   which is why an admin could not dispatch at all.
+ */
+const applyDispatchEffects = async (shipment, actorUserId, tx) => {
+  if (!actorUserId) {
+    throw new Error("An authenticated user is required to dispatch stock.");
+  }
+
+  const shipmentItems = await tx.shipmentItem.findMany({
+    where: { shipmentId: shipment.id },
+  });
+
+  for (const item of shipmentItems) {
+    await inventoryLedgerLogic.createInventoryLedger(
+      {
+        productId: item.productId,
+        userId: actorUserId,
+        movementType: "CHECKOUT",
+        quantity: item.quantity,
+        referenceId: shipment.id,
+        fromLocationId: item.sourceLocationId,
+      },
+      { tx },
     );
   }
 
-  const employee = await employeeLogic.getEmployeeById(data.employeeId);
-  const client = await clientLogic.getClientById(data.clientId);
-  if (!employee) {
-    throw new Error("Employee not found.");
-  }
-  if (!client) {
-    throw new Error("Client not found.");
+  // The client's agreed per-item dispatch rate, read now and written onto the
+  // line, so a later rate change cannot rewrite a charge already raised.
+  //
+  // Null when the client has not bought that service, which is a real
+  // arrangement rather than an error: a services-only client is stored and
+  // handled here but ships through someone else.
+  const shipmentRate = await getShipmentRateForClient(shipment.clientId, tx);
+  const shippedItemCount = countShippedItems(shipmentItems);
+  const hasShipmentCharge =
+    shipmentRate !== null && shippedItemCount > 0 && Number(shipmentRate.unitPrice) > 0;
+
+  // Nothing to charge: the goods still move, but do not open an empty invoice
+  // just to hold no lines.
+  if (!hasShipmentCharge) return;
+
+  const monthlyInvoice = await resolveOpenInvoice(shipment.clientId, tx);
+  const unitPrice = Number(shipmentRate.unitPrice);
+
+  await invoiceLineItemRepository.createInvoiceLineItem(
+    {
+      invoiceId: monthlyInvoice.id,
+      clientServiceId: shipmentRate.clientService.id,
+      // Per item, not per shipment. This was hardcoded to 1, so a
+      // five-hundred-item shipment billed the same as a single-item one.
+      quantity: shippedItemCount,
+      unitPrice,
+      totalPrice: Number((shippedItemCount * unitPrice).toFixed(2)),
+      // Names the scanned label rather than the uuid: that is what is written
+      // on the parcel and what a client quotes when they query the line.
+      description: `Shipment ${shipment.reference} — ${shippedItemCount} item(s) dispatched`,
+      dateOfService: new Date(),
+      itemType: "SHIPMENT_CHARGE",
+    },
+    tx,
+  );
+
+  // The invoice total is derived from its line items, never accumulated here.
+  await monthlyInvoiceRepository.recalculateInvoiceTotal(monthlyInvoice.id, tx);
+};
+
+/**
+ * The one client a shipment belongs to, worked out from the goods on it.
+ *
+ * Asking for the client before anything is picked was the wrong order: the
+ * goods already know whose they are. Refusing a mixed shipment matters because
+ * the stock is not theirs and the charge would land on the wrong invoice.
+ */
+const clientFromItems = async (shipmentItems, tx) => {
+  if (!Array.isArray(shipmentItems) || shipmentItems.length === 0) {
+    throw new Error("Add at least one product before creating a shipment.");
   }
 
-  // A shipment always starts at PENDING. Callers do not get to choose a
-  // starting state — that would be a transition, and transitions are guarded.
-  const { shipmentItems, shipmentServices, status, ...shipmentData } = data;
-  shipmentData.status = "PENDING";
+  const db = tx || prisma;
+  let clientId = null;
+  let clientName = null;
+
+  for (const item of shipmentItems) {
+    const product = await db.product.findUnique({
+      where: { id: item.productId },
+      include: { client: true },
+    });
+    if (!product) {
+      throw new Error("One of the products on this shipment no longer exists.");
+    }
+
+    if (clientId === null) {
+      clientId = product.clientId;
+      clientName = product.client?.companyName ?? "that client";
+      continue;
+    }
+
+    if (product.clientId !== clientId) {
+      throw new Error(
+        `${product.productName} belongs to ${product.client?.companyName ?? "another client"}. ` +
+          `A shipment can only carry one client's goods, and this one is ${clientName}'s.`,
+      );
+    }
+  }
+
+  return clientId;
+};
+
+/**
+ * Creates a shipment and dispatches it in the same act.
+ *
+ * There is no longer a PENDING → READY → DISPATCHED walk. The parcel is packed
+ * and the label is on it before anyone touches this screen, so the three states
+ * described a process that had already happened. Stock leaves and the client is
+ * charged here.
+ *
+ * @param actorUserId whoever is signed in. Never taken from the body.
+ */
+const createShipment = async (data, actorUserId) => {
+  if (!actorUserId) {
+    throw new Error("An authenticated user is required to create a shipment.");
+  }
+
+  const reference = String(data.reference ?? "").trim();
+  if (!reference) {
+    throw new Error("Scan the shipment label before creating the shipment.");
+  }
+
+  // Refused rather than allowed through: two shipments sharing an identity
+  // cannot be told apart afterwards by the warehouse, the courier, or a client
+  // querying the invoice line that names it.
+  const clash = await shipmentRepositry.getShipmentByField("reference", reference);
+  const existing = Array.isArray(clash) ? clash[0] : clash;
+  if (existing) {
+    const when = new Date(existing.createdAt).toLocaleDateString("en-GB");
+    throw new Error(
+      `Shipment label ${reference} was already used on ${when} for ` +
+        `${existing.client?.companyName ?? "another client"}. Scan a different label.`,
+    );
+  }
+
+  // Everything the caller is not allowed to decide is stripped here: the
+  // client comes from the goods, the creator from the session, the status from
+  // this function, and billable services are no longer attached at dispatch.
+  const { shipmentItems, shipmentServices, status, clientId, employeeId, ...rest } = data;
+
+  const derivedClientId = await clientFromItems(shipmentItems);
+
+  const shipmentData = {
+    ...rest,
+    reference,
+    clientId: derivedClientId,
+    createdByUserId: actorUserId,
+    status: "DISPATCHED",
+  };
 
   // One transaction for the whole shipment. Previously the row was written
   // first and each item created in its own transaction, so a later line that
@@ -116,34 +261,24 @@ const createShipment = async (data) => {
       }
     }
 
-    // Billable services applied to this shipment. Priced from the client's
-    // agreed rate and frozen; dispatch raises invoice lines from these.
-    if (Array.isArray(shipmentServices)) {
-      for (const service of shipmentServices) {
-        await ShipmentServiceMappingLogic.createShipmentServiceMapping(
-          { ...service, shipmentId: shipment.id },
-          tx,
-        );
-      }
-    }
+    // Billable services are no longer attached here. They are charged from the
+    // Clients screen as a deliberate act, rather than riding along on a
+    // shipment where nobody looks for them afterwards.
 
-    const [createdItems, createdServices] = await Promise.all([
-      shipmentItemLogic.getShipmentItemsByField("shipmentId", shipment.id, tx),
-      ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
-        "shipmentId",
-        shipment.id,
-        tx,
-      ),
-    ]);
+    // Stock out and the invoice line, in this same transaction: a shipment that
+    // exists but never left the shelf is the state this used to allow.
+    await applyDispatchEffects({ ...shipment, reference }, actorUserId, tx);
 
-    return {
-      ...shipment,
-      shipmentItems: createdItems,
-      shipmentServices: createdServices,
-    };
+    const createdItems = await shipmentItemLogic.getShipmentItemsByField(
+      "shipmentId",
+      shipment.id,
+      tx,
+    );
+
+    return { ...shipment, shipmentItems: createdItems };
   }, {
     maxWait: 10_000,
-    timeout: 30_000,
+    timeout: 60_000,
   });
 };
 
@@ -173,109 +308,12 @@ const dispatchShipment = async (shipmentId, actorUserId) => {
       data: { status: "DISPATCHED" },
     });
 
-    const shipmentItems = await tx.shipmentItem.findMany({
-      where: { shipmentId },
-    });
+    // Prefer whoever is doing the dispatching; fall back to the employee the
+    // shipment was created against, for rows written before creators existed.
+    const ledgerUserId =
+      actorUserId || shipment.createdByUserId || shipment.employee?.userId;
 
-    // The ledger records the person, so it must be a User id. The old
-    // `|| shipment.employeeId` fallback would have written an Employee id into
-    // a User foreign key; it only ever looked correct because the repository
-    // happens to include employee.user. Fail loudly instead.
-    const ledgerUserId = shipment.employee?.userId || shipment.employee?.user?.id;
-    if (!ledgerUserId) {
-      throw new Error(
-        "Cannot dispatch: the assigned employee has no linked user account to attribute the stock movement to.",
-      );
-    }
-
-    for (const item of shipmentItems) {
-      await inventoryLedgerLogic.createInventoryLedger(
-        {
-          productId: item.productId,
-          userId: ledgerUserId,
-          movementType: "CHECKOUT",
-          quantity: item.quantity,
-          referenceId: shipment.id,
-          fromLocationId: item.sourceLocationId,
-        },
-        { tx },
-      );
-    }
-
-    const shipmentServices =
-      await ShipmentServiceMappingLogic.getShipmentServiceMappingsByField(
-        "shipmentId",
-        shipmentId,
-        tx,
-      );
-
-    // The client's agreed per-item dispatch rate, read now and written onto the
-    // line, so a later rate change cannot rewrite a charge already raised.
-    //
-    // Null when the client has not bought that service, which is a real
-    // arrangement rather than an error: a services-only client is stored and
-    // handled here but ships through someone else.
-    const shipmentRate = await getShipmentRateForClient(shipment.clientId, tx);
-    const shippedItemCount = countShippedItems(shipmentItems);
-    const hasShipmentCharge =
-      shipmentRate !== null && shippedItemCount > 0 && Number(shipmentRate.unitPrice) > 0;
-
-    // Nothing to charge at all: the goods still move, but do not open an empty
-    // invoice just to hold no lines.
-    if (hasShipmentCharge || shipmentServices.length > 0) {
-      const monthlyInvoice = await resolveOpenInvoice(shipment.clientId, tx);
-      const dispatchedAt = new Date();
-
-      if (hasShipmentCharge) {
-        const unitPrice = Number(shipmentRate.unitPrice);
-        await invoiceLineItemRepository.createInvoiceLineItem(
-          {
-            invoiceId: monthlyInvoice.id,
-            // Points at the agreed rate it came from, like every other line.
-            clientServiceId: shipmentRate.clientService.id,
-            // Per item, not per shipment. This was hardcoded to 1, so a
-            // five-hundred-item shipment billed the same as a single-item one.
-            quantity: shippedItemCount,
-            unitPrice,
-            totalPrice: Number((shippedItemCount * unitPrice).toFixed(2)),
-            description: `Shipment dispatch — ${shippedItemCount} item(s), ${shipment.courierName} (${shipment.shipmentType}), shipment ${shipment.id}`,
-            dateOfService: dispatchedAt,
-            itemType: "SHIPMENT_CHARGE",
-          },
-          tx,
-        );
-      }
-
-      for (const serviceMapping of shipmentServices) {
-        // appliedUnitPrice was frozen when the service was attached, so a rate
-        // change since then does not rewrite this charge.
-        const unitPrice = serviceMapping.appliedUnitPrice;
-        const quantity = serviceMapping.quantity;
-        const totalPrice = Number(quantity) * Number(unitPrice);
-
-        await invoiceLineItemRepository.createInvoiceLineItem(
-          {
-            invoiceId: monthlyInvoice.id,
-            clientServiceId: serviceMapping.clientServiceId || null,
-            quantity,
-            unitPrice,
-            totalPrice,
-            description: `Charge for service "${serviceMapping.service?.description || serviceMapping.serviceId}" on shipment ${shipment.id}`,
-            // When the work actually happened, even if it bills to a later
-            // period because this month's invoice was already closed.
-            dateOfService: dispatchedAt,
-            itemType: "AUTOMATED_SERVICE",
-          },
-          tx,
-        );
-      }
-
-      // The invoice total is derived from its line items, never accumulated here.
-      await monthlyInvoiceRepository.recalculateInvoiceTotal(
-        monthlyInvoice.id,
-        tx,
-      );
-    }
+    await applyDispatchEffects(shipment, ledgerUserId, tx);
 
     return await shipmentRepositry.getShipmentByField("id", shipmentId, tx);
   }, {
@@ -285,8 +323,8 @@ const dispatchShipment = async (shipmentId, actorUserId) => {
 
   await audit(actorUserId, "SHIPMENT_DISPATCHED", {
     shipmentId,
+    reference: shipment.reference,
     clientId: shipment.clientId,
-    courierName: shipment.courierName,
     itemCount: shipment.shipmentItems?.length ?? 0,
   });
 

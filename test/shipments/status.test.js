@@ -213,32 +213,36 @@ describe('shipment lifecycle', () => {
       expect(res.status).toBe(403);
     });
 
-    it('an admin can change the courier', async () => {
+    it('changes nothing through the generic update', async () => {
+      // There is nothing left for it to change. Shipment type, packaging and
+      // courier were dropped — none were knowable when the form asked for them
+      // — the reference is the shipment's identity, and the client is derived
+      // from the goods. The endpoint stays so an unknown field is still a
+      // no-op rather than a 404.
       const { admin, shipment } = await arrange();
 
       const res = await as(admin)
         .put(`/api/shipments/${shipment.id}`)
-        .send({ courierName: 'DPD' });
+        .send({ reference: 'HIJACKED', clientId: '00000000-0000-0000-0000-000000000000' });
 
       expect(res.status).toBe(200);
       const after = await prisma.shipment.findUnique({ where: { id: shipment.id } });
-      expect(after.courierName).toBe('DPD');
+      expect(after.reference).toBe(shipment.reference);
+      expect(after.clientId).toBe(shipment.clientId);
     });
 
     it('ignores a tracking id sent to the generic update', async () => {
-      // It used to be settable here. It moved to PUT /:id/tracking, which staff
-      // may also use and which stays open after dispatch — see
-      // test/shipments/tracking.test.js. Silently dropped rather than rejected,
-      // the same way every other unknown field on this endpoint is.
+      // It moved to PUT /:id/tracking, which staff may also use and which stays
+      // open after dispatch — see test/shipments/tracking.test.js. Silently
+      // dropped rather than rejected, like every other field here now.
       const { admin, shipment } = await arrange();
 
       const res = await as(admin)
         .put(`/api/shipments/${shipment.id}`)
-        .send({ courierName: 'DPD', trackingId: 'H00CXH0012345678' });
+        .send({ trackingId: 'H00CXH0012345678' });
 
       expect(res.status).toBe(200);
       const after = await prisma.shipment.findUnique({ where: { id: shipment.id } });
-      expect(after.courierName).toBe('DPD');
       expect(after.trackingId).toBeNull();
     });
 

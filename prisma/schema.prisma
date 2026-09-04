@@ -43,6 +43,7 @@ model User {
   employeeFines              EmployeeFine[]
   employeeBonuses            EmployeeBonus[]
   auditLogs                  AuditLog[]
+  shipmentsCreated           Shipment[]                 @relation("ShipmentCreatedBy")
 
   @@map("users")
 }
@@ -115,18 +116,26 @@ model ClientService {
 
 model Shipment {
   id               String                   @id @default(uuid()) @db.Uuid
-  employeeId       String                   @map("employee_id") @db.Uuid
+  // The label scanned off the parcel at the bench. Unique, because two
+  // shipments sharing an identity cannot be told apart afterwards by anyone —
+  // not the warehouse, not the courier, not the client querying an invoice.
+  reference        String                   @unique(map: "uq_shipments_reference") @db.VarChar(64)
+  // Who made it. A User rather than an Employee: an admin dispatching a parcel
+  // is doing the work whether or not they are on the payroll, and requiring an
+  // Employee row meant admins could not dispatch at all.
+  createdByUserId  String?                  @map("created_by_user_id") @db.Uuid
+  // Optional now. The rows written before createdByUserId existed carry their
+  // employee, and payroll and attendance still key on it.
+  employeeId       String?                  @map("employee_id") @db.Uuid
   clientId         String                   @map("client_id") @db.Uuid
-  shipmentType     String                   @map("shipment_type") @db.VarChar(30)
   status           ShipmentStatus           @default(PENDING)
-  packagingType    String                   @map("packaging_type") @db.VarChar(30)
-  courierName      String                   @map("courier_name") @db.VarChar(120)
   // Courier consignment number. Nullable, and no fixed length: couriers differ,
   // and an item may carry its own (see ShipmentItem.trackingId), which wins.
   trackingId       String?                  @map("tracking_id") @db.VarChar(64)
   createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   // Relations
-  employee         Employee                 @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  createdBy        User?                    @relation("ShipmentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  employee         Employee?                @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   client           Client                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
   shipmentItems    ShipmentItem[]
   shipmentServices ShipmentServiceMapping[]

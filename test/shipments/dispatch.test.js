@@ -1,257 +1,352 @@
 /**
- * Dispatch: the point at which goods leave, stock moves, and the client is billed.
+ * Creating a shipment now dispatches it.
  *
- * This began in test/known-bugs/ describing a dispatch that could never succeed.
- * repositories/shipment_service_mapping.repository.js read
- * `prisma.shipmentServiceMapping`, a model that existed in no schema, no
- * migration and not in the generated client, and shipment.logic.js called it
- * *inside* the dispatch transaction — so every dispatch died on
- * "Cannot read properties of undefined (reading 'findMany')" and rolled back.
+ * The three-step walk described a process that had already happened: the parcel
+ * is packed and labelled before anyone opens the screen. So creation takes the
+ * stock out and raises the charge in one act.
  *
- * Chunk 1.3 added the model and repaired the transaction. This is now the
- * regression suite for the whole outbound path.
+ * Two of these fail against the old code by design. An admin could not create a
+ * shipment at all, because the creator was an Employee and neither admin
+ * account has an Employee row. And the client was chosen before the goods,
+ * which let a shipment carry two clients' stock.
  */
 
 import { describe, it, expect } from 'vitest';
 
 import { prisma } from '../helpers/db.js';
-import { as } from '../helpers/auth.js';
+import { as, anon } from '../helpers/auth.js';
+import shipmentLogic from '../../logic/shipment.logic.js';
 import {
   makeWarehouseScenario,
-  makeShipment,
-  makeShipmentItem,
-  makeService,
-  makeClientService,
-  makeInvoice,
+  makeClient,
+  makeProduct,
+  makeStockLevel,
+  makeShipmentRate,
 } from '../factories/index.js';
 
-/**
- * A shipment at READY_FOR_DISPATCH with 10 units reserved in one bin.
- *
- * No dispatch rate is set up for this client, so these tests see only the
- * service charges they are about. The per-item shipment charge has its own
- * suite in test/billing/shipment-charge.test.js.
- */
-const arrangeReady = async () => {
-  const scenario = await makeWarehouseScenario({ quantity: 100 });
-  const { employee, client, product, location, stock } = scenario;
-
-  const shipment = await makeShipment(employee.id, client.id, {
-    status: 'READY_FOR_DISPATCH',
-  });
-  await makeShipmentItem(shipment.id, product.id, location.id, {
-    quantity: 10,
-    status: 'PICKED',
-  });
-  await prisma.stockLevel.update({
-    where: { id: stock.id },
-    data: { reservedQuantity: 10 },
-  });
-
-  return { ...scenario, shipment };
+const arrange = async ({ quantity = 100 } = {}) => {
+  const scenario = await makeWarehouseScenario({ quantity });
+  return scenario;
 };
 
-/** Attaches a billable service at an agreed rate, returning the mapping. */
-const attachService = async (shipment, clientId, { chargedPrice = '3.00', quantity = 2 } = {}) => {
-  const service = await makeService({ description: 'Pallet wrapping' });
-  const clientService = await makeClientService(clientId, service.id, { chargedPrice });
+const post = (actor, body) => as(actor).post('/api/shipments').send(body);
 
-  const mapping = await prisma.shipmentServiceMapping.create({
-    data: {
-      shipmentId: shipment.id,
-      serviceId: service.id,
-      clientServiceId: clientService.id,
-      quantity,
-      appliedUnitPrice: chargedPrice,
-    },
+const oneLine = (scenario, quantity = 2) => [
+  {
+    productId: scenario.product.id,
+    sourceLocationId: scenario.location.id,
+    quantity,
+  },
+];
+
+const onHand = async (productId) => {
+  const { _sum } = await prisma.stockLevel.aggregate({
+    where: { productId },
+    _sum: { currentQuantity: true },
   });
-
-  return { service, clientService, mapping };
+  return _sum.currentQuantity ?? 0;
 };
 
-describe('dispatch', () => {
-  it('succeeds for a ready shipment', async () => {
-    const { admin, shipment } = await arrangeReady();
+describe('the scanned label', () => {
+  it('is required', async () => {
+    const s = await arrange();
 
-    const res = await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
+    const res = await post(s.admin, { shipmentItems: oneLine(s) });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/label/i);
   });
 
-  it('moves the shipment to DISPATCHED', async () => {
-    const { admin, shipment } = await arrangeReady();
+  it('is stored on the shipment', async () => {
+    const s = await arrange();
 
-    await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
+    const res = await post(s.admin, {
+      reference: 'SHP-2026-0042',
+      shipmentItems: oneLine(s),
+    });
 
-    const after = await prisma.shipment.findUnique({ where: { id: shipment.id } });
-    expect(after.status).toBe('DISPATCHED');
+    expect(res.status).toBe(201);
+    expect(res.body.reference).toBe('SHP-2026-0042');
   });
 
-  it('deducts physical stock from the source bin', async () => {
-    const { admin, shipment, stock } = await arrangeReady();
+  it('cannot be used twice, and the refusal names the earlier one', async () => {
+    // Two shipments sharing an identity cannot be told apart afterwards by the
+    // warehouse, the courier, or a client querying the invoice line.
+    const s = await arrange();
+    await post(s.admin, { reference: 'SHP-DUP', shipmentItems: oneLine(s, 1) });
 
-    await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
+    const res = await post(s.admin, {
+      reference: 'SHP-DUP',
+      shipmentItems: oneLine(s, 1),
+    });
 
-    const after = await prisma.stockLevel.findUnique({ where: { id: stock.id } });
-    expect(after.currentQuantity).toBe(90);
-    expect(after.reservedQuantity).toBe(0);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/SHP-DUP/);
+    expect(res.body.error).toMatch(/already used/i);
   });
 
-  it('writes a CHECKOUT row to the inventory ledger', async () => {
-    const { admin, shipment, product, employeeUser } = await arrangeReady();
+  it('is trimmed, so a trailing newline from a scanner does not make a new label', async () => {
+    const s = await arrange();
+    await post(s.admin, { reference: 'SHP-TRIM', shipmentItems: oneLine(s, 1) });
 
-    await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
-
-    const ledger = await prisma.inventoryLedger.findMany({
-      where: { referenceId: shipment.id },
+    const res = await post(s.admin, {
+      reference: '  SHP-TRIM  ',
+      shipmentItems: oneLine(s, 1),
     });
 
-    expect(ledger).toHaveLength(1);
-    expect(ledger[0].movementType).toBe('CHECKOUT');
-    expect(ledger[0].productId).toBe(product.id);
-    expect(ledger[0].quantity).toBe(10);
-    // A User id, not an Employee id — the old fallback would have written the latter.
-    expect(ledger[0].userId).toBe(employeeUser.id);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('who creates it', () => {
+  it('lets an admin create one — they have no Employee row', async () => {
+    // This is the case that fails against the old code. employeeId was a
+    // required foreign key to Employee, and an admin is not an employee.
+    const s = await arrange();
+
+    const res = await post(s.admin, {
+      reference: 'SHP-ADMIN',
+      shipmentItems: oneLine(s),
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.createdByUserId).toBe(s.admin.id);
   });
 
-  it('records the dispatch in the audit trail', async () => {
-    const { admin, shipment } = await arrangeReady();
+  it('lets an employee create one', async () => {
+    const s = await arrange();
 
-    await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
-
-    const logs = await prisma.auditLog.findMany({
-      where: { action: 'SHIPMENT_DISPATCHED' },
+    const res = await post(s.employeeUser, {
+      reference: 'SHP-EMP',
+      shipmentItems: oneLine(s),
     });
-    expect(logs).toHaveLength(1);
-    expect(logs[0].userId).toBe(admin.id);
+
+    expect(res.status).toBe(201);
+    expect(res.body.createdByUserId).toBe(s.employeeUser.id);
   });
 
-  describe('billing', () => {
-    it('raises an invoice line per attached service', async () => {
-      const { admin, shipment, client } = await arrangeReady();
-      await attachService(shipment, client.id, { chargedPrice: '3.00', quantity: 2 });
+  it('ignores a creator claimed in the body', async () => {
+    const s = await arrange();
 
-      await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
-
-      const invoices = await prisma.monthlyInvoice.findMany({
-        where: { clientId: client.id },
-        include: { lineItems: true },
-      });
-
-      expect(invoices).toHaveLength(1);
-      expect(invoices[0].status).toBe('DRAFT');
-      expect(invoices[0].lineItems).toHaveLength(1);
-      expect(Number(invoices[0].lineItems[0].totalPrice)).toBe(6);
+    const res = await post(s.admin, {
+      reference: 'SHP-SPOOF',
+      createdByUserId: s.employeeUser.id,
+      shipmentItems: oneLine(s),
     });
 
-    it('keeps the invoice total equal to the sum of its lines', async () => {
-      const { admin, shipment, client } = await arrangeReady();
-      await attachService(shipment, client.id, { chargedPrice: '3.00', quantity: 2 });
-
-      await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
-
-      const invoice = await prisma.monthlyInvoice.findFirst({
-        where: { clientId: client.id },
-        include: { lineItems: true },
-      });
-      const sum = invoice.lineItems.reduce((a, l) => a + Number(l.totalPrice), 0);
-
-      expect(Number(invoice.totalAmount)).toBe(sum);
-      expect(Number(invoice.totalAmount)).toBe(6);
-    });
-
-    it('bills the frozen price, not the current rate', async () => {
-      const { admin, shipment, client } = await arrangeReady();
-      const { clientService } = await attachService(shipment, client.id, {
-        chargedPrice: '3.00',
-        quantity: 2,
-      });
-
-      // The client renegotiates upward after the service was attached.
-      await prisma.clientService.update({
-        where: { id: clientService.id },
-        data: { chargedPrice: '99.00' },
-      });
-
-      await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
-
-      const invoice = await prisma.monthlyInvoice.findFirst({
-        where: { clientId: client.id },
-        include: { lineItems: true },
-      });
-
-      // Still 2 x 3.00 — the rate agreed when the work was booked.
-      expect(Number(invoice.lineItems[0].totalPrice)).toBe(6);
-    });
-
-    it('opens no invoice when the shipment has no billable services', async () => {
-      const { admin, shipment, client } = await arrangeReady();
-
-      await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
-
-      // The goods still moved; there was simply nothing to charge.
-      await expect(
-        prisma.monthlyInvoice.count({ where: { clientId: client.id } })
-      ).resolves.toBe(0);
-    });
-
-    it('rolls the charge forward when this month is already closed', async () => {
-      const { admin, shipment, client } = await arrangeReady();
-      await attachService(shipment, client.id, { chargedPrice: '3.00', quantity: 2 });
-
-      const now = new Date();
-      const thisMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      await makeInvoice(client.id, {
-        billingPeriod: thisMonth,
-        status: 'APPROVED',
-        totalAmount: '500.00',
-      });
-
-      const res = await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
-
-      // Dispatch is not blocked by a closed accounting period...
-      expect(res.status).toBe(200);
-
-      const invoices = await prisma.monthlyInvoice.findMany({
-        where: { clientId: client.id },
-        include: { lineItems: true },
-        orderBy: { billingPeriod: 'asc' },
-      });
-
-      // ...and the charge is not lost: it lands on the next open period.
-      expect(invoices).toHaveLength(2);
-      expect(invoices[0].status).toBe('APPROVED');
-      expect(invoices[0].lineItems).toHaveLength(0);
-      expect(Number(invoices[0].totalAmount)).toBe(500);
-
-      expect(invoices[1].status).toBe('DRAFT');
-      expect(invoices[1].lineItems).toHaveLength(1);
-      expect(Number(invoices[1].totalAmount)).toBe(6);
-    });
+    expect(res.body.createdByUserId).toBe(s.admin.id);
   });
 
-  describe('atomicity', () => {
-    it('rolls everything back if the stock is gone underneath it', async () => {
-      const { admin, shipment, stock } = await arrangeReady();
+  it('refuses an unauthenticated request', async () => {
+    const s = await arrange();
 
-      // Someone else empties the bin between picking and dispatch.
-      await prisma.stockLevel.update({
-        where: { id: stock.id },
-        data: { currentQuantity: 0, reservedQuantity: 0 },
-      });
+    const res = await anon()
+      .post('/api/shipments')
+      .send({ reference: 'SHP-ANON', shipmentItems: oneLine(s) });
 
-      const res = await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
+    expect([401, 403]).toContain(res.status);
+  });
+});
 
-      expect(res.status).toBe(400);
+describe('the client comes from the goods', () => {
+  it('is derived, not asked for', async () => {
+    const s = await arrange();
 
-      const after = await prisma.shipment.findUnique({ where: { id: shipment.id } });
-      const ledger = await prisma.inventoryLedger.count({
-        where: { referenceId: shipment.id },
-      });
-
-      // Status, ledger and invoice all move together or not at all.
-      expect(after.status).toBe('READY_FOR_DISPATCH');
-      expect(ledger).toBe(0);
+    const res = await post(s.admin, {
+      reference: 'SHP-DERIVED',
+      shipmentItems: oneLine(s),
     });
+
+    expect(res.body.clientId).toBe(s.client.id);
+  });
+
+  it('cannot be overridden through the API', async () => {
+    // Otherwise the goods would go out under one client and bill another.
+    // Guarded twice: the controller allowlist never passes clientId on, and
+    // the logic derives it regardless. This covers the outer one.
+    const s = await arrange();
+    const { client: other } = await makeClient();
+
+    const res = await post(s.admin, {
+      reference: 'SHP-OVERRIDE',
+      clientId: other.id,
+      shipmentItems: oneLine(s),
+    });
+
+    expect(res.body.clientId).toBe(s.client.id);
+  });
+
+  it('cannot be overridden in the logic either, with the allowlist bypassed', async () => {
+    // The inner guard, tested directly. A mutation that made the logic honour
+    // a body clientId passed every HTTP test, because the allowlist had
+    // already stripped it — so the second line of defence was untested and
+    // would have been the only one left if the allowlist ever widened.
+    const s = await arrange();
+    const { client: other } = await makeClient();
+
+    const created = await shipmentLogic.createShipment(
+      {
+        reference: 'SHP-LOGIC-OVERRIDE',
+        clientId: other.id,
+        shipmentItems: oneLine(s),
+      },
+      s.admin.id,
+    );
+
+    expect(created.clientId).toBe(s.client.id);
+  });
+
+  it('refuses goods belonging to two clients, and names the product', async () => {
+    const s = await arrange();
+    const { client: other } = await makeClient();
+    const foreign = await makeProduct(other.id, { productName: 'Someone Elses Tape' });
+    await makeStockLevel(foreign.id, s.location.id, { currentQuantity: 50 });
+
+    const res = await post(s.admin, {
+      reference: 'SHP-MIXED',
+      shipmentItems: [
+        ...oneLine(s, 1),
+        { productId: foreign.id, sourceLocationId: s.location.id, quantity: 1 },
+      ],
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Someone Elses Tape/);
+    expect(res.body.error).toMatch(/one client/i);
+  });
+
+  it('creates nothing when the goods disagree', async () => {
+    const s = await arrange();
+    const { client: other } = await makeClient();
+    const foreign = await makeProduct(other.id);
+    await makeStockLevel(foreign.id, s.location.id, { currentQuantity: 50 });
+
+    await post(s.admin, {
+      reference: 'SHP-MIXED-2',
+      shipmentItems: [
+        ...oneLine(s, 1),
+        { productId: foreign.id, sourceLocationId: s.location.id, quantity: 1 },
+      ],
+    });
+
+    expect(await prisma.shipment.count({ where: { reference: 'SHP-MIXED-2' } })).toBe(0);
+  });
+
+  it('carries several different products belonging to the same client', async () => {
+    // Ported from the old create.test.js, which otherwise described a contract
+    // that no longer exists. A mixed shipment is refused only when the clients
+    // differ — several of one client's products is the ordinary case.
+    const s = await arrange();
+    const second = await makeProduct(s.client.id, { productName: 'Bubble Wrap' });
+    await makeStockLevel(second.id, s.location.id, { currentQuantity: 40 });
+
+    const res = await post(s.admin, {
+      reference: 'SHP-MULTI',
+      shipmentItems: [
+        { productId: s.product.id, sourceLocationId: s.location.id, quantity: 2 },
+        { productId: second.id, sourceLocationId: s.location.id, quantity: 3 },
+      ],
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.shipmentItems).toHaveLength(2);
+    expect(res.body.clientId).toBe(s.client.id);
+  });
+
+  it('refuses an empty shipment', async () => {
+    const s = await arrange();
+
+    const res = await post(s.admin, { reference: 'SHP-EMPTY', shipmentItems: [] });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('creating dispatches it', () => {
+  it('leaves the shipment DISPATCHED', async () => {
+    const s = await arrange();
+
+    const res = await post(s.admin, {
+      reference: 'SHP-STATUS',
+      shipmentItems: oneLine(s),
+    });
+
+    expect(res.body.status).toBe('DISPATCHED');
+  });
+
+  it('takes the stock off the shelf', async () => {
+    const s = await arrange({ quantity: 10 });
+
+    await post(s.admin, { reference: 'SHP-STOCK', shipmentItems: oneLine(s, 4) });
+
+    expect(await onHand(s.product.id)).toBe(6);
+  });
+
+  it('writes a CHECKOUT movement against the person signed in', async () => {
+    const s = await arrange();
+
+    await post(s.admin, { reference: 'SHP-LEDGER', shipmentItems: oneLine(s, 3) });
+
+    const movement = await prisma.inventoryLedger.findFirst({
+      where: { productId: s.product.id, movementType: 'CHECKOUT' },
+    });
+    expect(movement.quantity).toBe(3);
+    expect(movement.userId).toBe(s.admin.id);
+  });
+
+  it('raises one invoice line, priced per item', async () => {
+    const s = await arrange();
+    await makeShipmentRate(s.client.id, '2.00');
+
+    await post(s.admin, { reference: 'SHP-BILL', shipmentItems: oneLine(s, 5) });
+
+    const lines = await prisma.invoiceLineItem.findMany({
+      where: { itemType: 'SHIPMENT_CHARGE' },
+    });
+    expect(lines).toHaveLength(1);
+    expect(Number(lines[0].quantity)).toBe(5);
+    expect(Number(lines[0].totalPrice)).toBe(10);
+    // Names the scanned label, which is what is written on the parcel.
+    expect(lines[0].description).toMatch(/SHP-BILL/);
+  });
+
+  it('still ships a client who has no dispatch rate, without opening an empty invoice', async () => {
+    // A services-only client is a real arrangement, not an error.
+    const s = await arrange();
+
+    const res = await post(s.admin, {
+      reference: 'SHP-NORATE',
+      shipmentItems: oneLine(s),
+    });
+
+    expect(res.status).toBe(201);
+    expect(await prisma.monthlyInvoice.count({ where: { clientId: s.client.id } })).toBe(0);
+  });
+
+  it('ignores billable services in the body rather than silently charging them', async () => {
+    // They are raised from the Clients screen now. Accepting them here would be
+    // a way around that, and a charge nobody goes looking for.
+    const s = await arrange();
+
+    const res = await post(s.admin, {
+      reference: 'SHP-SERVICES',
+      shipmentItems: oneLine(s),
+      shipmentServices: [{ serviceId: '00000000-0000-0000-0000-000000000000', quantity: 1 }],
+    });
+
+    expect(res.status).toBe(201);
+    expect(await prisma.shipmentServiceMapping.count()).toBe(0);
+  });
+
+  it('rolls everything back when a line cannot be reserved', async () => {
+    const s = await arrange({ quantity: 1 });
+
+    const res = await post(s.admin, {
+      reference: 'SHP-ROLLBACK',
+      shipmentItems: oneLine(s, 99),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await prisma.shipment.count({ where: { reference: 'SHP-ROLLBACK' } })).toBe(0);
+    expect(await onHand(s.product.id)).toBe(1);
   });
 });

@@ -32,6 +32,10 @@ const SHIPMENT_SERVICE_CODE = 'SHIPMENT_DISPATCH';
 
 /** The catalogue code for an FBA consignment leaving. */
 const FBA_SERVICE_CODE = 'FBA_DISPATCH';
+// What it costs to take an item back. Optional twice over: a client without an
+// agreed rate is never charged, and even with one the admin decides per return.
+// Stock goes back regardless — the goods are on the shelf either way.
+const RETURN_SERVICE_CODE = 'ITEM_RETURN';
 
 /**
  * The shipment-dispatch service row, created on first use.
@@ -94,6 +98,27 @@ const getShipmentRateForClient = (clientId, tx) =>
 const getFbaRateForClient = (clientId, tx) =>
   getRateForClient(clientId, FBA_SERVICE_CODE, tx);
 
+/** The client's agreed per-item rate for taking an item back, or null. */
+const getReturnRateForClient = (clientId, tx) =>
+  getRateForClient(clientId, RETURN_SERVICE_CODE, tx);
+
+/** The item-return service row, created on first use. */
+const ensureReturnService = async (tx) => {
+  const existing = await db(tx).service.findUnique({
+    where: { code: RETURN_SERVICE_CODE },
+  });
+  if (existing) return existing;
+
+  return await db(tx).service.create({
+    data: {
+      code: RETURN_SERVICE_CODE,
+      description: 'Item return handling (per item)',
+      ideaPrice: '0.00',
+      unit: 'item',
+    },
+  });
+};
+
 /** The FBA charge service row, created on first use. Mirrors the dispatch one. */
 const ensureFbaService = async (tx) => {
   const existing = await db(tx).service.findUnique({ where: { code: FBA_SERVICE_CODE } });
@@ -155,14 +180,82 @@ const resolveOpenInvoiceFor = async (clientId, tx, maxLookahead = 12) => {
   );
 };
 
+/**
+ * Charges a quantity of a service a client has already agreed a rate for,
+ * straight onto their open invoice.
+ *
+ * For work that happened once and is not tied to a shipment — an hour of
+ * re-labelling, a pallet rewrapped, a special delivery. Raised deliberately
+ * from the Clients screen, which is where it belongs: as a column on the rate
+ * card it was too easy to fire by accident, and too easy to miss afterwards.
+ *
+ * Only services the client already has a rate for: inventing a price at the
+ * point of charging is how a client gets billed something nobody agreed.
+ */
+const chargeServiceToClient = async (
+  { clientId, clientServiceId, quantity, description },
+  tx,
+) => {
+  const amount = Number(quantity);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Quantity must be above zero.');
+  }
+
+  const rate = await db(tx).clientService.findUnique({
+    where: { id: clientServiceId },
+    include: { service: true },
+  });
+  if (!rate) {
+    throw new Error('That agreed rate does not exist.');
+  }
+  if (rate.clientId !== clientId) {
+    throw new Error('That rate belongs to a different client.');
+  }
+
+  const unitPrice = Number(rate.chargedPrice);
+  const invoice = await resolveOpenInvoiceFor(clientId, tx);
+
+  const line = await invoiceLineItemRepository.createInvoiceLineItem(
+    {
+      invoiceId: invoice.id,
+      clientServiceId: rate.id,
+      quantity: amount,
+      unitPrice,
+      totalPrice: Number((amount * unitPrice).toFixed(2)),
+      description:
+        description ||
+        `${rate.service?.description || 'Service'} — ${amount} ${rate.unit || 'unit'}(s)`,
+      dateOfService: new Date(),
+      itemType: 'MANUAL_CHARGE',
+    },
+    tx,
+  );
+
+  // Derived from the lines, never accumulated.
+  const { _sum } = await db(tx).invoiceLineItem.aggregate({
+    where: { invoiceId: invoice.id },
+    _sum: { totalPrice: true },
+  });
+  await db(tx).monthlyInvoice.update({
+    where: { id: invoice.id },
+    data: { totalAmount: _sum.totalPrice ?? 0 },
+  });
+
+  return { line, invoice };
+};
+
 module.exports = {
   SHIPMENT_SERVICE_CODE,
   FBA_SERVICE_CODE,
+  RETURN_SERVICE_CODE,
   ensureShipmentService,
   ensureFbaService,
+  ensureReturnService,
   countShippedItems,
   getRateForClient,
   getShipmentRateForClient,
   getFbaRateForClient,
+  getReturnRateForClient,
   resolveOpenInvoiceFor,
+  chargeServiceToClient,
 };

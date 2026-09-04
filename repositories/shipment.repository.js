@@ -3,11 +3,11 @@ const { assertAllowedField } = require("../utils/pick");
 
 const SHIPMENT_QUERY_FIELDS = [
   "id",
+  "reference",
   "employeeId",
+  "createdByUserId",
   "clientId",
   "status",
-  "shipmentType",
-  "courierName",
 ];
 
 const includeRelations = {
