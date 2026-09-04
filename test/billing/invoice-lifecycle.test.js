@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import { prisma } from '../helpers/db.js';
 import { as } from '../helpers/auth.js';
 import {
+  makeShipmentRate,
   makeAdmin,
   makeClient,
   makeInvoice,
@@ -199,8 +200,9 @@ describe('invoice lifecycle', () => {
       const thisMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
       await makeInvoice(client.id, { billingPeriod: thisMonth, status: 'APPROVED' });
 
-      const service = await makeService({ description: 'Wrapping' });
-      await makeClientService(client.id, service.id, { chargedPrice: '5.00' });
+      // A per-item dispatch rate, because that is the only charge a dispatch
+      // raises now — mapped services no longer ride along on a shipment.
+      await makeShipmentRate(client.id, '5.00');
 
       const shipment = await makeShipment(employee.id, client.id, {
         status: 'READY_FOR_DISPATCH',
@@ -213,15 +215,6 @@ describe('invoice lifecycle', () => {
         where: { id: stock.id },
         data: { reservedQuantity: 5 },
       });
-      await prisma.shipmentServiceMapping.create({
-        data: {
-          shipmentId: shipment.id,
-          serviceId: service.id,
-          quantity: 1,
-          appliedUnitPrice: '5.00',
-        },
-      });
-
       const res = await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
 
       expect(res.status).toBe(200);

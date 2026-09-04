@@ -2,46 +2,24 @@
 const shipmentLogic = require("../logic/shipment.logic");
 const { pick } = require("../utils/pick");
 
-const SHIPMENT_CREATE_FIELDS = [
-  "employeeId",
-  "clientId",
-  "shipmentType",
-  "status",
-  "packagingType",
-  "courierName",
-  "shipmentItems",
-  "shipmentServices",
-];
-// status is deliberately absent — it moves only through the transition
-// endpoints below, which enforce the state machine. Admin-only at the route.
-// trackingId is deliberately absent — it has its own endpoint, because it is
-// the one field that legitimately changes after dispatch, and because staff (not
-// just admins) need to record it.
-const SHIPMENT_UPDATE_FIELDS = [
-  "shipmentType",
-  "packagingType",
-  "courierName",
-];
+// Deliberately short. clientId is derived from the goods, the creator comes
+// from the session, status is decided by the logic, and billable services are
+// charged from the Clients screen rather than riding along on a shipment.
+// Accepting any of them here would be a way to override a rule.
+const SHIPMENT_CREATE_FIELDS = ["reference", "trackingId", "shipmentItems"];
+
+// Nothing is editable through the generic update any more: reference is the
+// identity, the client is derived, and trackingId has its own endpoint because
+// it is the one field that legitimately changes after dispatch and staff need
+// to record it.
+const SHIPMENT_UPDATE_FIELDS = [];
 
 const createShipment = async (req, res) => {
   try {
     const shipmentData = pick(req.body, SHIPMENT_CREATE_FIELDS);
 
-    // Attaching a billable service is an admin action wherever it happens —
-    // POST /:id/services is admin-only, so accepting them here from an employee
-    // would be a way around that. Refuse rather than dropping them silently.
-    if (
-      Array.isArray(shipmentData.shipmentServices) &&
-      shipmentData.shipmentServices.length > 0 &&
-      req.user.role !== "admin"
-    ) {
-      return res.status(403).json({
-        error:
-          "Only an admin can add billable services to a shipment. Create the shipment, then ask an admin to add them.",
-      });
-    }
-
-    const newShipment = await shipmentLogic.createShipment(shipmentData);
+    // The creator comes from the session, never the body.
+    const newShipment = await shipmentLogic.createShipment(shipmentData, req.user.id);
     res.status(201).json(newShipment);
   } catch (error) {
     res.status(400).json({ error: error.message });

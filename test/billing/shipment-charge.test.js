@@ -137,8 +137,10 @@ describe('shipment charge', () => {
     const invoice = await invoiceFor(client.id);
     const charge = invoice.lineItems.find((l) => l.itemType === 'SHIPMENT_CHARGE');
 
-    expect(charge.description).toContain(shipment.id);
-    expect(charge.description).toContain('Evri');
+    // The scanned label, not the uuid: that is what is written on the parcel
+    // and what a client quotes when they query the line. The courier used to
+    // be here too and is gone with the column.
+    expect(charge.description).toContain(shipment.reference);
     // The count is on the line too, so an invoice explains its own arithmetic.
     expect(charge.description).toContain('10 item');
   });
@@ -156,23 +158,21 @@ describe('shipment charge', () => {
     ).resolves.toBe(0);
   });
 
-  it('bills the rate alongside mapped services, and the total agrees', async () => {
-    const { admin, shipment, client } = await arrange({
-      rate: '10.00',
-      withService: { chargedPrice: '3.00', quantity: 4 },
-    });
+  it('raises one charge, and the invoice total agrees with it', async () => {
+    // This used to bill a mapped service alongside the rate. Services no longer
+    // ride along on a shipment — they are raised from the Clients screen — so
+    // a dispatch produces exactly one line, and the total must equal it.
+    const { admin, shipment, client } = await arrange({ rate: '10.00' });
 
     await as(admin).post(`/api/shipments/${shipment.id}/dispatch`);
 
     const invoice = await invoiceFor(client.id);
-    const byType = Object.fromEntries(
-      invoice.lineItems.map((l) => [l.itemType, Number(l.totalPrice)])
-    );
 
-    expect(byType.SHIPMENT_CHARGE).toBe(100); // 10 items x 10.00
-    expect(byType.AUTOMATED_SERVICE).toBe(12); // 4 x 3.00
-    // 1.1's invariant, holding across the dispatch path.
-    expect(Number(invoice.totalAmount)).toBe(112);
+    expect(invoice.lineItems).toHaveLength(1);
+    expect(invoice.lineItems[0].itemType).toBe('SHIPMENT_CHARGE');
+    expect(Number(invoice.lineItems[0].totalPrice)).toBe(100); // 10 items x 10.00
+    // The total is derived from the lines, never accumulated.
+    expect(Number(invoice.totalAmount)).toBe(100);
   });
 
   it('does not rewrite a raised charge when the rate later changes', async () => {

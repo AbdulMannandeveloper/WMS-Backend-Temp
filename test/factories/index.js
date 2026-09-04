@@ -175,14 +175,19 @@ export const makeStockLevel = (productId, locationId, overrides = {}) =>
     },
   });
 
+/**
+ * A shipment row written directly, for tests about states other than the one
+ * creation now produces. Going through the API would always give DISPATCHED.
+ *
+ * `reference` is unique, so it is generated rather than fixed — two factory
+ * calls in one test would otherwise collide on the index.
+ */
 export const makeShipment = (employeeId, clientId, overrides = {}) =>
   prisma.shipment.create({
     data: {
       employeeId,
       clientId,
-      shipmentType: 'Standard',
-      packagingType: 'Box',
-      courierName: 'Evri',
+      reference: uniq('SHP').toUpperCase(),
       status: 'PENDING',
       ...overrides,
     },

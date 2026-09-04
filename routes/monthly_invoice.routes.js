@@ -42,5 +42,6 @@ router.post("/:id/line-items", adminOnly, invoiceController.createLineItem);
 // whichever period is open. Declared before nothing in particular, but note it
 // is a collection route rather than /:id/ — the invoice is resolved, not chosen.
 router.delete("/:id/line-items/:lineItemId", adminOnly, invoiceController.deleteLineItem);
+router.post("/charge-service", adminOnly, invoiceController.chargeService);
 
 module.exports = router;

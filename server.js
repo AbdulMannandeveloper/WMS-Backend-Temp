@@ -18,6 +18,7 @@ const { describeMailTransport } = require("./utils/mailer");
 const {
   ensureShipmentService,
   ensureFbaService,
+  ensureReturnService,
 } = require("./logic/billing_services");
 
 const PORT = process.env.PORT || 5000;
@@ -72,6 +73,7 @@ const startServer = async () => {
     // and every restart is safe.
     await ensureShipmentService();
     await ensureFbaService();
+    await ensureReturnService();
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

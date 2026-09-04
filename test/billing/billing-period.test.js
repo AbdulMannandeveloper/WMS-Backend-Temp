@@ -111,12 +111,10 @@ describe('billing periods', () => {
     expect(invoices).toHaveLength(1);
     expect(invoices[0].id).toBe(created.body.id);
 
-    // It carries both charges dispatch raises: the per-item shipment charge and
-    // the mapped service.
-    expect(invoices[0].lineItems.map((l) => l.itemType).sort()).toEqual([
-      'AUTOMATED_SERVICE',
-      'SHIPMENT_CHARGE',
-    ]);
+    // Just the per-item shipment charge. Billable services no longer ride
+    // along on a shipment — they are raised deliberately from the Clients
+    // screen, where somebody goes looking for them.
+    expect(invoices[0].lineItems.map((l) => l.itemType)).toEqual(['SHIPMENT_CHARGE']);
   });
 
   it('payroll files against the same month boundary', async () => {

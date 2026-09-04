@@ -61,6 +61,10 @@ const returnShipmentItem = async (req, res) => {
       req.body?.quantity,
       req.body?.reason,
       req.user.id,
+      // Explicitly true only. Anything else — absent, "false", null — means do
+      // not charge, because the safe reading of an unclear request about money
+      // is the one that does not bill anybody.
+      { chargeReturn: req.body?.chargeReturn === true },
     );
     res.status(200).json(updated);
   } catch (error) {
