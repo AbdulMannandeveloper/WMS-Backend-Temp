@@ -18,9 +18,11 @@ const validateLedgerInput = async (newData, tx) => {
     );
   }
 
+  // tx, so a product created earlier in this same transaction is visible.
   const product = await productRepository.getProductByField(
     "id",
     newData.productId,
+    tx,
   );
   if (!product) {
     throw new Error(`Provided product not found.`);

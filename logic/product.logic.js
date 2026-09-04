@@ -17,22 +17,21 @@ const PRODUCT_QUERY_FIELDS = [
 ];
 
 /**
- * Creates a product, optionally placing its opening stock in the same transaction.
+ * What has to be true before a product row is written.
  *
- * @param {object} productData
- * @param {string} actorUserId - who performed this (admin or employee)
- * @param {{ locationId: string, quantity: number, notes?: string }} [initialStock]
- *   When supplied, a CHECKIN ledger entry is recorded so the stock level, the
- *   arrived-today counter and the double-entry trail all stay consistent. Product
- *   and stock are committed together or not at all.
+ * Shared, because goods-in creates products inside a batch transaction and this
+ * is the one place the rules live. Two copies would drift, and the copy that
+ * drifted would be the one an employee could reach from the scanning bench.
  */
-const addNewProduct = async (productData, actorUserId, initialStock) => {
+const assertProductIsValid = async (productData) => {
   if (!productData.productName || !productData.clientId || !productData.skuCode) {
     throw new Error(
       "Name, Client ID, and SKU Code are required to create a product.",
     );
   }
 
+  // The client is never created in the same breath as a product, so this needs
+  // no transaction to see it.
   const client = await clientRepository.getClientById(productData.clientId);
   if (!client) {
     throw new Error("Client not found.");
@@ -49,6 +48,22 @@ const addNewProduct = async (productData, actorUserId, initialStock) => {
   if (!productData.isDeactivated) {
     productData.isDeactivated = false; // Default to active if not provided
   }
+
+  return productData;
+};
+
+/**
+ * Creates a product, optionally placing its opening stock in the same transaction.
+ *
+ * @param {object} productData
+ * @param {string} actorUserId - who performed this (admin or employee)
+ * @param {{ locationId: string, quantity: number, notes?: string }} [initialStock]
+ *   When supplied, a CHECKIN ledger entry is recorded so the stock level, the
+ *   arrived-today counter and the double-entry trail all stay consistent. Product
+ *   and stock are committed together or not at all.
+ */
+const addNewProduct = async (productData, actorUserId, initialStock) => {
+  await assertProductIsValid(productData);
 
   if (initialStock) {
     if (!initialStock.locationId) {
@@ -280,6 +295,7 @@ const getProductandStockLevelById = async (id) => {
 };
 
 module.exports = {
+  assertProductIsValid,
   addNewProduct,
   getAllProducts,
   getProductById,

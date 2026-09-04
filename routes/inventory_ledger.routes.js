@@ -13,8 +13,12 @@ router.get('/daily-checkout-summary', authorizeRoles('admin', 'employee'), inven
 // US-063: Client-scoped ledger (clients see only their own products)
 router.get('/client/:clientId', authorizeRoles('admin', 'employee', 'client'), inventoryLedgerController.getInventoryLedgerByClientId);
 
+// Goods-in for a whole delivery. Declared above /:field/:value, which would
+// otherwise swallow "batch" as a field name.
+router.post('/batch', authorizeRoles('admin', 'employee'), inventoryLedgerController.checkInBatch);
+
 router.post('/', authorizeRoles('admin', 'employee'), inventoryLedgerController.createInventoryLedgerEntry);
 router.get('/', authorizeRoles('admin', 'employee'), inventoryLedgerController.getAllInventoryLedgers);
 router.get('/:field/:value', authorizeRoles('admin', 'employee'), inventoryLedgerController.getInventoryLedgerByField);
 
-module.exports = router;
+module.exports = router;

@@ -51,8 +51,15 @@ const getProductsByFieldWithStock = async (field, value, tx) => {
   });
 };
 
-const getProductByField = async (field, value) => {
-  return await prismaProduct.findFirst({
+/**
+ * `tx` matters here, not just for tidiness. The ledger validates that a product
+ * exists before writing a movement for it, and goods-in creates the product and
+ * its first CHECKIN inside one transaction. Reading outside that transaction
+ * cannot see the product that was created a moment earlier, so the movement is
+ * refused with "Provided product not found."
+ */
+const getProductByField = async (field, value, tx) => {
+  return await db(tx).findFirst({
     where: { [field]: value },
     include: {
       client: true,
