@@ -2,6 +2,7 @@ const inventoryLedgerLogic = require("../logic/inventory_ledger.logic");
 const auditLogLogic = require("../logic/audit_log.logic");
 const { parsePagination, paginatedResponse } = require("../utils/pagination");
 const { canAccessClientId } = require("../utils/clientScope");
+const receivingLogic = require("../logic/receiving.logic");
 
 const createInventoryLedgerEntry = async (req, res) => {
   try {
@@ -105,8 +106,25 @@ const getDailyCheckoutSummary = async (req, res) => {
   }
 };
 
+/**
+ * Books a whole delivery in at once.
+ *
+ * The basket is built on the scanning bench and arrives here as one payload, so
+ * a pallet of mixed stock is one transaction rather than one request per
+ * carton. The actor comes from the session, never the body.
+ */
+const checkInBatch = async (req, res) => {
+  try {
+    const result = await receivingLogic.checkInBatch(req.body, req.user.id);
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
 module.exports = {
   createInventoryLedgerEntry,
+  checkInBatch,
   getAllInventoryLedgers,
   getInventoryLedgerByField,
   getInventoryLedgerByClientId,
