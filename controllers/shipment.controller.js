@@ -106,14 +106,25 @@ const getShipmentByField = async (req, res) => {
 };
 
 /**
+ * Which bin a line was picked from is our warehouse layout, not the client's
+ * business. It used to travel to the portal and simply go unrendered, which is
+ * not the same as not sending it — the payload was one devtools tab away.
+ *
+ * Now that a client can open a shipment and read its lines, the trimming happens
+ * here, where the comment on this endpoint always said it belonged.
+ */
+const withoutWarehouseDetail = (shipment) => ({
+  ...shipment,
+  shipmentItems: (shipment.shipmentItems ?? []).map(
+    ({ sourceLocation, sourceLocationId, ...item }) => item,
+  ),
+});
+
+/**
  * A client's shipments. Staff may read any; a client only their own.
  *
  * 404 rather than 403 for someone else's, matching the invoice and FBA reads —
  * a 403 would confirm the client id exists, which is a probe.
- *
- * The rows carry sourceLocationId on their items. That is our warehouse layout
- * rather than the client's business, so the portal does not render it; if this
- * ever needs to be airtight the trimming belongs here, not in the browser.
  */
 const getShipmentsByClientId = async (req, res) => {
   try {
@@ -124,7 +135,13 @@ const getShipmentsByClientId = async (req, res) => {
     }
 
     const shipments = await shipmentLogic.getShipmentsByClientId(clientId);
-    res.status(200).json(shipments);
+
+    // Staff read the same endpoint and do need the bin — they are the ones
+    // walking to it.
+    const isClient = req.user?.role === "client";
+    res
+      .status(200)
+      .json(isClient ? shipments.map(withoutWarehouseDetail) : shipments);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

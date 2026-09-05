@@ -231,6 +231,38 @@ const cancel = async (id, reason, actorUserId) => {
   return updated;
 };
 
+/**
+ * Hard-deletes a consignment, for one recorded that was never really here.
+ *
+ * Refused once DISPATCHED, mirroring deleteShipment on the outbound side: that
+ * is the moment the client was charged, and the invoice line naming this
+ * consignment's barcode would be left describing a row that no longer exists.
+ * Cancel is not available then either — the state machine makes DISPATCHED
+ * final — so the answer at that point is a credit, not a deletion.
+ *
+ * Nothing depends on FbaShipment, so nothing cascades away with it.
+ */
+const remove = async (id, actorUserId) => {
+  const shipment = await requireShipment(id);
+
+  if (shipment.status === 'DISPATCHED') {
+    const client = shipment.client?.companyName ?? 'the client';
+    throw new Error(
+      `This consignment was dispatched and billed to ${client}. It cannot be deleted — credit the invoice instead.`,
+    );
+  }
+
+  const deleted = await fbaRepository.deleteShipment(id);
+  await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {
+    fbaShipmentId: id,
+    clientId: shipment.clientId,
+    barcode: shipment.barcode,
+    count: shipment.count,
+    status: shipment.status,
+  });
+  return deleted;
+};
+
 const getAllShipments = async () => await fbaRepository.getAllShipments();
 const getShipmentsByClientId = async (clientId) =>
   await fbaRepository.getShipmentsByClientId(clientId);
@@ -244,6 +276,7 @@ module.exports = {
   recordArrival,
   recordDispatch,
   cancel,
+  remove,
   getAllShipments,
   getShipmentsByClientId,
   getShipmentById,

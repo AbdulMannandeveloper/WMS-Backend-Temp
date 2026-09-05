@@ -538,6 +538,10 @@ enum InventoryMovementType {
   INTERNAL_MOVE // Items moving between storage bins
   CHECKOUT // Items leaving the building
   RETURN // Items coming back after dispatch — distinct from CHECKIN, which is a supplier delivery
+  // Stock written off the shelf with no shipment behind it: damage, loss, a
+  // miscount. Distinct from CHECKOUT, which must name the shipment it left on —
+  // without this the only way to correct a count was to invent a dispatch.
+  ADJUSTMENT
 }
 
 enum InvoiceStatus {

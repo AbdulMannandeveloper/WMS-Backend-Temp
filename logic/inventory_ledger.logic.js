@@ -38,15 +38,34 @@ const validateLedgerInput = async (newData, tx) => {
         "Reference ID is required for CHECKOUT movements to link the inventory movement to a specific shipment or order.",
       );
     }
+    // Looked up by `reference` — the label scanned off the parcel — because that
+    // is what the ledger now stores. It is unique, it is what is printed on the
+    // paperwork, and it is what somebody reading a movement can act on; the
+    // uuid told them nothing.
     const shipment = tx
-      ? await tx.shipment.findFirst({ where: { id: newData.referenceId } })
-      : await shipmentRepository.getShipmentByField("id", newData.referenceId);
+      ? await tx.shipment.findFirst({ where: { reference: newData.referenceId } })
+      : await shipmentRepository.getShipmentByField(
+          "reference",
+          newData.referenceId,
+        );
     if (!shipment) {
       throw new Error(`Provided shipment not found.`);
     }
     if (shipment.status !== "DISPATCHED") {
       throw new Error(
         `Shipment must be in DISPATCHED status to be referenced in a checkout movement.`,
+      );
+    }
+  }
+
+  // A write-off with no reason is not an audit trail — it is stock that
+  // vanished. This is the one movement type nothing else corroborates: a
+  // CHECKOUT has a shipment, a CHECKIN has a delivery, an INTERNAL_MOVE has a
+  // destination. An ADJUSTMENT has only what the operator typed.
+  if (newData.movementType === "ADJUSTMENT") {
+    if (!newData.notes || !String(newData.notes).trim()) {
+      throw new Error(
+        "A reason is required to write stock off — say what happened to it.",
       );
     }
   }
@@ -60,6 +79,8 @@ const validateLedgerInput = async (newData, tx) => {
     // and a supplier delivery are different events and folding them together
     // makes every goods-in figure wrong.
     RETURN: { requireFrom: false, requireTo: true },
+    // Off the shelf and out of the count. Names a bin, never a shipment.
+    ADJUSTMENT: { requireFrom: true, requireTo: false },
   };
 
   const req = movementRequirements[newData.movementType];
@@ -142,6 +163,25 @@ const adjustStockLevels = async (ledgerEntry, tx) => {
     if (updated === 0) {
       throw new Error(
         `Insufficient reserved/current stock at the from location to perform the CHECKOUT movement.`,
+      );
+    }
+    return true;
+  }
+
+  if (ledgerEntry.movementType === "ADJUSTMENT") {
+    // The from-side of an INTERNAL_MOVE with nowhere to land. Deliberately
+    // decreaseAvailable rather than checkout: that helper subtracts only from
+    // the non-reserved part, so units already committed to a shipment cannot be
+    // written off out from under it. Somebody would be picking them tomorrow.
+    const decreased = await stockLevelRepository.decreaseAvailableStockAtomically(
+      ledgerEntry.productId,
+      ledgerEntry.fromLocationId,
+      ledgerEntry.quantity,
+      tx,
+    );
+    if (decreased === 0) {
+      throw new Error(
+        `Cannot write off ${ledgerEntry.quantity} — that is more than the available (unreserved) stock at this location.`,
       );
     }
     return true;

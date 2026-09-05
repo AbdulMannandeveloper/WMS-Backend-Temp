@@ -122,7 +122,9 @@ const deleteProduct = async (req, res) => {
     }
     res.status(200).json({ message: "Product deleted successfully." });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // A refusal is not a fault. The logic sets 409 on "this product is in use",
+    // which the UI shows to the operator verbatim; anything else is ours.
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 

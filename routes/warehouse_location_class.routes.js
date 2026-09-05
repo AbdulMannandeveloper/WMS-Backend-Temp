@@ -7,7 +7,8 @@ const router = express.Router();
 // who discover a shelf is full, need a new bin at the end of an aisle, or find a
 // location labelled wrongly. Making them fetch an admin mid-shift to record what
 // they are already looking at is how the map drifts out of step with the
-// building. Full access, same as an admin.
+// building. Full access, same as an admin — except deleting a class, which
+// every location of that kind depends on.
 
 router.get(
   "/:field/:value",
@@ -31,7 +32,7 @@ router.put(
 );
 router.delete(
   "/:id",
-  authorizeRoles("admin", "employee"),
+  authorizeRoles("admin"),
   warehouseLocationClassController.deleteWarehouseLocationClass,
 );
 
