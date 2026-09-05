@@ -106,7 +106,11 @@ const applyDispatchEffects = async (shipment, actorUserId, tx) => {
         userId: actorUserId,
         movementType: "CHECKOUT",
         quantity: item.quantity,
-        referenceId: shipment.id,
+        // The scanned label, not the row's uuid. This is what is written on the
+        // parcel, what the client quotes, and what appears on the invoice line —
+        // a movement identified by a uuid could not be tied to any of them
+        // without a second lookup.
+        referenceId: shipment.reference,
         fromLocationId: item.sourceLocationId,
       },
       { tx },

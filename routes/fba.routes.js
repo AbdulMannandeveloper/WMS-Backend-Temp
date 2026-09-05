@@ -31,4 +31,9 @@ router.post('/:id/dispatch', staffOnly, fbaController.dispatchShipment);
 // Voiding one that was never really here.
 router.post('/:id/cancel', adminOnly, fbaController.cancelShipment);
 
+// Removing the record of one entirely, for a mis-key. Refused once dispatched —
+// that one has been billed. (Unlike GET, this needs no ordering care against
+// /categories/:id: that path is two segments and /:id is one.)
+router.delete('/:id', adminOnly, fbaController.deleteShipment);
+
 module.exports = router;

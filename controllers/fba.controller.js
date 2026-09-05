@@ -99,6 +99,15 @@ const cancelShipment = async (req, res) => {
   }
 };
 
+const deleteShipment = async (req, res) => {
+  try {
+    await fbaLogic.remove(req.params.id, req.user.id);
+    res.status(200).json({ message: 'Consignment deleted.' });
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
 module.exports = {
   createCategory,
   listCategories,
@@ -109,4 +118,5 @@ module.exports = {
   getShipment,
   dispatchShipment,
   cancelShipment,
+  deleteShipment,
 };

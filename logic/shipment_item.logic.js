@@ -340,7 +340,10 @@ const returnShipmentItem = async (
         movementType: "RETURN",
         quantity: amount,
         toLocationId: item.sourceLocationId,
-        referenceId: item.shipmentId,
+        // The label, matching the CHECKOUT it reverses. Storing the uuid here
+        // meant a return and the dispatch it came from looked unrelated in the
+        // ledger.
+        referenceId: shipment.reference,
         notes: reason ? String(reason) : "Returned after dispatch",
       },
       { tx },

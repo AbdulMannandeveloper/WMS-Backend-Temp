@@ -7,7 +7,8 @@ const router = express.Router();
 // who discover a shelf is full, need a new bin at the end of an aisle, or find a
 // location labelled wrongly. Making them fetch an admin mid-shift to record what
 // they are already looking at is how the map drifts out of step with the
-// building. Full access, same as an admin.
+// building. Full access, same as an admin — except deleting one, which removes
+// a place stock could be standing and is not something to do mid-shift.
 
 // US-029: Named routes BEFORE wildcard /:field/:value to prevent routing conflicts
 // Returns all locations as a nested parent-child tree
@@ -17,6 +18,6 @@ router.get("/:field/:value", authorizeRoles('admin', 'employee'), warehouseLocat
 router.post("/", authorizeRoles('admin', 'employee'), warehouseLocationController.createWarehouseLocation);
 router.get("/", authorizeRoles('admin', 'employee'), warehouseLocationController.getAllWarehouseLocations);
 router.put("/:id", authorizeRoles('admin', 'employee'), warehouseLocationController.updateWarehouseLocation);
-router.delete("/:id", authorizeRoles('admin', 'employee'), warehouseLocationController.deleteWarehouseLocation);
+router.delete("/:id", authorizeRoles('admin'), warehouseLocationController.deleteWarehouseLocation);
 
 module.exports = router;

@@ -308,6 +308,59 @@ describe('dispatching, and the charge', () => {
   });
 });
 
+describe('deleting a consignment', () => {
+  it('removes one that was never really here', async () => {
+    const ctx = await arrange();
+    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+
+    const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.body.id}`);
+
+    expect(res.status).toBe(200);
+    expect(
+      await prisma.fbaShipment.findUnique({ where: { id: created.body.id } })
+    ).toBeNull();
+  });
+
+  it('removes a cancelled one', async () => {
+    const ctx = await arrange();
+    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/cancel`);
+
+    expect(
+      (await as(ctx.admin).delete(`/api/fba-shipments/${created.body.id}`)).status
+    ).toBe(200);
+  });
+
+  it('refuses once dispatched, and names the client it was billed to', async () => {
+    // Dispatch raised an invoice line describing this consignment's barcode.
+    // Deleting the row would leave that line describing nothing, and cancel is
+    // not available either — DISPATCHED is final. A credit is the answer.
+    const ctx = await arrange();
+    await giveFbaRate(ctx.client.id);
+    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
+
+    const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.body.id}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(ctx.client.companyName);
+    expect(res.body.error).toMatch(/credit/i);
+    expect(
+      await prisma.fbaShipment.findUnique({ where: { id: created.body.id } })
+    ).not.toBeNull();
+  });
+
+  it('is closed to employees', async () => {
+    const ctx = await arrange();
+    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+
+    expect(
+      (await as(ctx.employeeUser).delete(`/api/fba-shipments/${created.body.id}`)).status
+    ).toBe(403);
+  });
+
+});
+
 describe('staying out of the warehouse', () => {
   it('moves no stock', async () => {
     // The whole premise: these goods pass through, they are never put away.

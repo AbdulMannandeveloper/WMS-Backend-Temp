@@ -142,13 +142,16 @@ describe('a shipment drawn from two bins', () => {
     ]);
 
 
+    // Found by the scanned label, which is what the ledger records — not the
+    // row's uuid, which nothing outside the database ever sees.
     const ledger = await prisma.inventoryLedger.findMany({
-      where: { referenceId: created.body.id, movementType: 'CHECKOUT' },
+      where: { referenceId: created.body.reference, movementType: 'CHECKOUT' },
     });
 
     expect(ledger).toHaveLength(2);
     expect(ledger.map((l) => l.fromLocationId).sort()).toEqual(
       [scenario.location.id, scenario.secondLocation.id].sort()
     );
+    expect(ledger.every((l) => l.referenceId !== created.body.id)).toBe(true);
   });
 });

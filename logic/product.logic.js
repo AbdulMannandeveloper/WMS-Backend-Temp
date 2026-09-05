@@ -248,7 +248,70 @@ const deactivateProduct = async (id, actorUserId) => {
   return updatedProduct;
 };
 
+/**
+ * Hard-deletes a product, for one that should never have existed.
+ *
+ * Guarded three ways, because unguarded this was the most destructive call in
+ * the system and did not look like it:
+ *
+ * 1. **Stock on hand.** StockLevel cascades on product delete, so deleting a
+ *    product with units on the shelf silently deleted the rows saying where
+ *    they were. The stock did not stop existing; the record of it did.
+ * 2. **Ledger history.** InventoryLedger restricts, so this already failed —
+ *    but as a raw foreign-key error surfaced as a 500. A product that has ever
+ *    moved is part of the audit trail and is deactivated, not deleted.
+ * 3. **On a shipment.** ShipmentItem restricts for the same reason and produced
+ *    the same 500.
+ *
+ * Each refusal names the product and says what to do instead. `deactivateProduct`
+ * is the reversible alternative and is what almost every caller wants.
+ *
+ * @throws {Error} with `status = 409` when the product exists but is in use
+ */
 const deleteProduct = async (id, actorUserId) => {
+  const product = await prodcutRepository.getProductById(id);
+  if (!product) {
+    return null;
+  }
+
+  const refuse = (message) => {
+    const err = new Error(message);
+    err.status = 409;
+    throw err;
+  };
+
+  const stockLevels = await stockLevelRepository.getStockLevelByField(
+    "productId",
+    id,
+  );
+  const onHand = stockLevels.reduce(
+    (sum, level) => sum + (level.currentQuantity || 0),
+    0,
+  );
+  if (onHand > 0) {
+    refuse(
+      `${product.productName} still has ${onHand} ${onHand === 1 ? "unit" : "units"} on the shelf. Move or write the stock off first.`,
+    );
+  }
+
+  const movements = await prisma.inventoryLedger.count({
+    where: { productId: id },
+  });
+  if (movements > 0) {
+    refuse(
+      `${product.productName} has ${movements} recorded ${movements === 1 ? "movement" : "movements"}. Deactivate it instead — deleting it would break the stock history.`,
+    );
+  }
+
+  const onShipments = await prisma.shipmentItem.count({
+    where: { productId: id },
+  });
+  if (onShipments > 0) {
+    refuse(
+      `${product.productName} is on ${onShipments} ${onShipments === 1 ? "shipment" : "shipments"}. Deactivate it instead.`,
+    );
+  }
+
   const deletedProduct = await prodcutRepository.deleteProduct(id);
   if (actorUserId) {
     await auditLogLogic.createAuditLog(actorUserId, "DELETE_PRODUCT", {
