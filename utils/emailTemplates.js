@@ -1,5 +1,5 @@
 const otpEmailTemplate = ({ otp, expiresMinutes }) => {
-  const subject = 'Your ProPackers UK verification code';
+  const subject = 'Your Pro Packers UK verification code';
   const text = `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes.`;
   const html = `
     <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
@@ -15,7 +15,7 @@ const otpEmailTemplate = ({ otp, expiresMinutes }) => {
 };
 
 const inviteEmailTemplate = ({ setupUrl, expiresHours }) => {
-  const subject = 'Set Your ProPackers UK Account Password';
+  const subject = 'Set Your Pro Packers UK Account Password';
   const text = `Your account has been created. Set your password here: ${setupUrl}. This link expires in ${expiresHours} hours.`;
   const html = `
     <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
@@ -33,7 +33,7 @@ const inviteEmailTemplate = ({ setupUrl, expiresHours }) => {
 };
 
 const resetPasswordEmailTemplate = ({ setupUrl, expiresHours }) => {
-  const subject = 'Reset Your ProPackers UK Password';
+  const subject = 'Reset Your Pro Packers UK Password';
   const text = `A password reset was requested for your account. Reset your password here: ${setupUrl}. This link expires in ${expiresHours} hours. If you did not request this, please ignore this email.`;
   const html = `
     <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
@@ -53,7 +53,7 @@ const resetPasswordEmailTemplate = ({ setupUrl, expiresHours }) => {
 
 // US-090: Sent to the client when their monthly invoice is approved by admin
 const invoiceApprovedEmailTemplate = ({ companyName, billingMonth, totalAmount, portalUrl }) => {
-  const subject = `Your ProPackers UK Invoice for ${billingMonth} is Ready`;
+  const subject = `Your Pro Packers UK Invoice for ${billingMonth} is Ready`;
   const formattedAmount = Number(totalAmount).toFixed(2);
   const text = `Dear ${companyName}, your invoice for ${billingMonth} totalling £${formattedAmount} has been approved and is ready to view. Log in to your portal here: ${portalUrl}`;
   const html = `
