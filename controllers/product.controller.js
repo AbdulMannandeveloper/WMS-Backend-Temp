@@ -120,7 +120,15 @@ const deleteProduct = async (req, res) => {
     if (!product) {
       return res.status(404).json({ error: "Product not found." });
     }
-    res.status(200).json({ message: "Product deleted successfully." });
+    // The counts travel back so the UI can say what actually went. Stock rows
+    // disappear here without a movement of their own, so this response and the
+    // audit entry are the only places those units are accounted for.
+    res.status(200).json({
+      message: "Product deleted successfully.",
+      unitsRemoved: product.unitsRemoved,
+      locationsCleared: product.locationsCleared,
+      movementsRemoved: product.movementsRemoved,
+    });
   } catch (error) {
     // A refusal is not a fault. The logic sets 409 on "this product is in use",
     // which the UI shows to the operator verbatim; anything else is ours.

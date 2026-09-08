@@ -10,11 +10,30 @@ const SHIPMENT_QUERY_FIELDS = [
   "status",
 ];
 
+/**
+ * A person, named — and nothing else.
+ *
+ * `user: true` returns every scalar on User, and one of them is
+ * `passwordHash`. This include is what getShipmentsByClientId reads, so that
+ * hash was reaching the client portal: an outside party, holding a staff
+ * member's credential material, because a relation was included by default
+ * rather than by choice.
+ */
+const userSummary = {
+  select: { id: true, firstName: true, lastName: true, email: true },
+};
+
 const includeRelations = {
   client: true,
+  // Who made the shipment. Added because nothing asked for it: Phase 20 started
+  // recording the session user in createdByUserId and stopped setting
+  // employeeId, but this include was never updated — so the API kept answering
+  // with the old employee, and every shipment an admin made looked like it
+  // belonged to somebody else or to nobody.
+  createdBy: userSummary,
   employee: {
     include: {
-      user: true,
+      user: userSummary,
     },
   },
   shipmentItems: {

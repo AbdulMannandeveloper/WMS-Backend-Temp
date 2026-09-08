@@ -248,25 +248,34 @@ const deactivateProduct = async (id, actorUserId) => {
   return updatedProduct;
 };
 
+/** Movements that mean the goods left the building, and someone was billed. */
+const OUTBOUND_MOVEMENTS = ["CHECKOUT", "RETURN"];
+
 /**
- * Hard-deletes a product, for one that should never have existed.
+ * Hard-deletes a product that never went anywhere.
  *
- * Guarded three ways, because unguarded this was the most destructive call in
- * the system and did not look like it:
+ * The line is **whether anything has left**, not whether anything has happened.
+ * A product that was registered, filled, moved between bins and written back
+ * down again is a mistake somebody made in this building; a product that has
+ * been dispatched is on a client's invoice, and its ledger rows are the only
+ * record of what they were charged for.
  *
- * 1. **Stock on hand.** StockLevel cascades on product delete, so deleting a
- *    product with units on the shelf silently deleted the rows saying where
- *    they were. The stock did not stop existing; the record of it did.
- * 2. **Ledger history.** InventoryLedger restricts, so this already failed —
- *    but as a raw foreign-key error surfaced as a 500. A product that has ever
- *    moved is part of the audit trail and is deactivated, not deleted.
- * 3. **On a shipment.** ShipmentItem restricts for the same reason and produced
- *    the same 500.
+ * So two refusals, and a deletion that takes everything with it:
  *
- * Each refusal names the product and says what to do instead. `deactivateProduct`
- * is the reversible alternative and is what almost every caller wants.
+ * - on a **shipment** — refused; that line references it and the FK is Restrict
+ * - a **CHECKOUT or RETURN** movement — refused; it has shipped at least once,
+ *   even if the shipment row was later removed
+ * - otherwise the product, its stock rows and its movement history go together,
+ *   in one transaction, as though it had never been created
  *
- * @throws {Error} with `status = 409` when the product exists but is in use
+ * The stock rows go without a compensating movement — the only place in the
+ * system where that is true — so the audit entry carries the counts. That is
+ * the whole record of those units afterwards.
+ *
+ * `deactivateProduct` remains the reversible alternative and is what almost
+ * every caller wants.
+ *
+ * @throws {Error} with `status = 409` when the product has been shipped
  */
 const deleteProduct = async (id, actorUserId) => {
   const product = await prodcutRepository.getProductById(id);
@@ -280,47 +289,61 @@ const deleteProduct = async (id, actorUserId) => {
     throw err;
   };
 
-  const stockLevels = await stockLevelRepository.getStockLevelByField(
-    "productId",
-    id,
-  );
-  const onHand = stockLevels.reduce(
-    (sum, level) => sum + (level.currentQuantity || 0),
-    0,
-  );
-  if (onHand > 0) {
-    refuse(
-      `${product.productName} still has ${onHand} ${onHand === 1 ? "unit" : "units"} on the shelf. Move or write the stock off first.`,
-    );
-  }
-
-  const movements = await prisma.inventoryLedger.count({
-    where: { productId: id },
-  });
-  if (movements > 0) {
-    refuse(
-      `${product.productName} has ${movements} recorded ${movements === 1 ? "movement" : "movements"}. Deactivate it instead — deleting it would break the stock history.`,
-    );
-  }
-
   const onShipments = await prisma.shipmentItem.count({
     where: { productId: id },
   });
   if (onShipments > 0) {
     refuse(
-      `${product.productName} is on ${onShipments} ${onShipments === 1 ? "shipment" : "shipments"}. Deactivate it instead.`,
+      `${product.productName} is on ${onShipments} ${onShipments === 1 ? "shipment" : "shipments"} and cannot be deleted. Deactivate it instead.`,
     );
   }
 
-  const deletedProduct = await prodcutRepository.deleteProduct(id);
+  const shipped = await prisma.inventoryLedger.count({
+    where: { productId: id, movementType: { in: OUTBOUND_MOVEMENTS } },
+  });
+  if (shipped > 0) {
+    refuse(
+      `${product.productName} has been dispatched before. Deactivate it instead — deleting it would break the record of what left.`,
+    );
+  }
+
+  // Counted before the delete, because afterwards there is nothing to count.
+  const stockLevels = await stockLevelRepository.getStockLevelByField(
+    "productId",
+    id,
+  );
+  const unitsRemoved = stockLevels.reduce(
+    (sum, level) => sum + (level.currentQuantity || 0),
+    0,
+  );
+  const movementsRemoved = await prisma.inventoryLedger.count({
+    where: { productId: id },
+  });
+
+  // A transaction for a window the test suite cannot reach: both guards above
+  // have passed, and a shipment item created between then and the delete below
+  // would make product.delete throw with the ledger rows already gone. Rare,
+  // but the failure is silent and permanent, and one line prevents it.
+  const deletedProduct = await prisma.$transaction(async (tx) => {
+    // Explicit, because InventoryLedger.product is Restrict — without this the
+    // delete below fails with a foreign-key error rather than doing anything.
+    // StockLevel cascades and needs no help.
+    await tx.inventoryLedger.deleteMany({ where: { productId: id } });
+    return await tx.product.delete({ where: { id } });
+  });
+
   if (actorUserId) {
     await auditLogLogic.createAuditLog(actorUserId, "DELETE_PRODUCT", {
       productId: id,
       skuCode: deletedProduct?.skuCode,
       productName: deletedProduct?.productName,
+      unitsRemoved,
+      locationsCleared: stockLevels.length,
+      movementsRemoved,
     }).catch(err => console.error("Audit log error:", err.message));
   }
-  return deletedProduct;
+
+  return { ...deletedProduct, unitsRemoved, locationsCleared: stockLevels.length, movementsRemoved };
 };
 
 

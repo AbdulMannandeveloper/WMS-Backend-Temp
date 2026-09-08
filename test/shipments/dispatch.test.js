@@ -20,6 +20,7 @@ import {
   makeWarehouseScenario,
   makeClient,
   makeProduct,
+  makeShipment,
   makeStockLevel,
   makeShipmentRate,
 } from '../factories/index.js';
@@ -145,6 +146,58 @@ describe('who creates it', () => {
       .send({ reference: 'SHP-ANON', shipmentItems: oneLine(s) });
 
     expect([401, 403]).toContain(res.status);
+  });
+
+  it('comes back naming the person who made it', async () => {
+    // createdByUserId was being recorded correctly all along; nothing asked for
+    // the relation, so the API answered with the old `employee` — null for an
+    // admin — and every shipment an admin made appeared to belong to nobody.
+    const s = await arrange();
+
+    await post(s.admin, { reference: 'SHP-NAMED', shipmentItems: oneLine(s) });
+    const res = await as(s.admin).get('/api/shipments/field/reference/SHP-NAMED');
+    const shipment = Array.isArray(res.body) ? res.body[0] : res.body;
+
+    expect(shipment.createdBy).toBeTruthy();
+    expect(shipment.createdBy.id).toBe(s.admin.id);
+    expect(shipment.createdBy.firstName).toBe(s.admin.firstName);
+  });
+
+  it('never carries a password hash, on any read', async () => {
+    // `employee: { include: { user: true } }` returned every scalar on User,
+    // and this include is what the client portal reads — so a staff member's
+    // hash was reaching an outside party.
+    //
+    // The shipment is written through the factory rather than the API, because
+    // creation deliberately leaves employeeId null now. A shipment with no
+    // employee has no user row to leak, and a test built on one would pass
+    // whatever this include said.
+    const s = await arrange();
+    await makeShipment(s.employee.id, s.client.id, { reference: 'SHP-HASH' });
+
+    // The factory leaves passwordHash null — users are invited and set their
+    // own — so one is put there deliberately. Without it this test would be
+    // checking that a column nobody had filled in did not appear.
+    const hash = '$2b$10$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV';
+    const employeeUser = await prisma.user.update({
+      where: { id: s.employeeUser.id },
+      data: { passwordHash: hash },
+    });
+    expect(employeeUser.passwordHash).toBeTruthy();
+
+    for (const [who, url] of [
+      [s.admin, '/api/shipments/'],
+      [s.clientUser, `/api/shipments/client/${s.client.id}`],
+    ]) {
+      const res = await as(who).get(url);
+      const body = JSON.stringify(res.body);
+
+      // The employee is on the payload — otherwise this is checking an absence
+      // that was never a presence.
+      expect(body).toMatch(/SHP-HASH/);
+      expect(body).not.toMatch(/passwordHash/);
+      expect(body).not.toContain(employeeUser.passwordHash);
+    }
   });
 });
 
