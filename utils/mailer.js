@@ -24,7 +24,9 @@ const nodemailer = require('nodemailer');
 const config = () => ({
   transport: String(process.env.MAIL_TRANSPORT || '').toLowerCase(),
   from: process.env.MAIL_FROM || 'no-reply@propackersuk.local',
-  fromName: process.env.MAIL_FROM_NAME || 'ProPackers UK',
+  // The sender name a recipient sees. MAIL_FROM_NAME overrides it, so check the
+  // deployed environment too — this default only applies when it is unset.
+  fromName: process.env.MAIL_FROM_NAME || 'Pro Packers UK',
   debug: String(process.env.MAIL_DEBUG || '').toLowerCase() === 'true',
 });
 
