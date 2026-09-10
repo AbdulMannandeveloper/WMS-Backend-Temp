@@ -144,3 +144,8 @@ vite.config.ts.timestamp-*
 # contain a client's commercial detail, so they do not belong in the repository.
 uploads/
 !uploads/.gitkeep
+
+# The built front end, when this service serves it as well as the API (see
+# FRONTEND_DIST in app.js). A build artifact from the other repository —
+# produced at deploy time, never committed, or the two drift apart silently.
+client/
