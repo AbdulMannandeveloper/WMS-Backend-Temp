@@ -7,7 +7,7 @@ const router = express.Router();
 // US-058/059/060: GET /api/inventory-ledgers/filter?startDate=&endDate=&productId=&clientId=&movementType=
 router.get('/filter', authorizeRoles('admin', 'employee'), inventoryLedgerController.getLedgerWithFilters);
 
-// US-054: GET /api/inventory-ledgers/daily-checkout-summary?date=2026-06-14
+// US-054: GET /api/inventory-ledgers/daily-checkout-summary?startDate=&endDate=&clientId=
 router.get('/daily-checkout-summary', authorizeRoles('admin', 'employee'), inventoryLedgerController.getDailyCheckoutSummary);
 
 // US-063: Client-scoped ledger (clients see only their own products)

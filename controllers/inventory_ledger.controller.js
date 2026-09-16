@@ -95,11 +95,16 @@ const getLedgerWithFilters = async (req, res) => {
   }
 };
 
-// US-054: Daily checkout summary — ?date=2026-06-14 (defaults to today)
+// US-054: Daily checkout summary —
+// ?startDate=2026-06-14&endDate=2026-06-20&clientId= (all optional, defaults to today)
 const getDailyCheckoutSummary = async (req, res) => {
   try {
-    const { date } = req.query;
-    const summary = await inventoryLedgerLogic.getDailyCheckoutSummary(date);
+    const { startDate, endDate, clientId } = req.query;
+    const summary = await inventoryLedgerLogic.getDailyCheckoutSummary({
+      startDate,
+      endDate,
+      clientId,
+    });
     res.status(200).json(summary);
   } catch (err) {
     res.status(400).json({ error: err.message });

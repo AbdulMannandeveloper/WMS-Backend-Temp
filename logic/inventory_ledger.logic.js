@@ -292,16 +292,17 @@ const getInventoryLedgersByClientId = async (clientId, pagination) => {
   );
 };
 
-const getDailyCheckoutSummary = async (dateStr) => {
-  const date = dateStr ? new Date(dateStr) : new Date();
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
+const getDailyCheckoutSummary = async ({ startDate, endDate, clientId } = {}) => {
+  const rangeStart = startDate ? new Date(startDate) : new Date();
+  // A single date still works: leaving endDate off closes the range on the day
+  // it opened, which is what the summary meant before it took a range at all.
+  const rangeEnd = endDate ? new Date(endDate) : new Date(rangeStart);
+  rangeStart.setHours(0, 0, 0, 0);
+  rangeEnd.setHours(23, 59, 59, 999);
 
   const result = await inventoryLedgerRepository.getAllInventoryLedgers({
     movementType: "CHECKOUT",
-    timestamp: { gte: startOfDay, lte: endOfDay },
+    timestamp: { gte: rangeStart, lte: rangeEnd },
   });
   const checkouts = Array.isArray(result) ? result : result.items;
 
@@ -335,7 +336,8 @@ const getDailyCheckoutSummary = async (dateStr) => {
     });
   }
 
-  return Object.values(grouped);
+  const groups = Object.values(grouped);
+  return clientId ? groups.filter((g) => g.clientId === clientId) : groups;
 };
 
 // Unused enrichment helpers kept for potential future use
