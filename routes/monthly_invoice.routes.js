@@ -28,8 +28,12 @@ router.get("/:id/pdf", adminOrClient, invoiceController.getMonthlyInvoicePdf);
 router.get("/", adminOnly, invoiceController.getAllMonthlyInvoices);
 router.post("/", adminOnly, invoiceController.createMonthlyInvoice);
 router.put("/:id", adminOnly, invoiceController.updateMonthlyInvoice);
-// Tax on one invoice, while it is still DRAFT.
+// Tax on one invoice, while it is DRAFT or APPROVED.
 router.post("/:id/tax", adminOnly, invoiceController.setTax);
+// Batched line-item + tax edits — the admin "edit invoice" screen's single
+// commit point, so staged changes cost one PDF render and one client email
+// rather than one per field.
+router.put("/:id/edit", adminOnly, invoiceController.applyInvoiceEdits);
 
 router.post("/:id/approve", adminOnly, invoiceController.approveMonthlyInvoice);
 router.post("/:id/pay", adminOnly, invoiceController.markMonthlyInvoicePaid);

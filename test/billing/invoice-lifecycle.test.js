@@ -56,50 +56,65 @@ const statusOf = async (id) =>
   (await prisma.monthlyInvoice.findUnique({ where: { id } })).status;
 
 describe('invoice lifecycle', () => {
-  describe('editing is DRAFT-only', () => {
-    it('a draft still accepts line items', async () => {
-      const { admin, invoice } = await arrange('DRAFT');
-
-      const res = await as(admin)
-        .post(`/api/monthly-invoices/${invoice.id}/line-items`)
-        .send({ description: 'Extra', quantity: 1, unitPrice: 10 });
-
-      expect(res.status).toBe(201);
-    });
-
-    for (const status of ['APPROVED', 'PAID']) {
-      it(`an ${status} invoice refuses a new line item`, async () => {
+  describe('editing is DRAFT-or-APPROVED, PAID is frozen', () => {
+    for (const status of ['DRAFT', 'APPROVED']) {
+      it(`a ${status} invoice still accepts a new line item`, async () => {
         const { admin, invoice } = await arrange(status);
 
         const res = await as(admin)
           .post(`/api/monthly-invoices/${invoice.id}/line-items`)
-          .send({ description: 'Sneaky charge', quantity: 1, unitPrice: 999 });
+          .send({ description: 'Extra', quantity: 1, unitPrice: 10 });
 
-        expect(res.status).toBe(400);
-        expect(res.body.error).toMatch(new RegExp(status, 'i'));
-
-        const after = await prisma.monthlyInvoice.findUnique({
-          where: { id: invoice.id },
-          include: { lineItems: true },
-        });
-        expect(after.lineItems).toHaveLength(1);
-        expect(Number(after.totalAmount)).toBe(50);
+        expect(res.status).toBe(201);
       });
 
-      it(`an ${status} invoice refuses a line-item deletion`, async () => {
+      it(`a ${status} invoice still accepts a line-item deletion`, async () => {
         const { admin, invoice, lineId } = await arrange(status);
 
         const res = await as(admin).delete(
           `/api/monthly-invoices/${invoice.id}/line-items/${lineId}`
         );
 
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(200);
         await expect(
           prisma.invoiceLineItem.count({ where: { invoiceId: invoice.id } })
-        ).resolves.toBe(1);
+        ).resolves.toBe(0);
       });
+    }
 
-      it(`an ${status} invoice cannot be deleted`, async () => {
+    it('a PAID invoice refuses a new line item', async () => {
+      const { admin, invoice } = await arrange('PAID');
+
+      const res = await as(admin)
+        .post(`/api/monthly-invoices/${invoice.id}/line-items`)
+        .send({ description: 'Sneaky charge', quantity: 1, unitPrice: 999 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/PAID/i);
+
+      const after = await prisma.monthlyInvoice.findUnique({
+        where: { id: invoice.id },
+        include: { lineItems: true },
+      });
+      expect(after.lineItems).toHaveLength(1);
+      expect(Number(after.totalAmount)).toBe(50);
+    });
+
+    it('a PAID invoice refuses a line-item deletion', async () => {
+      const { admin, invoice, lineId } = await arrange('PAID');
+
+      const res = await as(admin).delete(
+        `/api/monthly-invoices/${invoice.id}/line-items/${lineId}`
+      );
+
+      expect(res.status).toBe(400);
+      await expect(
+        prisma.invoiceLineItem.count({ where: { invoiceId: invoice.id } })
+      ).resolves.toBe(1);
+    });
+
+    for (const status of ['APPROVED', 'PAID']) {
+      it(`an ${status} invoice cannot be deleted outright`, async () => {
         const { admin, invoice } = await arrange(status);
 
         const res = await as(admin).delete(`/api/monthly-invoices/${invoice.id}`);

@@ -255,9 +255,10 @@ describe('tax follows the subtotal while the invoice is open', () => {
 });
 
 describe('once the invoice is out of draft', () => {
-  it('tax cannot be applied to an approved invoice', async () => {
-    // It has been sent. The amount a client was asked to pay must not move
-    // underneath them.
+  it('tax can still be applied to an approved invoice, by an admin', async () => {
+    // An admin correcting an approved invoice is the one deliberate exception
+    // to "the amount a client was asked to pay must not move underneath them" —
+    // syncApprovedInvoicePdf re-renders and re-notifies for exactly this case.
     const ctx = await arrange('100.00');
     await prisma.monthlyInvoice.update({
       where: { id: ctx.invoice.id },
@@ -268,8 +269,10 @@ describe('once the invoice is out of draft', () => {
       .post(`/api/monthly-invoices/${ctx.invoice.id}/tax`)
       .send({ applied: true });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/DRAFT/i);
+    expect(res.status).toBe(200);
+    const after = await reload(ctx.invoice.id);
+    expect(after.taxApplied).toBe(true);
+    expect(Number(after.taxAmount)).toBe(20);
   });
 
   it('tax cannot be removed from a paid invoice', async () => {

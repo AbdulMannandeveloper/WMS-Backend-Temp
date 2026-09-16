@@ -183,7 +183,7 @@ const updateTaxRate = async (req, res) => {
   }
 };
 
-/** Applies or removes tax on a DRAFT invoice. */
+/** Applies or removes tax on a DRAFT or APPROVED invoice. */
 const setTax = async (req, res) => {
   try {
     const updated = await monthlyInvoiceLogic.setInvoiceTax(
@@ -204,6 +204,30 @@ const deleteLineItem = async (req, res) => {
     res.status(200).json({ message: "Line item removed." });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+};
+
+/**
+ * Commits a batch of staged line-item and tax edits in one call, so the admin
+ * "edit invoice" screen can stage several changes and apply them as a single
+ * act — one PDF re-render and one client email, not one per field touched.
+ */
+const applyInvoiceEdits = async (req, res) => {
+  try {
+    const { addLineItems, removeLineItemIds, taxApplied } = req.body || {};
+    const invoice = await monthlyInvoiceLogic.applyInvoiceEdits(
+      req.params.id,
+      { addLineItems, removeLineItemIds, taxApplied },
+      req.user.id,
+    );
+    res.status(200).json(invoice);
+  } catch (err) {
+    // Narrower than the /not found/i check elsewhere in this file: a removal
+    // target that belongs to a different invoice also says "not found" (see
+    // applyInvoiceEdits), and that is a bad request body, not a missing route
+    // param — it must not collide with the one message this actually 404s.
+    const notFound = /^monthly invoice not found\.?$/i.test(err.message.trim());
+    res.status(notFound ? 404 : 400).json({ error: err.message });
   }
 };
 
@@ -245,4 +269,5 @@ module.exports = {
   updateTaxRate,
   setTax,
   deleteLineItem,
+  applyInvoiceEdits,
 };

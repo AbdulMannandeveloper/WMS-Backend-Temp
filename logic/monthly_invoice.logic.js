@@ -1,10 +1,14 @@
+const { prisma } = require("../lib/prisma");
 const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 
 const clientLogic = require("./client.logic");
 const { firstOfMonthUtc } = require("../utils/dates");
 const { enqueueMail } = require("../utils/mailQueue");
-const { invoiceApprovedEmailTemplate } = require("../utils/emailTemplates");
+const {
+  invoiceApprovedEmailTemplate,
+  invoiceUpdatedEmailTemplate,
+} = require("../utils/emailTemplates");
 
 const auditLogLogic = require("./audit_log.logic");
 const { getTaxRate, taxOn } = require("./settings.logic");
@@ -15,12 +19,15 @@ const objectStorage = require("../lib/objectStorage");
 
 const APP_BASE_URL = process.env.APP_BASE_URL || "https://myapp.com";
 
+const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 30_000 };
+
 /**
  * The invoice lifecycle, stated in one place the way SHIPMENT_TRANSITIONS is in
  * shipment.logic.js.
  *
- * PAID is terminal. Everything past DRAFT is a document the client has already
- * been sent, so it is credited rather than edited or deleted.
+ * PAID is terminal. An APPROVED invoice has already been sent, so it is never
+ * deleted outright — see isEditable — but an admin may still correct its line
+ * items and tax; see isLineItemEditable and syncApprovedInvoicePdf.
  */
 const INVOICE_TRANSITIONS = {
   DRAFT: ["APPROVED"],
@@ -28,8 +35,17 @@ const INVOICE_TRANSITIONS = {
   PAID: [],
 };
 
-/** Only a DRAFT invoice accepts line-item changes or deletion. */
+/** Only a DRAFT invoice accepts deletion — an APPROVED one is credited instead. */
 const isEditable = (status) => status === "DRAFT";
+
+/**
+ * DRAFT or APPROVED accept line-item and tax changes; PAID is frozen — money
+ * has already changed hands against that total. Admin editing an APPROVED
+ * invoice is the one case where a change lands on a document already sent to
+ * the client, which is why every caller of this also runs the invoice back
+ * through syncApprovedInvoicePdf below.
+ */
+const isLineItemEditable = (status) => status === "DRAFT" || status === "APPROVED";
 
 const assertTransition = (from, to) => {
   const allowed = INVOICE_TRANSITIONS[from];
@@ -141,9 +157,9 @@ const updateMonthlyInvoice = async (id, data) => {
 /**
  * Applies or removes tax on an invoice.
  *
- * DRAFT only. Once an invoice is approved it has been sent to a client, and the
- * amount they were asked to pay must not move underneath them — the same reason
- * a line item's unit price is frozen when it is raised.
+ * DRAFT or APPROVED — an admin may still correct an approved invoice's tax,
+ * same as a line item. That edit lands on a document the client may already
+ * have, so the caller re-renders and re-notifies via syncApprovedInvoicePdf.
  *
  * The platform rate is snapshotted onto the invoice at the moment tax is applied
  * rather than read live when the invoice is rendered. Otherwise changing the
@@ -155,9 +171,9 @@ const setInvoiceTax = async (id, applied, actorUserId) => {
     throw new Error("Monthly invoice not found.");
   }
 
-  if (invoice.status !== "DRAFT") {
+  if (!isLineItemEditable(invoice.status)) {
     throw new Error(
-      `Tax can only be changed while an invoice is DRAFT — this one is ${invoice.status}.`,
+      `Tax can only be changed while an invoice is DRAFT or APPROVED — this one is ${invoice.status}.`,
     );
   }
 
@@ -181,6 +197,8 @@ const setInvoiceTax = async (id, applied, actorUserId) => {
       taxAmount: wantTax ? taxOn(subtotal, rate) : 0,
     })
     .catch((err) => console.error("Audit log error:", err.message));
+
+  await syncApprovedInvoicePdf(id);
 
   return updated;
 };
@@ -247,6 +265,162 @@ const approveMonthlyInvoice = async (id, actorUserId) => {
   }
 
   return approvedInvoice;
+};
+
+/**
+ * Re-renders and re-uploads the PDF for an invoice, and tells the client it
+ * changed. A no-op for DRAFT (no PDF exists yet, nothing has been sent) and
+ * for PAID (frozen, and line items/tax can no longer reach this point). Called
+ * after every line-item or tax edit so an APPROVED invoice's stored PDF never
+ * disagrees with what is on screen.
+ *
+ * Failures here are logged rather than thrown: the edit that triggered this
+ * already succeeded and committed, and a stale PDF is recoverable the same way
+ * a missing one is in ensureInvoicePdf — by re-rendering.
+ */
+const syncApprovedInvoicePdf = async (id) => {
+  const invoice = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+  if (!invoice || invoice.status !== "APPROVED") {
+    return;
+  }
+
+  try {
+    const key = invoice.pdfLink || invoicePdfKey(invoice);
+    await objectStorage.uploadBuffer(key, renderInvoicePdf(invoice), "application/pdf");
+    if (invoice.pdfLink !== key) {
+      await monthlyInvoiceRepository.updateMonthlyInvoice(id, { pdfLink: key });
+    }
+  } catch (pdfError) {
+    console.error("Invoice PDF regeneration failed:", pdfError.message);
+    return;
+  }
+
+  try {
+    const clientEmail = invoice.client?.email;
+    if (clientEmail) {
+      const portalUrl = `${APP_BASE_URL}/client/invoices`;
+      const billingMonth = new Date(invoice.billingPeriod).toLocaleString("en-GB", {
+        month: "long",
+        year: "numeric",
+      });
+      const emailContent = invoiceUpdatedEmailTemplate({
+        companyName: invoice.client?.companyName || "Valued Client",
+        billingMonth,
+        totalAmount: invoice.totalAmount,
+        portalUrl,
+      });
+      enqueueMail({
+        to: clientEmail,
+        subject: emailContent.subject,
+        html: emailContent.html,
+        text: emailContent.text,
+      });
+    }
+  } catch (emailError) {
+    console.error("Invoice update email failed to queue:", emailError.message);
+  }
+};
+
+/**
+ * Applies a batch of line-item additions/removals and an optional tax change
+ * to a DRAFT or APPROVED invoice in one transaction, then syncs the PDF and
+ * client notification exactly once.
+ *
+ * This exists so the admin "edit invoice" screen can stage several changes —
+ * remove a line, add two more, flip tax on — and commit them as a single act.
+ * Routing each through createInvoiceLineItem/deleteInvoiceLineItem/setInvoiceTax
+ * individually would still work, but each of those syncs the PDF and re-emails
+ * the client on its own, so five staged edits would mean five emails.
+ */
+const applyInvoiceEdits = async (
+  id,
+  { addLineItems = [], removeLineItemIds = [], taxApplied } = {},
+  actorUserId,
+) => {
+  const hasLineItemChanges = addLineItems.length > 0 || removeLineItemIds.length > 0;
+  const changesTax = taxApplied === true || taxApplied === false;
+  if (!hasLineItemChanges && !changesTax) {
+    throw new Error("No changes were supplied.");
+  }
+
+  // Read before the transaction, same as setInvoiceTax — a rate that moves
+  // mid-flight is no different from one read a second earlier.
+  const rate = changesTax && taxApplied ? await getTaxRate() : null;
+
+  await prisma.$transaction(async (tx) => {
+    const invoice = await monthlyInvoiceRepository.getMonthlyInvoiceById(id, tx);
+    if (!invoice) {
+      throw new Error("Monthly invoice not found.");
+    }
+    if (!isLineItemEditable(invoice.status)) {
+      throw new Error(
+        `This invoice is ${invoice.status} and can no longer be changed. Raise a credit or a new charge against a draft instead.`,
+      );
+    }
+
+    for (const lineItemId of removeLineItemIds) {
+      const existing = await invoiceLineItemRepository.getInvoiceLineItemsByField("id", lineItemId, tx);
+      const item = Array.isArray(existing) ? existing[0] : existing;
+      if (!item || item.invoiceId !== id) {
+        throw new Error("One of the line items to remove was not found on this invoice.");
+      }
+      await invoiceLineItemRepository.deleteInvoiceLineItem(lineItemId, tx);
+    }
+
+    for (const raw of addLineItems) {
+      if (!raw || !raw.quantity || !raw.unitPrice) {
+        throw new Error("Each new line item needs a quantity and unit price.");
+      }
+      if (raw.quantity <= 0) {
+        throw new Error("Quantity must be greater than zero.");
+      }
+      if (raw.unitPrice < 0) {
+        throw new Error("Unit price cannot be negative.");
+      }
+      await invoiceLineItemRepository.createInvoiceLineItem(
+        {
+          description: raw.description || "No description provided",
+          quantity: raw.quantity,
+          unitPrice: raw.unitPrice,
+          dateOfService: raw.dateOfService ? new Date(raw.dateOfService) : new Date(),
+          invoiceId: id,
+          itemType: "MANUAL_CHARGE",
+          totalPrice: Number(raw.quantity) * Number(raw.unitPrice),
+        },
+        tx,
+      );
+    }
+
+    if (changesTax) {
+      await monthlyInvoiceRepository.updateMonthlyInvoice(
+        id,
+        {
+          taxApplied,
+          // Kept when removing tax so the invoice still records the rate it
+          // was briefly issued at — same as setInvoiceTax.
+          taxRate: taxApplied ? rate : invoice.taxRate,
+        },
+        tx,
+      );
+    }
+
+    // Re-derives totalAmount from the line items, and — since taxApplied/
+    // taxRate above are already whatever this edit wants them to be —
+    // taxAmount along with it. One write instead of duplicating the tax
+    // formula here.
+    await monthlyInvoiceRepository.recalculateInvoiceTotal(id, tx);
+  }, TRANSACTION_OPTIONS);
+
+  await audit(actorUserId, "INVOICE_EDITED", {
+    invoiceId: id,
+    lineItemsAdded: addLineItems.length,
+    lineItemsRemoved: removeLineItemIds.length,
+    taxChanged: changesTax,
+  });
+
+  await syncApprovedInvoicePdf(id);
+
+  return await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
 };
 
 /**
@@ -336,11 +510,14 @@ module.exports = {
   getMonthlyInvoiceByField,
   updateMonthlyInvoice,
   setInvoiceTax,
+  applyInvoiceEdits,
   approveMonthlyInvoice,
   markMonthlyInvoicePaid,
   deleteMonthlyInvoice,
-  // Shared with the line-item logic, which enforces the same DRAFT-only rule.
+  syncApprovedInvoicePdf,
+  // Shared with the line-item logic, which enforces the same editability rule.
   INVOICE_TRANSITIONS,
   isEditable,
+  isLineItemEditable,
   assertTransition,
 };

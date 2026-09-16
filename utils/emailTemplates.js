@@ -84,9 +84,45 @@ const invoiceApprovedEmailTemplate = ({ companyName, billingMonth, totalAmount, 
   return { subject, text, html };
 };
 
+// Sent when an admin edits an already-approved invoice's charges or tax, so a
+// client who already saw (or downloaded) the original is not the last to know
+// the total moved.
+const invoiceUpdatedEmailTemplate = ({ companyName, billingMonth, totalAmount, portalUrl }) => {
+  const subject = `Your Pro Packers UK Invoice for ${billingMonth} Has Been Updated`;
+  const formattedAmount = Number(totalAmount).toFixed(2);
+  const text = `Dear ${companyName}, your invoice for ${billingMonth} has been updated and now totals £${formattedAmount}. View the revised invoice here: ${portalUrl}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px;">Your Invoice Has Been Updated</h2>
+      <p style="margin: 0 0 16px;">Dear <strong>${companyName}</strong>,</p>
+      <p style="margin: 0 0 16px;">
+        Your monthly invoice for <strong>${billingMonth}</strong> has been revised since it was approved.
+      </p>
+      <table style="border-collapse: collapse; margin: 0 0 20px;">
+        <tr>
+          <td style="padding: 6px 16px 6px 0; color: #6b7280;">Billing Period</td>
+          <td style="padding: 6px 0; font-weight: bold;">${billingMonth}</td>
+        </tr>
+        <tr>
+          <td style="padding: 6px 16px 6px 0; color: #6b7280;">Revised Total</td>
+          <td style="padding: 6px 0; font-weight: bold; font-size: 18px;">£${formattedAmount}</td>
+        </tr>
+      </table>
+      <p style="margin: 0 0 20px;">Log in to your client portal to view the updated breakdown:</p>
+      <p style="margin: 0 0 20px;">
+        <a href="${portalUrl}" style="background: #0f766e; color: #ffffff; text-decoration: none; padding: 10px 16px; border-radius: 6px; display: inline-block;">View Invoice</a>
+      </p>
+      <p style="margin: 0; color: #6b7280;">If the button does not work, paste this URL in your browser: ${portalUrl}</p>
+    </div>
+  `;
+
+  return { subject, text, html };
+};
+
 module.exports = {
   otpEmailTemplate,
   inviteEmailTemplate,
   resetPasswordEmailTemplate,
   invoiceApprovedEmailTemplate,
+  invoiceUpdatedEmailTemplate,
 };
