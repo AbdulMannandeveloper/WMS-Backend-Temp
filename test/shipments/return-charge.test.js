@@ -42,7 +42,6 @@ const arrangeDispatched = async ({ returnRate = null } = {}) => {
   const created = await as(s.admin)
     .post('/api/shipments')
     .send({
-      reference: `SHP-${Math.random().toString(36).slice(2, 10)}`,
       shipmentItems: [
         { productId: s.product.id, sourceLocationId: s.location.id, quantity: 5 },
       ],

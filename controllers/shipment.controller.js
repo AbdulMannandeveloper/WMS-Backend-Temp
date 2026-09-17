@@ -2,11 +2,13 @@
 const shipmentLogic = require("../logic/shipment.logic");
 const { pick } = require("../utils/pick");
 
-// Deliberately short. clientId is derived from the goods, the creator comes
-// from the session, status is decided by the logic, and billable services are
-// charged from the Clients screen rather than riding along on a shipment.
-// Accepting any of them here would be a way to override a rule.
-const SHIPMENT_CREATE_FIELDS = ["reference", "trackingId", "shipmentItems"];
+// Deliberately short. The reference is issued by the logic, clientId is derived
+// from the goods, the creator comes from the session, status is decided by the
+// logic, and billable services are charged from the Clients screen rather than
+// riding along on a shipment. Accepting any of them here would be a way to
+// override a rule — a named reference most of all, since it is the identity
+// every other record hangs off.
+const SHIPMENT_CREATE_FIELDS = ["trackingId", "shipmentItems"];
 
 // Nothing is editable through the generic update any more: reference is the
 // identity, the client is derived, and trackingId has its own endpoint because

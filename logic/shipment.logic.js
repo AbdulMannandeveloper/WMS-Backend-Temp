@@ -199,6 +199,73 @@ const clientFromItems = async (shipmentItems, tx) => {
   return clientId;
 };
 
+/* ── The shipment reference ───────────────────────────────────────────────
+ *
+ * Issued here, not scanned. The bench used to key in the number printed on the
+ * parcel, which made the warehouse responsible for an identity the system needs
+ * to be unique: a mistyped digit collided with an older shipment, and a label
+ * roll starting over collided with everything. So the parcel carries whatever
+ * the courier put on it, and the shipment carries a number of our own.
+ *
+ * Format: SHP-<year>-<sequence>, e.g. SHP-2026-000123. The year scopes the
+ * sequence so it restarts each January and stays short enough to read aloud.
+ * The sequence is zero-padded to a fixed width, which is what lets the next
+ * number be found with a single indexed "highest so far" read — without the
+ * padding, SHP-2026-10000 would sort below SHP-2026-9999.
+ */
+const REFERENCE_PREFIX = "SHP";
+const REFERENCE_DIGITS = 6;
+
+/** How many times a reference collision is worth retrying before giving up. */
+const REFERENCE_ATTEMPTS = 5;
+
+/** How far down the series to look for a reference this scheme wrote. */
+const REFERENCE_SCAN = 10;
+
+const referenceSeriesFor = (date) =>
+  `${REFERENCE_PREFIX}-${date.getUTCFullYear()}-`;
+
+/**
+ * The next reference in this year's series.
+ *
+ * Takes a transaction so the count it continues from is committed state rather
+ * than whatever was true when the request arrived.
+ */
+const nextReference = async (tx) => {
+  const series = referenceSeriesFor(new Date());
+  const recent = await shipmentRepositry.getLatestReferencesInSeries(
+    series,
+    REFERENCE_SCAN,
+    tx,
+  );
+
+  // The first that parses wins. A hand-written reference sharing the prefix
+  // sorts above the generated ones and would otherwise read as NaN, sending the
+  // sequence back to 1 and colliding with the shipment already holding it.
+  let last = 0;
+  for (const row of recent) {
+    const tail = row.reference.slice(series.length);
+    if (!/^\d+$/.test(tail)) continue;
+    last = Number.parseInt(tail, 10);
+    break;
+  }
+
+  return `${series}${String(last + 1).padStart(REFERENCE_DIGITS, "0")}`;
+};
+
+/**
+ * Whether this failure is two dispatches having picked the same number.
+ *
+ * Only that one index: any other unique violation is a real problem and has to
+ * surface rather than be retried into the same failure five times.
+ */
+const isReferenceClash = (error) => {
+  if (error?.code !== "P2002") return false;
+  const target = error.meta?.target;
+  const fields = Array.isArray(target) ? target : [target];
+  return fields.some((f) => String(f ?? "").includes("reference"));
+};
+
 /**
  * Creates a shipment and dispatches it in the same act.
  *
@@ -214,46 +281,65 @@ const createShipment = async (data, actorUserId) => {
     throw new Error("An authenticated user is required to create a shipment.");
   }
 
-  const reference = String(data.reference ?? "").trim();
-  if (!reference) {
-    throw new Error("Scan the shipment label before creating the shipment.");
-  }
-
-  // Refused rather than allowed through: two shipments sharing an identity
-  // cannot be told apart afterwards by the warehouse, the courier, or a client
-  // querying the invoice line that names it.
-  const clash = await shipmentRepositry.getShipmentByField("reference", reference);
-  const existing = Array.isArray(clash) ? clash[0] : clash;
-  if (existing) {
-    const when = new Date(existing.createdAt).toLocaleDateString("en-GB");
-    throw new Error(
-      `Shipment label ${reference} was already used on ${when} for ` +
-        `${existing.client?.companyName ?? "another client"}. Scan a different label.`,
-    );
-  }
-
   // Everything the caller is not allowed to decide is stripped here: the
-  // client comes from the goods, the creator from the session, the status from
-  // this function, and billable services are no longer attached at dispatch.
-  const { shipmentItems, shipmentServices, status, clientId, employeeId, ...rest } = data;
+  // reference is issued by this function, the client comes from the goods, the
+  // creator from the session, the status from this function, and billable
+  // services are no longer attached at dispatch. `reference` is pulled out of
+  // the body and dropped rather than passed through — a caller naming its own
+  // label would be able to collide with, or jump ahead of, the series.
+  const {
+    shipmentItems,
+    shipmentServices,
+    status,
+    clientId,
+    employeeId,
+    reference: ignoredReference,
+    ...rest
+  } = data;
 
   const derivedClientId = await clientFromItems(shipmentItems);
 
-  const shipmentData = {
-    ...rest,
-    reference,
-    clientId: derivedClientId,
-    createdByUserId: actorUserId,
-    status: "DISPATCHED",
-  };
+  // The reference is read and written inside the transaction, so the number it
+  // counts from is committed state. Two benches dispatching at the same instant
+  // can still land on the same one — the unique index catches that, and the
+  // attempt is made again rather than failing a picked pallet over a race.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await createDispatchedShipment(
+        { rest, shipmentItems, derivedClientId, actorUserId },
+      );
+    } catch (error) {
+      if (attempt >= REFERENCE_ATTEMPTS || !isReferenceClash(error)) throw error;
+    }
+  }
+};
 
-  // One transaction for the whole shipment. Previously the row was written
-  // first and each item created in its own transaction, so a later line that
-  // could not be reserved returned 400 while leaving the shipment, the earlier
-  // items, and their stock reservations behind. The caller saw a failure and
-  // assumed nothing had happened, and that stock stayed reserved against a
-  // shipment nobody would ever pick or cancel.
+/**
+ * One attempt at the whole thing: number it, write it, take the stock out.
+ *
+ * One transaction for the whole shipment. Previously the row was written first
+ * and each item created in its own transaction, so a later line that could not
+ * be reserved returned 400 while leaving the shipment, the earlier items, and
+ * their stock reservations behind. The caller saw a failure and assumed nothing
+ * had happened, and that stock stayed reserved against a shipment nobody would
+ * ever pick or cancel.
+ */
+const createDispatchedShipment = async ({
+  rest,
+  shipmentItems,
+  derivedClientId,
+  actorUserId,
+}) => {
   return prisma.$transaction(async (tx) => {
+    const reference = await nextReference(tx);
+    const shipmentData = {
+      ...rest,
+      reference,
+      clientId: derivedClientId,
+      createdByUserId: actorUserId,
+      status: "DISPATCHED",
+    };
+
     const shipment = await shipmentRepositry.createShipment(shipmentData, tx);
 
     if (Array.isArray(shipmentItems)) {

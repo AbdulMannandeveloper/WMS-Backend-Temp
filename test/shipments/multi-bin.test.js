@@ -36,9 +36,9 @@ const createShipment = (actor, scenario, items) =>
   as(actor)
     .post('/api/shipments')
     .send({
-      // The client is derived from the goods and the creator from the session.
-      // All that is left to send is the label and the picks.
-      reference: `SHP-${Math.random().toString(36).slice(2, 10)}`,
+      // The client is derived from the goods, the creator from the session and
+      // the reference from the server's own sequence. All that is left to send
+      // is the picks.
       shipmentItems: items,
     });
 
