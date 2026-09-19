@@ -2,6 +2,17 @@ const { prisma } = require('../lib/prisma');
 
 const prismaFine = prisma.employeeFine;
 
+/**
+ * A person, named — and nothing else.
+ *
+ * `user: true` returns every scalar on User, `passwordHash` included. Nothing
+ * routes this function today, so the hash has not gone anywhere; the moment a
+ * fines list is mounted it would.
+ */
+const userSummary = {
+  select: { id: true, firstName: true, lastName: true, email: true },
+};
+
 const createFine = async (data) => {
   return await prismaFine.create({
     data,
@@ -42,7 +53,7 @@ const getAllFinesForMonth = async (startOfMonth, endOfMonth) => {
         lte: endOfMonth,
       },
     },
-    include: { user: true },
+    include: { user: userSummary },
     orderBy: { date: 'desc' },
   });
 };

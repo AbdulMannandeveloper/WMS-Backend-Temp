@@ -9,43 +9,46 @@ const createAttendanceLog = async (logData) => {
   return await prismaAttendanceLog.create({ data: logData });
 };
 
-const getAllAttendanceLogs = async (pagination) => {
+// A person, named — never the whole User row, which carries passwordHash.
+const userSummary = {
+  select: {
+    id: true,
+    firstName: true,
+    lastName: true,
+    username: true,
+    email: true,
+  },
+};
+
+/**
+ * @param {object} filters - a Prisma `where`; {} matches everything.
+ * @param {object} [pagination] - { skip, take }. Absent, the whole set comes
+ *   back as a bare array for internal callers.
+ */
+const getAllAttendanceLogs = async (filters = {}, pagination) => {
+  const where = filters;
+
   if (pagination && pagination.take != null) {
     const [items, total] = await Promise.all([
       prismaAttendanceLog.findMany({
+        where,
         skip: pagination.skip || 0,
         take: pagination.take,
         orderBy: { date: "desc" },
-        include: {
-          user: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              username: true,
-              email: true,
-            },
-          },
-        },
+        include: { user: userSummary },
       }),
-      prismaAttendanceLog.count(),
+      // Same `where` as the page above. An unfiltered count reads as correct
+      // until the day a filter exists, and then reports the size of the table
+      // rather than the size of the result.
+      prismaAttendanceLog.count({ where }),
     ]);
     return { items, total };
   }
 
   return await prismaAttendanceLog.findMany({
+    where,
     orderBy: { date: "desc" },
-    include: {
-      user: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          username: true,
-          email: true,
-        },
-      },
-    },
+    include: { user: userSummary },
   });
 };
 

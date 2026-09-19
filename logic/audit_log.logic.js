@@ -18,7 +18,7 @@ const createAuditLog = async (userId, action, details) => {
 };
 
 const getAllAuditLogs = async (pagination) => {
-  return await auditLogRepository.getAllAuditLogs(pagination);
+  return await auditLogRepository.getAllAuditLogs({}, pagination);
 };
 
 module.exports = {

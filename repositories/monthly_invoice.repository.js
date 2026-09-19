@@ -1,4 +1,9 @@
 const { prisma } = require("../lib/prisma");
+const { assertAllowedField } = require("../utils/pick");
+
+// An invoice is a client's billing record, so a dynamic column here is the
+// wrong thing to leave open next to a clientId query parameter.
+const INVOICE_QUERY_FIELDS = ["id", "clientId", "status", "billingPeriod"];
 
 const includeRelations = {
   client: {
@@ -52,6 +57,7 @@ const getMonthlyInvoiceById = async (id, tx) => {
 };
 
 const getMonthlyInvoiceByField = async (field, value, tx) => {
+  assertAllowedField(field, INVOICE_QUERY_FIELDS);
   return await db(tx).monthlyInvoice.findMany({
     where: {
       [field]: value,

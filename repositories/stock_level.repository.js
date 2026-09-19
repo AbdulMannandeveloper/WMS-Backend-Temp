@@ -1,4 +1,11 @@
 const { prisma } = require('../lib/prisma');
+const { assertAllowedField } = require('../utils/pick');
+
+// Every caller hardcodes its field today, so the dynamic key below has never
+// been reachable from a request. That is a property of the callers, not of this
+// function — and the list work is about to start putting query parameters near
+// it. Named columns only, as attendance_log and inventory_ledger already do.
+const STOCK_QUERY_FIELDS = ['id', 'productId', 'locationId'];
 
 const includeRelations = {
   product: {
@@ -40,6 +47,7 @@ const getAllStockLevels = async ({ skip, take, clientId } = {}, tx) => {
 };
 
 const getStockLevelByField = async (field, value, tx) => {
+  assertAllowedField(field, STOCK_QUERY_FIELDS);
   return await db(tx).stockLevel.findMany({
     where: {
       [field]: value,

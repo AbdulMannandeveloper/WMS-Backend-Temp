@@ -2,6 +2,14 @@ const { prisma } = require('../lib/prisma');
 
 const prismaBonus = prisma.employeeBonus;
 
+/**
+ * A person, named — and nothing else. `user: true` would carry `passwordHash`
+ * with it; see the same guard in employee_fine.repository.js.
+ */
+const userSummary = {
+  select: { id: true, firstName: true, lastName: true, email: true },
+};
+
 const createBonus = async (data) => {
   return await prismaBonus.create({
     data,
@@ -35,7 +43,7 @@ const getAllBonusesForMonth = async (startOfMonth, endOfMonth) => {
         lte: endOfMonth,
       },
     },
-    include: { user: true },
+    include: { user: userSummary },
     orderBy: { date: 'desc' },
   });
 };

@@ -1,6 +1,12 @@
 const { prisma } = require('../lib/prisma');
+const { assertAllowedField } = require('../utils/pick');
 
 const prismaClientService = prisma.clientService;
+
+// A client's negotiated rates. Callers hardcode the field, but this is a
+// per-client price book and a dynamic key is one query parameter away from
+// being a way to read across clients.
+const CLIENT_SERVICE_QUERY_FIELDS = ['id', 'clientId', 'serviceId'];
 
 const createClientServiceEntry = async (clientServiceData) => {
   return await prismaClientService.create({ data: clientServiceData });
@@ -11,6 +17,7 @@ const getAllClientServices = async () => {
 };
 
 const getClientServiceByField = async (field, value) => {
+  assertAllowedField(field, CLIENT_SERVICE_QUERY_FIELDS);
   return await prismaClientService.findMany({
     where: {
       [field]: value,

@@ -180,7 +180,7 @@ const unmarkLeave = async ({ userId, date }) => {
 };
 
 const getAllAttendanceLogs = async (pagination) => {
-  return await attendanceLogRepository.getAllAttendanceLogs(pagination);
+  return await attendanceLogRepository.getAllAttendanceLogs({}, pagination);
 };
 
 const getAttendanceLogByUserId = async (id) => {
