@@ -47,6 +47,25 @@ describe('harness', () => {
     );
   });
 
+  it('answers the API banner at the root', async () => {
+    const res = await anon().get('/');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/json/);
+    expect(res.body.message).toMatch(/API is running/);
+  });
+
+  it('404s a non-API path as JSON — this service does not serve the app', async () => {
+    // The regression guard for the SPA hosting that used to live here: a
+    // client-side route must not come back as a page from this service. The
+    // front end is served by its own origin, or by nginx in the container
+    // stack — never from Express.
+    const res = await anon().get('/app/inventory');
+
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/json/);
+  });
+
   it('rejects an unauthenticated request to a protected route', async () => {
     const res = await anon().get('/api/clients');
 
