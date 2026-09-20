@@ -1,7 +1,9 @@
 const stockLevelLogic = require("../logic/stock_level.logic");
 const { pick } = require("../utils/pick");
 const { parsePagination, paginatedResponse } = require("../utils/pagination");
-const { resolveOwnClientId } = require("../utils/clientScope");
+const { resolveOwnClientId, resolveClientFilter } = require('../utils/clientScope');
+const { buildListQuery, parseUuid, withScope } = require('../utils/queryFilters');
+const { listError } = require('../utils/listResponse');
 
 const STOCK_CREATE_FIELDS = [
   "productId",
@@ -41,21 +43,49 @@ const createStockLevel = async (req, res) => {
 
 const getAllStockLevels = async (req, res) => {
   try {
-    const pagination = parsePagination(req.query);
-    // Clients see stock for their own products only; staff see everything.
-    const clientId = await resolveOwnClientId(req.user);
-    const result = await stockLevelLogic.getAllStockLevels({
-      ...pagination,
-      ...(clientId ? { clientId } : {}),
-    });
-    if (result && result.items) {
-      return res.status(200).json(
-        paginatedResponse(result.items, result.total, pagination),
-      );
-    }
-    res.status(200).json(result);
+    // Clients see stock for their own products only; staff see everything and
+    // may point clientId wherever they like.
+    const scope = await resolveClientFilter(
+      req.user,
+      parseUuid(req.query.clientId, 'clientId'),
+    );
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      stockLevelLogic.STOCK_LEVEL_LIST_SPEC,
+    );
+
+    const result = await stockLevelLogic.getAllStockLevels(
+      withScope(where, scope ? stockLevelLogic.clientScopeClause(scope) : null),
+      { orderBy, pagination },
+    );
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return listError(res, error, 'getAllStockLevels');
+  }
+};
+
+/** Units on hand and reserved, across the whole filtered set. */
+const getStockLevelSummary = async (req, res) => {
+  try {
+    const scope = await resolveClientFilter(
+      req.user,
+      parseUuid(req.query.clientId, 'clientId'),
+    );
+    const { where } = buildListQuery(
+      req.query,
+      stockLevelLogic.STOCK_LEVEL_LIST_SPEC,
+    );
+
+    return res.status(200).json(
+      await stockLevelLogic.summariseStockLevels(
+        withScope(where, scope ? stockLevelLogic.clientScopeClause(scope) : null),
+      ),
+    );
+  } catch (error) {
+    return listError(res, error, 'getStockLevelSummary');
   }
 };
 
@@ -159,6 +189,7 @@ const deleteStockLevel = async (req, res) => {
 };
 
 module.exports = {
+  getStockLevelSummary,
   createStockLevel,
   getAllStockLevels,
   getStockLevelByField,

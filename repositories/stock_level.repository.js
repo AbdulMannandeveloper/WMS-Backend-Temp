@@ -29,21 +29,52 @@ const createStockLevel = async (stockLevelData, tx) => {
   });
 };
 
-const getAllStockLevels = async ({ skip, take, clientId } = {}, tx) => {
+/**
+ * @param {object} where - a Prisma where; {} matches everything. Client
+ *   narrowing is part of this now rather than a separate argument, so it
+ *   composes with the other filters instead of sitting beside them.
+ * @param {object} [options]
+ * @param {object[]} [options.orderBy]
+ * @param {object} [options.pagination]
+ */
+const getAllStockLevels = async (where = {}, { orderBy, pagination, tx } = {}) => {
   const client = db(tx);
-  // Narrowing by owning client happens in the query (not in JS) so the paginated
-  // total stays consistent with the rows returned.
-  const where = clientId ? { product: { clientId } } : {};
+  // Product name, not id. The previous default ordered by a uuid primary key:
+  // stable, which is what paging needs, and meaningless to anyone reading down
+  // the column.
+  const sort = orderBy || [
+    { product: { productName: 'asc' } },
+    { location: { locationName: 'asc' } },
+    { id: 'asc' },
+  ];
+
   const [items, total] = await Promise.all([
     client.stockLevel.findMany({
       where,
       include: includeRelations,
-      ...(take != null ? { skip: skip || 0, take } : {}),
-      orderBy: { id: 'asc' },
+      orderBy: sort,
+      ...(pagination && pagination.take != null
+        ? { skip: pagination.skip || 0, take: pagination.take }
+        : {}),
     }),
     client.stockLevel.count({ where }),
   ]);
   return { items, total };
+};
+
+/** Totals across the whole filtered set, not the page. */
+const summariseStockLevels = async (where = {}, tx) => {
+  const aggregate = await db(tx).stockLevel.aggregate({
+    where,
+    _count: { _all: true },
+    _sum: { currentQuantity: true, reservedQuantity: true },
+  });
+
+  return {
+    total: aggregate._count._all,
+    totalUnits: aggregate._sum.currentQuantity ?? 0,
+    totalReserved: aggregate._sum.reservedQuantity ?? 0,
+  };
 };
 
 const getStockLevelByField = async (field, value, tx) => {
@@ -189,6 +220,7 @@ const increaseOrCreateStockAtomically = async (
 };
 
 module.exports = {
+  summariseStockLevels,
   createStockLevel,
   getAllStockLevels,
   getStockLevelById,

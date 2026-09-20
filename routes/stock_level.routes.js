@@ -10,6 +10,8 @@ const staffOnly = authorizeRoles('admin', 'employee');
 const adminOnly = authorizeRoles('admin');
 
 // Clients may read the stock list only; the controller narrows it to their own products.
+// Above the /:id routes below, which would read "summary" as an id.
+router.get('/summary', authorizeRoles('admin', 'employee', 'client'), stockLevelController.getStockLevelSummary);
 router.get('/', authorizeRoles('admin', 'employee', 'client'), stockLevelController.getAllStockLevels);
 
 router.post('/', staffOnly, stockLevelController.createStockLevel);
