@@ -1,4 +1,10 @@
 const warehouseLocationRepository = require("../repositories/warehouse_location.repository");
+const {
+  parseBoolean,
+  parseString,
+  parseUuid,
+  searchFilter,
+} = require("../utils/queryFilters");
 const warehouseLocationClassRepository = require("../repositories/warehouse_location_class.repository");
 
 const createWarehouseLocation = async (locationData) => {
@@ -39,9 +45,62 @@ const createWarehouseLocation = async (locationData) => {
   return await warehouseLocationRepository.createWarehouseLocation(createData);
 };
 
-const getAllWarehouseLocations = async () => {
-  return await warehouseLocationRepository.getAllWarehouseLocations();
+/**
+ * What the location list may be narrowed by.
+ *
+ * Shared with the /summary handler, which derives its where from this same
+ * object and the same req.query.
+ */
+const WAREHOUSE_LOCATION_LIST_SPEC = {
+  filters: [
+    (q) => searchFilter(q.search, [
+      "locationName",
+      "materializedPath",
+      "locationClass.name",
+    ]),
+    (q) => {
+      const locationClassId = parseUuid(q.locationClassId, "locationClassId");
+      return locationClassId ? { locationClassId } : undefined;
+    },
+    (q) => {
+      // The literal "null" asks for roots. Without it there is no way to say
+      // "top of the hierarchy" in a query string, since an absent parameter
+      // already means "do not filter".
+      const raw = parseString(q.parentLocationId, { label: "parentLocationId", maxLength: 40 });
+      if (!raw) return undefined;
+      if (raw === "null") return { parentLocationId: null };
+      return { parentLocationId: parseUuid(raw, "parentLocationId") };
+    },
+    (q) => {
+      const prefix = parseString(q.pathPrefix, { label: "pathPrefix" });
+      return prefix ? { materializedPath: { startsWith: prefix } } : undefined;
+    },
+    (q) => {
+      const hasStock = parseBoolean(q.hasStock, "hasStock");
+      if (hasStock === undefined) return undefined;
+      return hasStock
+        ? { stockLevels: { some: { currentQuantity: { gt: 0 } } } }
+        : { stockLevels: { none: { currentQuantity: { gt: 0 } } } };
+    },
+  ],
+  sort: {
+    allowed: {
+      locationName: (order) => ({ locationName: order }),
+      // Nullable, so the empty ones go last either way rather than bubbling to
+      // the top of an ascending sort.
+      materializedPath: (order) => ({ materializedPath: { sort: order, nulls: "last" } }),
+      className: (order) => ({ locationClass: { name: order } }),
+    },
+    defaultSort: { field: "locationName", order: "asc" },
+    tiebreaker: [{ id: "asc" }],
+  },
 };
+
+const getAllWarehouseLocations = async (where, options) =>
+  await warehouseLocationRepository.getAllWarehouseLocations(where, options);
+
+const summariseWarehouseLocations = async (where) =>
+  await warehouseLocationRepository.summariseWarehouseLocations(where);
 
 const getWarehouseLocationByField = async (field, value) => {
   return await warehouseLocationRepository.getWarehouseLocationByField(
@@ -423,6 +482,8 @@ const getWarehouseLocationTree = async () => {
 };
 
 module.exports = {
+  WAREHOUSE_LOCATION_LIST_SPEC,
+  summariseWarehouseLocations,
   createWarehouseLocation,
   getAllWarehouseLocations,
   getWarehouseLocationByField,
