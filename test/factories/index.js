@@ -443,3 +443,18 @@ export const makeAuditLog = async (userId, overrides = {}) =>
       ...overrides,
     },
   });
+
+/**
+ * Grants exactly these permissions to an existing user.
+ *
+ * Employees hold nothing by default, so a test asserting that somebody may do
+ * their job has to say which part of it they were granted. Written straight to
+ * the row rather than through the endpoint: the point of most of these tests is
+ * the route being exercised, not the grant that enabled it, and setup.js clears
+ * the auth cache before every test so nothing stale can be served.
+ */
+export const grantPermissions = async (user, ...permissions) =>
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { permissions: permissions.flat() },
+  });
