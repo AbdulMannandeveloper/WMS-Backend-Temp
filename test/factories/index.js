@@ -376,13 +376,36 @@ export const makeShipmentServiceMapping = (shipmentId, serviceId, overrides = {}
     },
   });
 
+/** Every permission, for a fixture that stands for a working warehouse. */
+const ALL_TEST_PERMISSIONS = ['shipments', 'fba', 'inventory'].flatMap((module) =>
+  ['create', 'read', 'update', 'delete'].map((action) => `${module}:${action}`),
+);
+
 /**
  * The cast most warehouse tests need: an admin, an employee, a client, one
  * product sitting in one bin with stock on hand.
  */
-export const makeWarehouseScenario = async ({ quantity = 100 } = {}) => {
+export const makeWarehouseScenario = async ({
+  quantity = 100,
+  /**
+   * What the scenario's employee may do.
+   *
+   * A working warehouse by default — shipments, FBA and inventory, every
+   * action — because that is what this fixture represents and what the tests
+   * built on it are actually about: the shipment state machine, the picking
+   * sequence, the FBA charge. Making each of them grant its own permissions
+   * would bury the behaviour under setup that is not the point.
+   *
+   * Tests that ARE about permissions build their employee with makeEmployee,
+   * which holds nothing, so default-deny is still what is exercised there.
+   * Pass [] here to get a permission-less employee in a warehouse scenario.
+   */
+  permissions = ALL_TEST_PERMISSIONS,
+} = {}) => {
   const admin = await makeAdmin();
-  const { user: employeeUser, employee } = await makeEmployee();
+  const { user: employeeUser, employee } = await makeEmployee({
+    user: { permissions },
+  });
   const { user: clientUser, client } = await makeClient();
 
   const location = await makeLocation();
@@ -448,10 +471,22 @@ export const makeAuditLog = async (userId, overrides = {}) =>
  * Grants exactly these permissions to an existing user.
  *
  * Employees hold nothing by default, so a test asserting that somebody may do
- * their job has to say which part of it they were granted. Written straight to
- * the row rather than through the endpoint: the point of most of these tests is
- * the route being exercised, not the grant that enabled it, and setup.js clears
- * the auth cache before every test so nothing stale can be served.
+ * their job has to say which part of it they were granted.
+ *
+ * GRANT BEFORE THE FIRST REQUEST THAT USER MAKES IN A TEST.
+ *
+ * authorizeRoles caches the user row, and this writes the row directly rather
+ * than through the endpoint that invalidates that cache. Under vitest the cache
+ * module the app requires and the one a test could import are separate
+ * instances, so a test cannot clear it either — setup.js does that once per
+ * test and that is the window this relies on. Grant, then request, and the
+ * middleware reads the fresh row. Request, grant, request again and the second
+ * request still sees the first set, which looks exactly like the permission not
+ * working.
+ *
+ * Where a test genuinely needs to change a grant mid-flight, use the endpoint —
+ * PUT /api/employees/:id/permissions invalidates properly, and
+ * permissions-inventory.test.js exercises that path on purpose.
  */
 export const grantPermissions = async (user, ...permissions) =>
   await prisma.user.update({

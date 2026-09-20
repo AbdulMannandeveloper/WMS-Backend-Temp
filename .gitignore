@@ -145,6 +145,9 @@ vite.config.ts.timestamp-*
 uploads/
 !uploads/.gitkeep
 
+# The same PDFs, written by the invoice tests rather than by the app.
+.test-uploads/
+
 # A front-end build from the other repository. This service does not serve it —
 # the nginx "lb" service in docker-compose.yml does — but a build is often left
 # here for local deploys. Never committed, or it and its source drift apart
