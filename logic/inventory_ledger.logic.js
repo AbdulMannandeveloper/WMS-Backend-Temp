@@ -1,4 +1,11 @@
 const { prisma } = require("../lib/prisma");
+const {
+  dateRangeFilter,
+  parseEnum,
+  parseString,
+  parseUuid,
+  searchFilter,
+} = require("../utils/queryFilters");
 const inventoryLedgerRepository = require("../repositories/inventory_ledger.repository");
 const productRepository = require("../repositories/product.repository");
 const locationRepository = require("../repositories/location.repository");
@@ -234,63 +241,127 @@ const createInventoryLedger = async (newData, options = {}) => {
   });
 };
 
-const getAllInventoryLedgers = async (pagination) => {
-  return await inventoryLedgerRepository.getAllInventoryLedgers({}, pagination);
+const MOVEMENT_TYPES = [
+  "CHECKIN",
+  "INTERNAL_MOVE",
+  "CHECKOUT",
+  "RETURN",
+  "ADJUSTMENT",
+];
+
+/** What the ledger may be narrowed by. Shared with /summary. */
+const INVENTORY_LEDGER_LIST_SPEC = {
+  filters: [
+    (q) => searchFilter(q.search, [
+      "product.skuCode",
+      "product.productName",
+      "referenceId",
+      "notes",
+    ]),
+    (q) => {
+      const productId = parseUuid(q.productId, "productId");
+      return productId ? { productId } : undefined;
+    },
+    (q) => {
+      const userId = parseUuid(q.userId, "userId");
+      return userId ? { userId } : undefined;
+    },
+    (q) => {
+      const movementType = parseEnum(q.movementType, MOVEMENT_TYPES, {
+        label: "movementType",
+      });
+      return movementType ? { movementType } : undefined;
+    },
+    (q) => {
+      const referenceId = parseString(q.referenceId, { label: "referenceId", maxLength: 100 });
+      return referenceId ? { referenceId } : undefined;
+    },
+    (q) => {
+      const fromLocationId = parseUuid(q.fromLocationId, "fromLocationId");
+      return fromLocationId ? { fromLocationId } : undefined;
+    },
+    (q) => {
+      const toLocationId = parseUuid(q.toLocationId, "toLocationId");
+      return toLocationId ? { toLocationId } : undefined;
+    },
+    (q) => {
+      // timestamp is @db.Timestamptz, so the end bound carries to the last
+      // instant of the day — built in UTC, unlike the local setHours this
+      // replaces, which moved the boundary by the server timezone.
+      const range = dateRangeFilter(q.startDate, q.endDate, { granularity: "timestamp" });
+      return range ? { timestamp: range } : undefined;
+    },
+  ],
+  sort: {
+    allowed: {
+      timestamp: (order) => ({ timestamp: order }),
+      quantity: (order) => ({ quantity: order }),
+      movementType: (order) => ({ movementType: order }),
+      productName: (order) => ({ product: { productName: order } }),
+    },
+    defaultSort: { field: "timestamp", order: "desc" },
+    tiebreaker: [{ id: "asc" }],
+  },
 };
+
+/**
+ * Narrowing to one client.
+ *
+ * A relation filter, not a list of product ids. The previous shape read every
+ * product a client owns and put them in an IN clause — unbounded, one extra
+ * query, and it overwrote any productId filter already set because both wrote
+ * the same key. This composes instead, and rides the products client_id index.
+ */
+const clientScopeClause = (clientId) => ({ product: { clientId } });
+
+const getAllInventoryLedgers = async (where, options) =>
+  await inventoryLedgerRepository.getAllInventoryLedgers(where, options);
+
+const summariseInventoryLedgers = async (where) =>
+  await inventoryLedgerRepository.summariseInventoryLedgers(where);
 
 const getInventoryLedgerByField = async (field, value) => {
   return await inventoryLedgerRepository.getInventoryLedgerByField(field, value);
 };
 
+/**
+ * The loose-filter form, kept for internal callers.
+ *
+ * product.logic reads a product recent-movements list through this with a
+ * hand-built { skip, take }, so the signature stays. Every clause is now
+ * composed with AND rather than written into one object: productId and clientId
+ * used to collide on the same key, and whichever ran last silently won.
+ */
 const getLedgerWithFilters = async (
   { startDate, endDate, productId, clientId, movementType } = {},
   pagination,
 ) => {
-  const filters = {};
+  const clauses = [];
 
-  if (startDate || endDate) {
-    filters.timestamp = {};
-    if (startDate) filters.timestamp.gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      filters.timestamp.lte = end;
-    }
-  }
+  const range = dateRangeFilter(startDate, endDate, { granularity: "timestamp" });
+  if (range) clauses.push({ timestamp: range });
+  if (productId) clauses.push({ productId });
+  if (movementType) clauses.push({ movementType });
+  if (clientId) clauses.push(clientScopeClause(clientId));
 
-  if (productId) {
-    filters.productId = productId;
-  }
+  const where =
+    clauses.length === 0 ? {} : clauses.length === 1 ? clauses[0] : { AND: clauses };
 
-  if (movementType) {
-    filters.movementType = movementType;
-  }
-
-  if (clientId) {
-    const clientProducts = await productRepository.getProductsByField("clientId", clientId);
-    const clientProductIds = clientProducts.map((p) => p.id);
-    filters.productId = { in: clientProductIds };
-  }
-
-  return await inventoryLedgerRepository.getAllInventoryLedgers(filters, pagination);
+  return await inventoryLedgerRepository.getAllInventoryLedgers(where, { pagination });
 };
 
-const getInventoryLedgersByClientId = async (clientId, pagination) => {
-  const clientProducts = await productRepository.getProductsByField("clientId", clientId);
-  const clientProductIds = clientProducts.map((product) => product.id);
-
-  if (clientProductIds.length === 0) {
-    if (pagination && pagination.take != null) {
-      return { items: [], total: 0 };
-    }
-    return [];
-  }
-
-  return await inventoryLedgerRepository.getAllInventoryLedgers(
-    { productId: { in: clientProductIds } },
-    pagination,
+/**
+ * One client, through the relation rather than a materialised id list.
+ *
+ * The empty-client special case is gone with it: a relation filter over a
+ * client with no products simply matches nothing, which is the same answer
+ * without the extra read.
+ */
+const getInventoryLedgersByClientId = async (clientId, where = {}, options = {}) =>
+  await inventoryLedgerRepository.getAllInventoryLedgers(
+    { AND: [where, clientScopeClause(clientId)] },
+    options,
   );
-};
 
 const getDailyCheckoutSummary = async ({ startDate, endDate, clientId } = {}) => {
   const rangeStart = startDate ? new Date(startDate) : new Date();
@@ -383,6 +454,9 @@ const enrichLedgerEntriesWithUserDetails = async (ledgers) => {
 };
 
 module.exports = {
+  INVENTORY_LEDGER_LIST_SPEC,
+  clientScopeClause,
+  summariseInventoryLedgers,
   createInventoryLedger,
   getAllInventoryLedgers,
   getInventoryLedgerByField,
