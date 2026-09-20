@@ -30,11 +30,80 @@ const createMonthlyInvoice = async (invoiceData, tx) => {
   return await db(tx).monthlyInvoice.create({ data: invoiceData });
 };
 
-const getAllMonthlyInvoices = async (tx) => {
-  return await db(tx).monthlyInvoice.findMany({
+/**
+ * @param {object} where - a Prisma where; {} matches everything.
+ * @param {object} [options]
+ * @param {object[]} [options.orderBy]
+ * @param {object} [options.pagination] - absent, the whole set comes back bare.
+ */
+const getAllMonthlyInvoices = async (where = {}, { orderBy, pagination, tx } = {}) => {
+  const client = db(tx);
+  const sort = orderBy || [
+    { billingPeriod: "desc" },
+    { createdAt: "desc" },
+    { id: "asc" },
+  ];
+
+  if (pagination && pagination.take != null) {
+    const [items, total] = await Promise.all([
+      client.monthlyInvoice.findMany({
+        where,
+        include: includeRelations,
+        orderBy: sort,
+        skip: pagination.skip || 0,
+        take: pagination.take,
+      }),
+      client.monthlyInvoice.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  return await client.monthlyInvoice.findMany({
+    where,
     include: includeRelations,
-    orderBy: { billingPeriod: "desc" },
+    orderBy: sort,
   });
+};
+
+/**
+ * Totals across the whole filtered set, not the page.
+ *
+ * grandTotal is summed rather than derived here because the database already
+ * derives it: total_amount + tax_amount, computed by Postgres. Adding the two
+ * sums in JavaScript would give the same number today and drift the first time
+ * one of the three writers of those columns forgets the other.
+ */
+const summariseMonthlyInvoices = async (where = {}, tx) => {
+  const client = db(tx);
+  const [aggregate, byStatus, outstanding] = await Promise.all([
+    client.monthlyInvoice.aggregate({
+      where,
+      _count: { _all: true },
+      _sum: { totalAmount: true, taxAmount: true, grandTotal: true },
+    }),
+    client.monthlyInvoice.groupBy({
+      by: ["status"],
+      where,
+      _count: { _all: true },
+    }),
+    // What is owed: everything the client has not paid for yet.
+    client.monthlyInvoice.aggregate({
+      where: { AND: [where, { status: { not: "PAID" } }] },
+      _sum: { grandTotal: true },
+    }),
+  ]);
+
+  const counts = { DRAFT: 0, APPROVED: 0, PAID: 0 };
+  for (const row of byStatus) counts[row.status] = row._count._all;
+
+  return {
+    total: aggregate._count._all,
+    byStatus: counts,
+    totalNet: (aggregate._sum.totalAmount ?? 0).toString(),
+    totalTax: (aggregate._sum.taxAmount ?? 0).toString(),
+    totalGrand: (aggregate._sum.grandTotal ?? 0).toString(),
+    outstandingGrand: (outstanding._sum.grandTotal ?? 0).toString(),
+  };
 };
 
 const getMonthlyInvoiceByClientIdAndMonth = async (clientId, billingMonth, tx) => {
@@ -137,6 +206,7 @@ const recalculateInvoiceTotal = async (invoiceId, tx) => {
 };
 
 module.exports = {
+  summariseMonthlyInvoices,
   createMonthlyInvoice,
   getAllMonthlyInvoices,
   getMonthlyInvoiceByClientIdAndMonth,
