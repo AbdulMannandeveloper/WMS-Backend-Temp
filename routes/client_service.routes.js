@@ -2,6 +2,7 @@ const express = require('express');
 const {
   createClientServiceEntry,
   getAllClientServices,
+  getClientServiceSummary,
   getClientServicesByClientId,
   getClientServicesByServiceId,
   updateClientService,
@@ -19,6 +20,9 @@ const adminOnly = authorizeRoles('admin');
 router.get('/client/:clientId', authorizeRoles('admin', 'client'), getClientServicesByClientId);
 
 router.post('/', adminOnly, createClientServiceEntry);
+// Above /:id, or a request for the summary is read as an update to a rate
+// whose id is the word summary.
+router.get('/summary', adminOnly, getClientServiceSummary);
 router.get('/', adminOnly, getAllClientServices);
 router.get('/service/:serviceId', adminOnly, getClientServicesByServiceId);
 router.put('/:id', adminOnly, updateClientService);

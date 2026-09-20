@@ -1,5 +1,8 @@
 const clientServiceLogic = require("../logic/client_service.logic");
 const { canAccessClientId } = require("../utils/clientScope");
+const { paginatedResponse } = require("../utils/pagination");
+const { buildListQuery } = require("../utils/queryFilters");
+const { listError } = require("../utils/listResponse");
 
 const createClientServiceEntry = async (req, res) => {
   try {
@@ -14,10 +17,36 @@ const createClientServiceEntry = async (req, res) => {
 
 const getAllClientServices = async (req, res) => {
   try {
-    const clientServices = await clientServiceLogic.getAllClientServices();
-    res.status(200).json(clientServices);
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      clientServiceLogic.CLIENT_SERVICE_LIST_SPEC,
+    );
+
+    const result = await clientServiceLogic.getAllClientServices(where, {
+      orderBy,
+      pagination,
+    });
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return listError(res, error, "getAllClientServices");
+  }
+};
+
+/** How many rates, across how many clients and services. */
+const getClientServiceSummary = async (req, res) => {
+  try {
+    const { where } = buildListQuery(
+      req.query,
+      clientServiceLogic.CLIENT_SERVICE_LIST_SPEC,
+    );
+    return res
+      .status(200)
+      .json(await clientServiceLogic.summariseClientServices(where));
+  } catch (error) {
+    return listError(res, error, "getClientServiceSummary");
   }
 };
 
@@ -82,6 +111,7 @@ const deleteClientService = async (req, res) => {
 };
 
 module.exports = {
+  getClientServiceSummary,
   createClientServiceEntry,
   getAllClientServices,
   getClientServicesByClientId,
