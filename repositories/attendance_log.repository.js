@@ -21,12 +21,14 @@ const userSummary = {
 };
 
 /**
- * @param {object} filters - a Prisma `where`; {} matches everything.
- * @param {object} [pagination] - { skip, take }. Absent, the whole set comes
- *   back as a bare array for internal callers.
+ * @param {object} where - a Prisma `where`; {} matches everything.
+ * @param {object} [options]
+ * @param {object[]} [options.orderBy] - ends in a unique key, or pages repeat rows.
+ * @param {object} [options.pagination] - absent, the whole set comes back as a
+ *   bare array for internal callers.
  */
-const getAllAttendanceLogs = async (filters = {}, pagination) => {
-  const where = filters;
+const getAllAttendanceLogs = async (where = {}, { orderBy, pagination } = {}) => {
+  const sort = orderBy || [{ date: "desc" }, { id: "asc" }];
 
   if (pagination && pagination.take != null) {
     const [items, total] = await Promise.all([
@@ -34,7 +36,7 @@ const getAllAttendanceLogs = async (filters = {}, pagination) => {
         where,
         skip: pagination.skip || 0,
         take: pagination.take,
-        orderBy: { date: "desc" },
+        orderBy: sort,
         include: { user: userSummary },
       }),
       // Same `where` as the page above. An unfiltered count reads as correct
@@ -47,7 +49,7 @@ const getAllAttendanceLogs = async (filters = {}, pagination) => {
 
   return await prismaAttendanceLog.findMany({
     where,
-    orderBy: { date: "desc" },
+    orderBy: sort,
     include: { user: userSummary },
   });
 };
