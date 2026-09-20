@@ -10,6 +10,12 @@ router.post("/mark-leave", authorizeRoles("admin"), attendanceController.markLea
 router.post("/unmark-leave", authorizeRoles("admin"), attendanceController.unmarkLeave);
 router.get("/analytics/:userId", authorizeRoles("admin"), attendanceController.getEmployeeAttendanceAnalytics);
 
+// Both above /:field/:value. Mounted below it, /roster is read as a lookup on
+// a column called roster and answers 400, and /roster/summary does not match
+// at all.
+router.get("/roster/summary", authorizeRoles("admin"), attendanceController.getRosterSummary);
+router.get("/roster", authorizeRoles("admin"), attendanceController.getRoster);
+
 router.post("/", authorizeRoles("admin", "employee"), attendanceController.createAttendanceLog);
 router.get("/", authorizeRoles("admin"), attendanceController.getAllAttendanceLogs);
 router.get("/:field/:value", authorizeRoles("admin", "employee"), attendanceController.getAttendanceLogByField);

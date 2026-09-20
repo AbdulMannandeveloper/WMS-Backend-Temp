@@ -1,10 +1,18 @@
 const { prisma } = require("../lib/prisma");
+const { assertAllowedField } = require("../utils/pick");
 
 // db(tx) rather than a module-level `prisma.shipmentServiceMapping` const, so
 // these reads and writes can join a caller's transaction. Dispatch needs that:
 // it reads the mappings inside the same transaction that moves the stock and
 // raises the invoice lines.
 const db = (tx) => tx || prisma;
+
+const MAPPING_QUERY_FIELDS = [
+  "id",
+  "shipmentId",
+  "serviceId",
+  "clientServiceId",
+];
 
 const includeRelations = {
   service: true,
@@ -25,6 +33,7 @@ const getAllShipmentServiceMappings = async (tx) => {
 };
 
 const getShipmentServiceMappingByField = async (field, value, tx) => {
+  assertAllowedField(field, MAPPING_QUERY_FIELDS);
   return await db(tx).shipmentServiceMapping.findFirst({
     where: { [field]: value },
     include: includeRelations,
@@ -33,6 +42,7 @@ const getShipmentServiceMappingByField = async (field, value, tx) => {
 
 // Returns ALL mappings matching the field — used by dispatchShipment to iterate services
 const getShipmentServiceMappingsByField = async (field, value, tx) => {
+  assertAllowedField(field, MAPPING_QUERY_FIELDS);
   return await db(tx).shipmentServiceMapping.findMany({
     where: { [field]: value },
     include: includeRelations,

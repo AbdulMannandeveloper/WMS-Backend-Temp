@@ -1,4 +1,10 @@
 const stockLevelRepository = require("../repositories/stock_level.repository");
+const {
+  parseBoolean,
+  parseUuid,
+  rangeFilter,
+  searchFilter,
+} = require('../utils/queryFilters');
 const productRepository = require("../repositories/product.repository");
 const warehouseLocationRepository = require("../repositories/warehouse_location.repository");
 
@@ -82,14 +88,65 @@ const createStockLevel = async (stockLevelData, tx) => {
   return await enrichStockLevelsWithZoneShelfBin(result);
 };
 
-const getAllStockLevels = async (options) => {
-  const { items, total } = await stockLevelRepository.getAllStockLevels(options);
-  const enriched = await enrichStockLevelsWithZoneShelfBin(items);
-  if (options && options.take != null) {
-    return { items: enriched, total };
-  }
-  return enriched;
+/** What the stock list may be narrowed by. Shared with /summary. */
+const STOCK_LEVEL_LIST_SPEC = {
+  filters: [
+    (q) =>
+      searchFilter(q.search, [
+        'product.skuCode',
+        'product.productName',
+        'location.locationName',
+      ]),
+    (q) => {
+      const productId = parseUuid(q.productId, 'productId');
+      return productId ? { productId } : undefined;
+    },
+    (q) => {
+      const locationId = parseUuid(q.locationId, 'locationId');
+      return locationId ? { locationId } : undefined;
+    },
+    (q) => {
+      const range = rangeFilter(q.quantityMin, q.quantityMax, {
+        label: 'quantity',
+        integer: true,
+      });
+      return range ? { currentQuantity: range } : undefined;
+    },
+    (q) => {
+      const hasReserved = parseBoolean(q.hasReserved, 'hasReserved');
+      if (hasReserved === undefined) return undefined;
+      return hasReserved
+        ? { reservedQuantity: { gt: 0 } }
+        : { reservedQuantity: { lte: 0 } };
+    },
+  ],
+  sort: {
+    allowed: {
+      productName: (order) => ({ product: { productName: order } }),
+      skuCode: (order) => ({ product: { skuCode: order } }),
+      locationName: (order) => ({ location: { locationName: order } }),
+      currentQuantity: (order) => ({ currentQuantity: order }),
+      reservedQuantity: (order) => ({ reservedQuantity: order }),
+      arrivedTodayQuantity: (order) => ({ arrivedTodayQuantity: order }),
+    },
+    defaultSort: { field: 'productName', order: 'asc' },
+    tiebreaker: [{ id: 'asc' }],
+  },
 };
+
+/** One client sees one client. A relation filter, composed like any other. */
+const clientScopeClause = (clientId) => ({ product: { clientId } });
+
+const getAllStockLevels = async (where, options) => {
+  const { items, total } = await stockLevelRepository.getAllStockLevels(
+    where,
+    options,
+  );
+  return { items: await enrichStockLevelsWithZoneShelfBin(items), total };
+};
+
+const summariseStockLevels = async (where) =>
+  await stockLevelRepository.summariseStockLevels(where);
 
 const getStockLevelByField = async (field, value) => {
   const result = await stockLevelRepository.getStockLevelByField(field, value);
@@ -179,6 +236,9 @@ const deleteStockLevel = async (id) => {
 };
 
 module.exports = {
+  STOCK_LEVEL_LIST_SPEC,
+  clientScopeClause,
+  summariseStockLevels,
   createStockLevel,
   getAllStockLevels,
   getStockLevelByField,

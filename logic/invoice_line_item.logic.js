@@ -1,13 +1,15 @@
 const { prisma } = require("../lib/prisma");
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
+const monthlyInvoiceLogic = require("./monthly_invoice.logic");
 
-// Only a DRAFT invoice accepts line-item changes. Checked inside the transaction
-// that already wraps every mutation here, so the status cannot change underneath
-// it. The admin UI has always gated on this; the API never did, which meant a
-// charge could be added to an invoice the client had already approved.
+// DRAFT or APPROVED accept line-item changes; PAID does not. Checked inside the
+// transaction that already wraps every mutation here, so the status cannot
+// change underneath it. The admin UI has always gated on this; the API never
+// did, which meant a charge could be added to an invoice the client had
+// already approved.
 const assertInvoiceEditable = (invoice) => {
-  if (invoice.status !== "DRAFT") {
+  if (!monthlyInvoiceLogic.isLineItemEditable(invoice.status)) {
     throw new Error(
       `This invoice is ${invoice.status} and can no longer be changed. Raise a credit or a new charge against a draft instead.`,
     );
@@ -65,7 +67,7 @@ const createInvoiceLineItem = async (data, options = {}) => {
     data.totalPrice = Number(data.quantity) * Number(data.unitPrice);
   }
 
-  return inTransaction(options, async (tx) => {
+  const invoiceLineItem = await inTransaction(options, async (tx) => {
     // Existence checked inside the transaction so the invoice cannot be deleted
     // between the check and the write.
     const monthlyInvoice = await monthlyInvoiceRepository.getMonthlyInvoiceById(
@@ -77,13 +79,22 @@ const createInvoiceLineItem = async (data, options = {}) => {
     }
     assertInvoiceEditable(monthlyInvoice);
 
-    const invoiceLineItem =
+    const created =
       await invoiceLineItemRepository.createInvoiceLineItem(data, tx);
 
     await monthlyInvoiceRepository.recalculateInvoiceTotal(data.invoiceId, tx);
 
-    return invoiceLineItem;
+    return created;
   });
+
+  // Outside the transaction, and skipped when joining a caller's own — PDF
+  // rendering is I/O that must run against committed data, the same reasoning
+  // as the PDF step in approveMonthlyInvoice.
+  if (!options.tx) {
+    await monthlyInvoiceLogic.syncApprovedInvoicePdf(data.invoiceId);
+  }
+
+  return invoiceLineItem;
 };
 
 const getInvoiceLineItemsByField = async (field, value) => {
@@ -94,7 +105,9 @@ const getInvoiceLineItemsByField = async (field, value) => {
 };
 
 const updateInvoiceLineItem = async (id, data, options = {}) => {
-  return inTransaction(options, async (tx) => {
+  let invoiceId;
+
+  const updated = await inTransaction(options, async (tx) => {
     const existing = await invoiceLineItemRepository.getInvoiceLineItemsByField(
       "id",
       id,
@@ -104,6 +117,7 @@ const updateInvoiceLineItem = async (id, data, options = {}) => {
     if (!item) {
       throw new Error("Invoice line item not found.");
     }
+    invoiceId = item.invoiceId;
 
     const parent = await monthlyInvoiceRepository.getMonthlyInvoiceById(
       item.invoiceId,
@@ -111,7 +125,7 @@ const updateInvoiceLineItem = async (id, data, options = {}) => {
     );
     assertInvoiceEditable(parent);
 
-    const updated = await invoiceLineItemRepository.updateInvoiceLineItem(
+    const saved = await invoiceLineItemRepository.updateInvoiceLineItem(
       id,
       data,
       tx,
@@ -120,12 +134,20 @@ const updateInvoiceLineItem = async (id, data, options = {}) => {
     // Editing quantity or price moves the invoice total with it.
     await monthlyInvoiceRepository.recalculateInvoiceTotal(item.invoiceId, tx);
 
-    return updated;
+    return saved;
   });
+
+  if (!options.tx) {
+    await monthlyInvoiceLogic.syncApprovedInvoicePdf(invoiceId);
+  }
+
+  return updated;
 };
 
 const deleteInvoiceLineItem = async (id, options = {}) => {
-  return inTransaction(options, async (tx) => {
+  let invoiceId;
+
+  const deleted = await inTransaction(options, async (tx) => {
     const existing = await invoiceLineItemRepository.getInvoiceLineItemsByField(
       "id",
       id,
@@ -135,6 +157,7 @@ const deleteInvoiceLineItem = async (id, options = {}) => {
     if (!item) {
       throw new Error("Invoice line item not found.");
     }
+    invoiceId = item.invoiceId;
 
     const parent = await monthlyInvoiceRepository.getMonthlyInvoiceById(
       item.invoiceId,
@@ -142,12 +165,18 @@ const deleteInvoiceLineItem = async (id, options = {}) => {
     );
     assertInvoiceEditable(parent);
 
-    const deleted = await invoiceLineItemRepository.deleteInvoiceLineItem(id, tx);
+    const removed = await invoiceLineItemRepository.deleteInvoiceLineItem(id, tx);
 
     await monthlyInvoiceRepository.recalculateInvoiceTotal(item.invoiceId, tx);
 
-    return deleted;
+    return removed;
   });
+
+  if (!options.tx) {
+    await monthlyInvoiceLogic.syncApprovedInvoicePdf(invoiceId);
+  }
+
+  return deleted;
 };
 
 module.exports = {

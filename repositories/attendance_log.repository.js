@@ -9,43 +9,48 @@ const createAttendanceLog = async (logData) => {
   return await prismaAttendanceLog.create({ data: logData });
 };
 
-const getAllAttendanceLogs = async (pagination) => {
+// A person, named — never the whole User row, which carries passwordHash.
+const userSummary = {
+  select: {
+    id: true,
+    firstName: true,
+    lastName: true,
+    username: true,
+    email: true,
+  },
+};
+
+/**
+ * @param {object} where - a Prisma `where`; {} matches everything.
+ * @param {object} [options]
+ * @param {object[]} [options.orderBy] - ends in a unique key, or pages repeat rows.
+ * @param {object} [options.pagination] - absent, the whole set comes back as a
+ *   bare array for internal callers.
+ */
+const getAllAttendanceLogs = async (where = {}, { orderBy, pagination } = {}) => {
+  const sort = orderBy || [{ date: "desc" }, { id: "asc" }];
+
   if (pagination && pagination.take != null) {
     const [items, total] = await Promise.all([
       prismaAttendanceLog.findMany({
+        where,
         skip: pagination.skip || 0,
         take: pagination.take,
-        orderBy: { date: "desc" },
-        include: {
-          user: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              username: true,
-              email: true,
-            },
-          },
-        },
+        orderBy: sort,
+        include: { user: userSummary },
       }),
-      prismaAttendanceLog.count(),
+      // Same `where` as the page above. An unfiltered count reads as correct
+      // until the day a filter exists, and then reports the size of the table
+      // rather than the size of the result.
+      prismaAttendanceLog.count({ where }),
     ]);
     return { items, total };
   }
 
   return await prismaAttendanceLog.findMany({
-    orderBy: { date: "desc" },
-    include: {
-      user: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          username: true,
-          email: true,
-        },
-      },
-    },
+    where,
+    orderBy: sort,
+    include: { user: userSummary },
   });
 };
 

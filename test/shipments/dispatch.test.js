@@ -1,5 +1,5 @@
 /**
- * Creating a shipment now dispatches it.
+ * Creating a shipment now dispatches it, under a reference it issues itself.
  *
  * The three-step walk described a process that had already happened: the parcel
  * is packed and labelled before anyone opens the screen. So creation takes the
@@ -48,54 +48,58 @@ const onHand = async (productId) => {
   return _sum.currentQuantity ?? 0;
 };
 
-describe('the scanned label', () => {
-  it('is required', async () => {
+describe('the shipment reference', () => {
+  it('is issued by the server — nothing is scanned or keyed in', async () => {
     const s = await arrange();
 
     const res = await post(s.admin, { shipmentItems: oneLine(s) });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/label/i);
+    expect(res.status).toBe(201);
+    expect(res.body.reference).toMatch(
+      // Escaped twice: inside a template literal `\d` is not a recognised
+      // escape, so JavaScript hands the RegExp a literal "d" and the pattern
+      // quietly demands six of them.
+      new RegExp(`^SHP-${new Date().getUTCFullYear()}-\\d{6}$`),
+    );
   });
 
-  it('is stored on the shipment', async () => {
+  it('counts up, so two shipments are one apart', async () => {
+    // The sequence is what makes the number findable on paperwork: consecutive
+    // parcels carry consecutive numbers.
+    const s = await arrange();
+
+    const first = await post(s.admin, { shipmentItems: oneLine(s, 1) });
+    const second = await post(s.admin, { shipmentItems: oneLine(s, 1) });
+
+    const number = (ref) => Number(ref.slice(ref.lastIndexOf('-') + 1));
+    expect(number(second.body.reference)).toBe(number(first.body.reference) + 1);
+  });
+
+  it('ignores one sent in the body', async () => {
+    // The identity every other record hangs off is not the caller's to choose.
+    // A mistyped digit used to collide with an older shipment, and a label roll
+    // starting over collided with everything.
     const s = await arrange();
 
     const res = await post(s.admin, {
-      reference: 'SHP-2026-0042',
       shipmentItems: oneLine(s),
     });
 
     expect(res.status).toBe(201);
-    expect(res.body.reference).toBe('SHP-2026-0042');
+    expect(res.body.reference).not.toBe('HIJACKED');
+    expect(await prisma.shipment.count({ where: { reference: 'HIJACKED' } })).toBe(0);
   });
 
-  it('cannot be used twice, and the refusal names the earlier one', async () => {
-    // Two shipments sharing an identity cannot be told apart afterwards by the
-    // warehouse, the courier, or a client querying the invoice line.
+  it('is what the shipment can be found by afterwards', async () => {
     const s = await arrange();
-    await post(s.admin, { reference: 'SHP-DUP', shipmentItems: oneLine(s, 1) });
+    const created = await post(s.admin, { shipmentItems: oneLine(s) });
 
-    const res = await post(s.admin, {
-      reference: 'SHP-DUP',
-      shipmentItems: oneLine(s, 1),
-    });
+    const res = await as(s.admin).get(
+      `/api/shipments/field/reference/${created.body.reference}`,
+    );
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/SHP-DUP/);
-    expect(res.body.error).toMatch(/already used/i);
-  });
-
-  it('is trimmed, so a trailing newline from a scanner does not make a new label', async () => {
-    const s = await arrange();
-    await post(s.admin, { reference: 'SHP-TRIM', shipmentItems: oneLine(s, 1) });
-
-    const res = await post(s.admin, {
-      reference: '  SHP-TRIM  ',
-      shipmentItems: oneLine(s, 1),
-    });
-
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(created.body.id);
   });
 });
 
@@ -106,7 +110,6 @@ describe('who creates it', () => {
     const s = await arrange();
 
     const res = await post(s.admin, {
-      reference: 'SHP-ADMIN',
       shipmentItems: oneLine(s),
     });
 
@@ -118,7 +121,6 @@ describe('who creates it', () => {
     const s = await arrange();
 
     const res = await post(s.employeeUser, {
-      reference: 'SHP-EMP',
       shipmentItems: oneLine(s),
     });
 
@@ -130,7 +132,6 @@ describe('who creates it', () => {
     const s = await arrange();
 
     const res = await post(s.admin, {
-      reference: 'SHP-SPOOF',
       createdByUserId: s.employeeUser.id,
       shipmentItems: oneLine(s),
     });
@@ -143,7 +144,7 @@ describe('who creates it', () => {
 
     const res = await anon()
       .post('/api/shipments')
-      .send({ reference: 'SHP-ANON', shipmentItems: oneLine(s) });
+      .send({ shipmentItems: oneLine(s) });
 
     expect([401, 403]).toContain(res.status);
   });
@@ -154,8 +155,10 @@ describe('who creates it', () => {
     // admin — and every shipment an admin made appeared to belong to nobody.
     const s = await arrange();
 
-    await post(s.admin, { reference: 'SHP-NAMED', shipmentItems: oneLine(s) });
-    const res = await as(s.admin).get('/api/shipments/field/reference/SHP-NAMED');
+    const created = await post(s.admin, { shipmentItems: oneLine(s) });
+    const res = await as(s.admin).get(
+      `/api/shipments/field/reference/${created.body.reference}`,
+    );
     const shipment = Array.isArray(res.body) ? res.body[0] : res.body;
 
     expect(shipment.createdBy).toBeTruthy();
@@ -206,7 +209,6 @@ describe('the client comes from the goods', () => {
     const s = await arrange();
 
     const res = await post(s.admin, {
-      reference: 'SHP-DERIVED',
       shipmentItems: oneLine(s),
     });
 
@@ -221,7 +223,6 @@ describe('the client comes from the goods', () => {
     const { client: other } = await makeClient();
 
     const res = await post(s.admin, {
-      reference: 'SHP-OVERRIDE',
       clientId: other.id,
       shipmentItems: oneLine(s),
     });
@@ -239,7 +240,6 @@ describe('the client comes from the goods', () => {
 
     const created = await shipmentLogic.createShipment(
       {
-        reference: 'SHP-LOGIC-OVERRIDE',
         clientId: other.id,
         shipmentItems: oneLine(s),
       },
@@ -256,7 +256,6 @@ describe('the client comes from the goods', () => {
     await makeStockLevel(foreign.id, s.location.id, { currentQuantity: 50 });
 
     const res = await post(s.admin, {
-      reference: 'SHP-MIXED',
       shipmentItems: [
         ...oneLine(s, 1),
         { productId: foreign.id, sourceLocationId: s.location.id, quantity: 1 },
@@ -273,16 +272,18 @@ describe('the client comes from the goods', () => {
     const { client: other } = await makeClient();
     const foreign = await makeProduct(other.id);
     await makeStockLevel(foreign.id, s.location.id, { currentQuantity: 50 });
+    // Counted rather than looked up by reference: the refusal happens before
+    // one is issued, so there is no number to go looking for.
+    const before = await prisma.shipment.count();
 
     await post(s.admin, {
-      reference: 'SHP-MIXED-2',
       shipmentItems: [
         ...oneLine(s, 1),
         { productId: foreign.id, sourceLocationId: s.location.id, quantity: 1 },
       ],
     });
 
-    expect(await prisma.shipment.count({ where: { reference: 'SHP-MIXED-2' } })).toBe(0);
+    expect(await prisma.shipment.count()).toBe(before);
   });
 
   it('carries several different products belonging to the same client', async () => {
@@ -294,7 +295,6 @@ describe('the client comes from the goods', () => {
     await makeStockLevel(second.id, s.location.id, { currentQuantity: 40 });
 
     const res = await post(s.admin, {
-      reference: 'SHP-MULTI',
       shipmentItems: [
         { productId: s.product.id, sourceLocationId: s.location.id, quantity: 2 },
         { productId: second.id, sourceLocationId: s.location.id, quantity: 3 },
@@ -309,7 +309,7 @@ describe('the client comes from the goods', () => {
   it('refuses an empty shipment', async () => {
     const s = await arrange();
 
-    const res = await post(s.admin, { reference: 'SHP-EMPTY', shipmentItems: [] });
+    const res = await post(s.admin, { shipmentItems: [] });
     expect(res.status).toBe(400);
   });
 });
@@ -319,7 +319,6 @@ describe('creating dispatches it', () => {
     const s = await arrange();
 
     const res = await post(s.admin, {
-      reference: 'SHP-STATUS',
       shipmentItems: oneLine(s),
     });
 
@@ -329,7 +328,7 @@ describe('creating dispatches it', () => {
   it('takes the stock off the shelf', async () => {
     const s = await arrange({ quantity: 10 });
 
-    await post(s.admin, { reference: 'SHP-STOCK', shipmentItems: oneLine(s, 4) });
+    await post(s.admin, { shipmentItems: oneLine(s, 4) });
 
     expect(await onHand(s.product.id)).toBe(6);
   });
@@ -337,7 +336,7 @@ describe('creating dispatches it', () => {
   it('writes a CHECKOUT movement against the person signed in', async () => {
     const s = await arrange();
 
-    await post(s.admin, { reference: 'SHP-LEDGER', shipmentItems: oneLine(s, 3) });
+    await post(s.admin, { shipmentItems: oneLine(s, 3) });
 
     const movement = await prisma.inventoryLedger.findFirst({
       where: { productId: s.product.id, movementType: 'CHECKOUT' },
@@ -350,7 +349,7 @@ describe('creating dispatches it', () => {
     const s = await arrange();
     await makeShipmentRate(s.client.id, '2.00');
 
-    await post(s.admin, { reference: 'SHP-BILL', shipmentItems: oneLine(s, 5) });
+    const res = await post(s.admin, { shipmentItems: oneLine(s, 5) });
 
     const lines = await prisma.invoiceLineItem.findMany({
       where: { itemType: 'SHIPMENT_CHARGE' },
@@ -358,8 +357,10 @@ describe('creating dispatches it', () => {
     expect(lines).toHaveLength(1);
     expect(Number(lines[0].quantity)).toBe(5);
     expect(Number(lines[0].totalPrice)).toBe(10);
-    // Names the scanned label, which is what is written on the parcel.
-    expect(lines[0].description).toMatch(/SHP-BILL/);
+    // Names the reference the server issued, which is what is written on the
+    // parcel. Read back from the response rather than hard-coded: the number is
+    // generated now, so a literal here only ever matches by luck.
+    expect(lines[0].description).toContain(res.body.reference);
   });
 
   it('still ships a client who has no dispatch rate, without opening an empty invoice', async () => {
@@ -367,7 +368,6 @@ describe('creating dispatches it', () => {
     const s = await arrange();
 
     const res = await post(s.admin, {
-      reference: 'SHP-NORATE',
       shipmentItems: oneLine(s),
     });
 
@@ -381,7 +381,6 @@ describe('creating dispatches it', () => {
     const s = await arrange();
 
     const res = await post(s.admin, {
-      reference: 'SHP-SERVICES',
       shipmentItems: oneLine(s),
       shipmentServices: [{ serviceId: '00000000-0000-0000-0000-000000000000', quantity: 1 }],
     });
@@ -392,14 +391,16 @@ describe('creating dispatches it', () => {
 
   it('rolls everything back when a line cannot be reserved', async () => {
     const s = await arrange({ quantity: 1 });
+    const before = await prisma.shipment.count();
 
     const res = await post(s.admin, {
-      reference: 'SHP-ROLLBACK',
       shipmentItems: oneLine(s, 99),
     });
 
     expect(res.status).toBe(400);
-    expect(await prisma.shipment.count({ where: { reference: 'SHP-ROLLBACK' } })).toBe(0);
+    // Including the reference: a rolled-back attempt must not leave a gap or a
+    // half-written row behind.
+    expect(await prisma.shipment.count()).toBe(before);
     expect(await onHand(s.product.id)).toBe(1);
   });
 });

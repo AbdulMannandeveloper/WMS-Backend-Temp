@@ -74,6 +74,28 @@ const getShipmentsByClientId = async (clientId, tx) => {
   });
 };
 
+/**
+ * The highest references already issued in a series, newest first.
+ *
+ * References are generated rather than scanned now, so the next one is the last
+ * one plus one. Ordering is lexicographic, which is the same as numeric only
+ * because every sequence is zero-padded to a fixed width — see REFERENCE_DIGITS
+ * in the logic. Reference is unique, so this rides its index.
+ *
+ * Several rows rather than one because the prefix can also match a reference
+ * written before this scheme existed, and those sort above the generated ones
+ * (a letter beats a digit). The caller takes the first that parses, so one
+ * legacy row cannot send the sequence back to the start.
+ */
+const getLatestReferencesInSeries = async (prefix, take, tx) => {
+  return await db(tx).shipment.findMany({
+    where: { reference: { startsWith: prefix } },
+    orderBy: { reference: "desc" },
+    select: { reference: true },
+    take,
+  });
+};
+
 const updateShipment = async (id, data, tx) => {
   return await db(tx).shipment.update({
     where: { id },
@@ -93,6 +115,7 @@ module.exports = {
   getAllShipments,
   getShipmentByField,
   getShipmentsByClientId,
+  getLatestReferencesInSeries,
   updateShipment,
   deleteShipment,
 };

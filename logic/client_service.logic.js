@@ -1,4 +1,10 @@
 const clientServiceRepository = require("../repositories/client_service.repository");
+const {
+  parseString,
+  parseUuid,
+  rangeFilter,
+  searchFilter,
+} = require("../utils/queryFilters");
 const clientRepository = require("../repositories/client.repository");
 const serviceRepository = require("../repositories/service.repository");
 
@@ -37,9 +43,62 @@ const addClientService = async (clientServiceData) => {
   );
 };
 
-const getAllClientServices = async () => {
-  return await clientServiceRepository.getAllClientServices();
+/**
+ * What the rate card may be narrowed by.
+ *
+ * Shared with the /summary handler. Note there is no clientId scoping here:
+ * this list is admin-only, and a client reads its own rates through
+ * /client/:clientId, which checks ownership of the path parameter. If this
+ * route is ever opened to the client role, clientId has to move to
+ * resolveClientFilter first.
+ */
+const CLIENT_SERVICE_LIST_SPEC = {
+  filters: [
+    (q) => searchFilter(q.search, [
+      "client.companyName",
+      "client.contactName",
+      "service.description",
+    ]),
+    (q) => {
+      const clientId = parseUuid(q.clientId, "clientId");
+      return clientId ? { clientId } : undefined;
+    },
+    (q) => {
+      const serviceId = parseUuid(q.serviceId, "serviceId");
+      return serviceId ? { serviceId } : undefined;
+    },
+    (q) => {
+      const unit = parseString(q.unit, { label: "unit", maxLength: 30 });
+      return unit ? { unit } : undefined;
+    },
+    (q) => {
+      const range = rangeFilter(q.priceMin, q.priceMax, { label: "price" });
+      return range ? { chargedPrice: range } : undefined;
+    },
+  ],
+  sort: {
+    allowed: {
+      // Two keys, because one client holds many rates: ordering by company
+      // alone leaves every row within a client tied, and the id tiebreaker
+      // then decides — deterministic, but a rate card in uuid order.
+      clientName: (order) => [
+        { client: { companyName: order } },
+        { service: { description: order } },
+      ],
+      serviceDescription: (order) => ({ service: { description: order } }),
+      chargedPrice: (order) => ({ chargedPrice: order }),
+      unit: (order) => ({ unit: order }),
+    },
+    defaultSort: { field: "clientName", order: "asc" },
+    tiebreaker: [{ id: "asc" }],
+  },
 };
+
+const getAllClientServices = async (where, options) =>
+  await clientServiceRepository.getAllClientServices(where, options);
+
+const summariseClientServices = async (where) =>
+  await clientServiceRepository.summariseClientServices(where);
 
 const getClientServicesByField = async (field, value) => {
   return await clientServiceRepository.getClientServiceByField(field, value);
@@ -101,6 +160,8 @@ const deleteClientService = async (id) => {
 };
 
 module.exports = {
+  CLIENT_SERVICE_LIST_SPEC,
+  summariseClientServices,
   addClientService,
   getAllClientServices,
   getClientServicesByField,

@@ -145,7 +145,8 @@ vite.config.ts.timestamp-*
 uploads/
 !uploads/.gitkeep
 
-# The built front end, when this service serves it as well as the API (see
-# FRONTEND_DIST in app.js). A build artifact from the other repository —
-# produced at deploy time, never committed, or the two drift apart silently.
+# A front-end build from the other repository. This service does not serve it —
+# the nginx "lb" service in docker-compose.yml does — but a build is often left
+# here for local deploys. Never committed, or it and its source drift apart
+# silently.
 client/
