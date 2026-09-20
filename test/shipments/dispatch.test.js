@@ -56,7 +56,10 @@ describe('the shipment reference', () => {
 
     expect(res.status).toBe(201);
     expect(res.body.reference).toMatch(
-      new RegExp(`^SHP-${new Date().getUTCFullYear()}-\d{6}$`),
+      // Escaped twice: inside a template literal `\d` is not a recognised
+      // escape, so JavaScript hands the RegExp a literal "d" and the pattern
+      // quietly demands six of them.
+      new RegExp(`^SHP-${new Date().getUTCFullYear()}-\\d{6}$`),
     );
   });
 
@@ -346,7 +349,7 @@ describe('creating dispatches it', () => {
     const s = await arrange();
     await makeShipmentRate(s.client.id, '2.00');
 
-    await post(s.admin, { shipmentItems: oneLine(s, 5) });
+    const res = await post(s.admin, { shipmentItems: oneLine(s, 5) });
 
     const lines = await prisma.invoiceLineItem.findMany({
       where: { itemType: 'SHIPMENT_CHARGE' },
@@ -354,8 +357,10 @@ describe('creating dispatches it', () => {
     expect(lines).toHaveLength(1);
     expect(Number(lines[0].quantity)).toBe(5);
     expect(Number(lines[0].totalPrice)).toBe(10);
-    // Names the scanned label, which is what is written on the parcel.
-    expect(lines[0].description).toMatch(/SHP-BILL/);
+    // Names the reference the server issued, which is what is written on the
+    // parcel. Read back from the response rather than hard-coded: the number is
+    // generated now, so a literal here only ever matches by luck.
+    expect(lines[0].description).toContain(res.body.reference);
   });
 
   it('still ships a client who has no dispatch rate, without opening an empty invoice', async () => {

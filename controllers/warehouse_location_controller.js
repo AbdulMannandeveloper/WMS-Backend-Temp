@@ -1,4 +1,7 @@
 const warehhouseLocationLogic = require("../logic/warehouse_location.logic");
+const { paginatedResponse } = require("../utils/pagination");
+const { buildListQuery } = require("../utils/queryFilters");
+const { listError } = require("../utils/listResponse");
 
 const createWarehouseLocation = async (req, res) => {
   try {
@@ -23,11 +26,36 @@ const createWarehouseLocation = async (req, res) => {
 
 const getAllWarehouseLocations = async (req, res) => {
   try {
-    const locations = await warehhouseLocationLogic.getAllWarehouseLocations();
-    res.status(200).json(locations);
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      warehhouseLocationLogic.WAREHOUSE_LOCATION_LIST_SPEC,
+    );
+
+    const result = await warehhouseLocationLogic.getAllWarehouseLocations(where, {
+      orderBy,
+      pagination,
+    });
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (error) {
-    console.error("Error fetching warehouse locations:", error);
-    res.status(500).json({ error: "An unexpected error occurred" });
+    return listError(res, error, "getAllWarehouseLocations");
+  }
+};
+
+/** Counts for the whole filtered set, broken down by location class. */
+const getWarehouseLocationSummary = async (req, res) => {
+  try {
+    const { where } = buildListQuery(
+      req.query,
+      warehhouseLocationLogic.WAREHOUSE_LOCATION_LIST_SPEC,
+    );
+    return res
+      .status(200)
+      .json(await warehhouseLocationLogic.summariseWarehouseLocations(where));
+  } catch (error) {
+    return listError(res, error, "getWarehouseLocationSummary");
   }
 };
 
@@ -98,6 +126,7 @@ const getWarehouseLocationTree = async (req, res) => {
 };
 
 module.exports = {
+  getWarehouseLocationSummary,
   createWarehouseLocation,
   getAllWarehouseLocations,
   getWarehouseLocationByField,

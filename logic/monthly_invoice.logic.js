@@ -1,4 +1,16 @@
 const { prisma } = require("../lib/prisma");
+const {
+  dateRangeFilter,
+  parseBoolean,
+  parseEnum,
+  parseString,
+  rangeFilter,
+} = require("../utils/queryFilters");
+
+// Mirrors the one in utils/queryFilters: a search term that is not a uuid must
+// not reach an id column, because ILIKE against uuid is a type error.
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const monthlyInvoiceRepository = require("../repositories/monthly_invoice.repository");
 const invoiceLineItemRepository = require("../repositories/invoice_line_item.repository");
 
@@ -100,9 +112,82 @@ const createMonthlyInvoice = async (data) => {
   return await monthlyInvoiceRepository.createMonthlyInvoice(data);
 };
 
-const getAllMonthlyInvoices = async () => {
-  return await monthlyInvoiceRepository.getAllMonthlyInvoices();
+const INVOICE_STATUSES = ["DRAFT", "APPROVED", "PAID"];
+
+/**
+ * What the invoice list may be narrowed by. Shared with /summary.
+ *
+ * totalMin / totalMax address grand_total — the Postgres-generated
+ * total_amount + tax_amount. The screen has always filtered on that sum, and
+ * without a column it could only be applied after a page was read, which would
+ * make the total underneath it describe a different set.
+ *
+ * Searching by invoice id is deliberately an equality check rather than a
+ * contains: id is a uuid column, and ILIKE against uuid is a Postgres type
+ * error rather than a miss. A term that is not a uuid simply does not add the
+ * clause.
+ */
+const MONTHLY_INVOICE_LIST_SPEC = {
+  filters: [
+    (q) => {
+      const term = parseString(q.search, { label: "search", maxLength: 128 });
+      if (!term) return undefined;
+      const clauses = [
+        { client: { companyName: { contains: term, mode: "insensitive" } } },
+        { client: { contactName: { contains: term, mode: "insensitive" } } },
+        { paymentReference: { contains: term, mode: "insensitive" } },
+      ];
+      if (UUID_RE.test(term)) clauses.push({ id: term });
+      return { OR: clauses };
+    },
+    (q) => {
+      const status = parseEnum(q.status, INVOICE_STATUSES, { label: "status" });
+      return status ? { status } : undefined;
+    },
+    (q) => {
+      // billingPeriod is @db.Date holding the 1st, so a range over it is a
+      // range over whole months — the screen sends YYYY-MM.
+      const range = dateRangeFilter(q.startDate, q.endDate, { granularity: "month" });
+      return range ? { billingPeriod: range } : undefined;
+    },
+    (q) => {
+      const range = dateRangeFilter(q.createdFrom, q.createdTo, {
+        granularity: "timestamp",
+        startLabel: "createdFrom",
+        endLabel: "createdTo",
+      });
+      return range ? { createdAt: range } : undefined;
+    },
+    (q) => {
+      const taxApplied = parseBoolean(q.taxApplied, "taxApplied");
+      return taxApplied === undefined ? undefined : { taxApplied };
+    },
+    (q) => {
+      const range = rangeFilter(q.totalMin, q.totalMax, { label: "total" });
+      return range ? { grandTotal: range } : undefined;
+    },
+  ],
+  sort: {
+    allowed: {
+      billingPeriod: (order) => ({ billingPeriod: order }),
+      createdAt: (order) => ({ createdAt: order }),
+      totalAmount: (order) => ({ totalAmount: order }),
+      grandTotal: (order) => ({ grandTotal: order }),
+      status: (order) => ({ status: order }),
+      clientName: (order) => ({ client: { companyName: order } }),
+      approvedAt: (order) => ({ approvedAt: { sort: order, nulls: "last" } }),
+      paidAt: (order) => ({ paidAt: { sort: order, nulls: "last" } }),
+    },
+    defaultSort: { field: "billingPeriod", order: "desc" },
+    tiebreaker: [{ id: "asc" }],
+  },
 };
+
+const summariseMonthlyInvoices = async (where) =>
+  await monthlyInvoiceRepository.summariseMonthlyInvoices(where);
+
+const getAllMonthlyInvoices = async (where, options) =>
+  await monthlyInvoiceRepository.getAllMonthlyInvoices(where, options);
 
 const getMonthlyInvoiceById = async (id) => {
   return await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
@@ -502,6 +587,8 @@ const ensureInvoicePdf = async (id) => {
 };
 
 module.exports = {
+  MONTHLY_INVOICE_LIST_SPEC,
+  summariseMonthlyInvoices,
   ensureInvoicePdf,
   createMonthlyInvoice,
   getAllMonthlyInvoices,

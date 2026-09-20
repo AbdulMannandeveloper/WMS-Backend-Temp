@@ -40,22 +40,23 @@ const createInventoryLedger = async (data, tx) => {
 };
 
 /**
- * @param {object} filters
- * @param {{ skip?: number, take?: number } | undefined} pagination
- * When pagination.take is set, returns { items, total }; otherwise a plain array
- * for backward-compatible callers (filters, daily summary, etc.).
+ * @param {object} where - a Prisma where; {} matches everything.
+ * @param {object} [options]
+ * @param {object[]} [options.orderBy] - ends in a unique key, or pages repeat rows.
+ * @param {object} [options.pagination] - absent, the whole set comes back as a
+ *   bare array, which the daily checkout summary and the product detail read.
+ * @param {object} [options.tx]
  */
-const getAllInventoryLedgers = async (filters = {}, pagination, tx) => {
+const getAllInventoryLedgers = async (where = {}, { orderBy, pagination, tx } = {}) => {
   const client = db(tx);
-  const where = filters;
-  const orderBy = { timestamp: "desc" };
+  const sort = orderBy || [{ timestamp: "desc" }, { id: "asc" }];
 
   if (pagination && pagination.take != null) {
     const [items, total] = await Promise.all([
       client.inventoryLedger.findMany({
         where,
         include: includeRelations,
-        orderBy,
+        orderBy: sort,
         skip: pagination.skip || 0,
         take: pagination.take,
       }),
@@ -67,8 +68,37 @@ const getAllInventoryLedgers = async (filters = {}, pagination, tx) => {
   return await client.inventoryLedger.findMany({
     where,
     include: includeRelations,
-    orderBy,
+    orderBy: sort,
   });
+};
+
+/** Totals across the whole filtered set, not the page. */
+const summariseInventoryLedgers = async (where = {}, tx) => {
+  const client = db(tx);
+  const [aggregate, byMovementType] = await Promise.all([
+    client.inventoryLedger.aggregate({
+      where,
+      _count: { _all: true },
+      _sum: { quantity: true },
+    }),
+    client.inventoryLedger.groupBy({
+      by: ["movementType"],
+      where,
+      _count: { _all: true },
+      _sum: { quantity: true },
+    }),
+  ]);
+
+  return {
+    total: aggregate._count._all,
+    totalQuantity: aggregate._sum.quantity ?? 0,
+    byMovementType: Object.fromEntries(
+      byMovementType.map((row) => [
+        row.movementType,
+        { count: row._count._all, quantity: row._sum.quantity ?? 0 },
+      ]),
+    ),
+  };
 };
 
 const getInventoryLedgerByField = async (field, value, tx) => {
@@ -87,6 +117,7 @@ const deleteInventoryLedger = async (id, tx) => {
 };
 
 module.exports = {
+  summariseInventoryLedgers,
   createInventoryLedger,
   getAllInventoryLedgers,
   getInventoryLedgerByField,

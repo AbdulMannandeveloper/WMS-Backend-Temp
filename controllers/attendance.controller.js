@@ -1,6 +1,8 @@
 const attendanceLogLogic = require('../logic/attendance_log.logic');
 const { pick } = require('../utils/pick');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
+const { buildListQuery } = require('../utils/queryFilters');
+const { listError } = require('../utils/listResponse');
 
 const ATTENDANCE_UPDATE_FIELDS = ['status', 'loginTimestamp', 'logoutTimestamp', 'date'];
 
@@ -24,16 +26,55 @@ const createAttendanceLog = async (req, res) => {
 
 const getAllAttendanceLogs = async (req, res) => {
   try {
-    const pagination = parsePagination(req.query);
-    const result = await attendanceLogLogic.getAllAttendanceLogs(pagination);
-    if (result && result.items) {
-      return res.status(200).json(
-        paginatedResponse(result.items, result.total, pagination),
-      );
-    }
-    res.status(200).json(result);
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      attendanceLogLogic.ATTENDANCE_LIST_SPEC,
+    );
+
+    const result = await attendanceLogLogic.getAllAttendanceLogs(where, {
+      orderBy,
+      pagination,
+    });
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return listError(res, error, "getAllAttendanceLogs");
+  }
+};
+
+/**
+ * The daily roster: one row per member of staff, with what they logged.
+ *
+ * Paged over people rather than logs, because that is what the screen lists —
+ * and because somebody with no log that day is exactly the row a roster exists
+ * to show, and would not appear at all if the logs were the rows.
+ */
+const getRoster = async (req, res) => {
+  try {
+    const { pagination } = buildListQuery(
+      req.query,
+      attendanceLogLogic.ATTENDANCE_ROSTER_SPEC,
+    );
+    const result = await attendanceLogLogic.getRoster(req.query);
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
+  } catch (error) {
+    return listError(res, error, "getRoster");
+  }
+};
+
+/** How many people fall into each status, across the whole filtered roster. */
+const getRosterSummary = async (req, res) => {
+  try {
+    return res
+      .status(200)
+      .json(await attendanceLogLogic.summariseRoster(req.query));
+  } catch (error) {
+    return listError(res, error, "getRosterSummary");
   }
 };
 
@@ -130,6 +171,8 @@ const getEmployeeAttendanceAnalytics = async (req, res) => {
 };
 
 module.exports = {
+  getRoster,
+  getRosterSummary,
   createAttendanceLog,
   getAllAttendanceLogs,
   getAttendanceLogByField,

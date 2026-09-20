@@ -1,16 +1,80 @@
 const { prisma } = require('../lib/prisma');
+const { assertAllowedField } = require('../utils/pick');
 
 const prismaClientService = prisma.clientService;
+
+// A client's negotiated rates. Callers hardcode the field, but this is a
+// per-client price book and a dynamic key is one query parameter away from
+// being a way to read across clients.
+const CLIENT_SERVICE_QUERY_FIELDS = ['id', 'clientId', 'serviceId'];
 
 const createClientServiceEntry = async (clientServiceData) => {
   return await prismaClientService.create({ data: clientServiceData });
 };
 
-const getAllClientServices = async () => {
-  return await prismaClientService.findMany();
+/**
+ * The relations the list renders and sorts by.
+ *
+ * getAllClientServices carried no include at all, which meant the rate card
+ * could only ever show ids. Searching or ordering by a client or service name
+ * needs them joined, and the by-field variant below already did it.
+ */
+const includeRelations = {
+  client: { select: { id: true, companyName: true, contactName: true } },
+  service: true,
+};
+
+/**
+ * @param {object} where - a Prisma where; {} matches everything.
+ * @param {object} [options]
+ * @param {object[]} [options.orderBy] - ends in a unique key, or pages repeat rows.
+ * @param {object} [options.pagination] - absent, the whole set comes back bare.
+ */
+const getAllClientServices = async (where = {}, { orderBy, pagination } = {}) => {
+  const sort = orderBy || [
+    { client: { companyName: "asc" } },
+    { service: { description: "asc" } },
+    { id: "asc" },
+  ];
+
+  if (pagination && pagination.take != null) {
+    const [items, total] = await Promise.all([
+      prismaClientService.findMany({
+        where,
+        include: includeRelations,
+        orderBy: sort,
+        skip: pagination.skip || 0,
+        take: pagination.take,
+      }),
+      prismaClientService.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  return await prismaClientService.findMany({
+    where,
+    include: includeRelations,
+    orderBy: sort,
+  });
+};
+
+/** Totals across the whole filtered set, not the page. */
+const summariseClientServices = async (where = {}) => {
+  const [total, clients, services] = await Promise.all([
+    prismaClientService.count({ where }),
+    prismaClientService.groupBy({ by: ["clientId"], where }),
+    prismaClientService.groupBy({ by: ["serviceId"], where }),
+  ]);
+
+  return {
+    total,
+    clientCount: clients.length,
+    serviceCount: services.length,
+  };
 };
 
 const getClientServiceByField = async (field, value) => {
+  assertAllowedField(field, CLIENT_SERVICE_QUERY_FIELDS);
   return await prismaClientService.findMany({
     where: {
       [field]: value,
@@ -53,6 +117,7 @@ const deleteClientService = async (id) => {
 };
 
 module.exports = {
+  summariseClientServices,
   createClientServiceEntry,
   getAllClientServices,
   getClientServiceByField,

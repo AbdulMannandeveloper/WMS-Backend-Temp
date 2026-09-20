@@ -1,7 +1,9 @@
 const inventoryLedgerLogic = require("../logic/inventory_ledger.logic");
 const auditLogLogic = require("../logic/audit_log.logic");
 const { parsePagination, paginatedResponse } = require("../utils/pagination");
-const { canAccessClientId } = require("../utils/clientScope");
+const { canAccessClientId, resolveClientFilter } = require("../utils/clientScope");
+const { buildListQuery, parseUuid, withScope } = require("../utils/queryFilters");
+const { listError } = require("../utils/listResponse");
 const receivingLogic = require("../logic/receiving.logic");
 
 const createInventoryLedgerEntry = async (req, res) => {
@@ -25,18 +27,57 @@ const createInventoryLedgerEntry = async (req, res) => {
   }
 };
 
+/**
+ * The ledger.
+ *
+ * clientId goes through resolveClientFilter even though this route is
+ * staff-only today. The value and the caller identity then cannot disagree, so
+ * opening the route to the client role later is a change to the route line
+ * rather than a leak waiting in the query handling.
+ */
 const getAllInventoryLedgers = async (req, res) => {
   try {
-    const pagination = parsePagination(req.query);
-    const result = await inventoryLedgerLogic.getAllInventoryLedgers(pagination);
-    if (result && result.items) {
-      return res.status(200).json(
-        paginatedResponse(result.items, result.total, pagination),
-      );
-    }
-    res.status(200).json(result);
+    const scope = await resolveClientFilter(
+      req.user,
+      parseUuid(req.query.clientId, "clientId"),
+    );
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      inventoryLedgerLogic.INVENTORY_LEDGER_LIST_SPEC,
+    );
+
+    const result = await inventoryLedgerLogic.getAllInventoryLedgers(
+      withScope(where, scope ? inventoryLedgerLogic.clientScopeClause(scope) : null),
+      { orderBy, pagination },
+    );
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return listError(res, err, "getAllInventoryLedgers");
+  }
+};
+
+/** Movement counts and quantities across the whole filtered set. */
+const getInventoryLedgerSummary = async (req, res) => {
+  try {
+    const scope = await resolveClientFilter(
+      req.user,
+      parseUuid(req.query.clientId, "clientId"),
+    );
+    const { where } = buildListQuery(
+      req.query,
+      inventoryLedgerLogic.INVENTORY_LEDGER_LIST_SPEC,
+    );
+
+    return res.status(200).json(
+      await inventoryLedgerLogic.summariseInventoryLedgers(
+        withScope(where, scope ? inventoryLedgerLogic.clientScopeClause(scope) : null),
+      ),
+    );
+  } catch (err) {
+    return listError(res, err, "getInventoryLedgerSummary");
   }
 };
 
@@ -62,38 +103,29 @@ const getInventoryLedgerByClientId = async (req, res) => {
       return res.status(403).json({ error: "You do not have access to this client's records." });
     }
 
-    const ledgers = await inventoryLedgerLogic.getInventoryLedgersByClientId(clientId);
-    res.status(200).json(ledgers);
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      inventoryLedgerLogic.INVENTORY_LEDGER_LIST_SPEC,
+    );
+
+    const result = await inventoryLedgerLogic.getInventoryLedgersByClientId(
+      clientId,
+      where,
+      { orderBy, pagination },
+    );
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return listError(res, err, "getInventoryLedgerByClientId");
   }
 };
 
-// US-058/059/060: Filtered ledger — ?startDate=&endDate=&productId=&clientId=&movementType=
-const getLedgerWithFilters = async (req, res) => {
-  try {
-    const { startDate, endDate, productId, clientId, movementType } = req.query;
-    const pagination = parsePagination(req.query);
-    const result = await inventoryLedgerLogic.getLedgerWithFilters(
-      {
-        startDate,
-        endDate,
-        productId,
-        clientId,
-        movementType,
-      },
-      pagination,
-    );
-    if (result && result.items) {
-      return res.status(200).json(
-        paginatedResponse(result.items, result.total, pagination),
-      );
-    }
-    res.status(200).json(result);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-};
+// US-058/059/060: kept as an alias of the list above, which now takes the same
+// parameters and more. Two paths, one handler — so they cannot drift while the
+// front end moves over.
+const getLedgerWithFilters = getAllInventoryLedgers;
 
 // US-054: Daily checkout summary —
 // ?startDate=2026-06-14&endDate=2026-06-20&clientId= (all optional, defaults to today)
@@ -128,6 +160,7 @@ const checkInBatch = async (req, res) => {
 };
 
 module.exports = {
+  getInventoryLedgerSummary,
   createInventoryLedgerEntry,
   checkInBatch,
   getAllInventoryLedgers,

@@ -18,6 +18,10 @@ const adminOrClient = authorizeRoles("admin", "client");
 router.get("/tax-rate", authorizeRoles("admin", "employee"), invoiceController.getTaxRate);
 router.put("/tax-rate", adminOnly, invoiceController.updateTaxRate);
 
+// Same reason as /tax-rate above: declared after "/:id" this is read as a
+// lookup for an invoice whose id is the literal string "summary".
+router.get("/summary", adminOnly, invoiceController.getMonthlyInvoiceSummary);
+
 // Client-readable reads
 router.get("/client/:clientId", adminOrClient, invoiceController.getMonthlyInvoicesByClient);
 router.get("/:id", adminOrClient, invoiceController.getMonthlyInvoiceById);

@@ -1,5 +1,8 @@
 const path = require("path");
 const expenseLogic = require("../logic/expense.logic");
+const { paginatedResponse } = require("../utils/pagination");
+const { buildListQuery } = require("../utils/queryFilters");
+const { listError } = require("../utils/listResponse");
 const {
   uploadBuffer,
   getObjectStream,
@@ -41,15 +44,38 @@ const createExpense = async (req, res) => {
 
 const getAllExpenses = async (req, res) => {
   try {
-    const { categoryId, startDate, endDate } = req.query;
-    const expenses = await expenseLogic.getAllExpenses({
-      categoryId,
-      startDate,
-      endDate,
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      expenseLogic.EXPENSE_LIST_SPEC,
+    );
+
+    const result = await expenseLogic.getAllExpenses(where, {
+      orderBy,
+      pagination,
     });
-    res.status(200).json(expenses);
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return listError(res, err, "getAllExpenses");
+  }
+};
+
+/**
+ * The cards above the table: a grand total, and one per category.
+ *
+ * Same query string through the same spec, so these describe exactly the rows
+ * the list is paging — and all of them, rather than the fifty on screen. Both
+ * figures were computed in the browser from the whole array before, so without
+ * this the totals would have silently become per-page.
+ */
+const getExpenseSummary = async (req, res) => {
+  try {
+    const { where } = buildListQuery(req.query, expenseLogic.EXPENSE_LIST_SPEC);
+    return res.status(200).json(await expenseLogic.summariseExpenses(where));
+  } catch (err) {
+    return listError(res, err, "getExpenseSummary");
   }
 };
 
@@ -111,6 +137,7 @@ const getReceipt = async (req, res) => {
 };
 
 module.exports = {
+  getExpenseSummary,
   createCategory,
   getAllCategories,
   createExpense,

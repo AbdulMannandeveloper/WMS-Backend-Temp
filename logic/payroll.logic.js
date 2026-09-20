@@ -266,10 +266,17 @@ const finalizePayroll = async (monthYearStr, adminUserId) => {
   }
 
   // Check if Expense already exists for "Salaries" for this month
+  // A Prisma where now, rather than loose filters the repository interpreted.
+  // No pagination argument, so this still comes back as a bare array — which
+  // matters: the length check and [0] below decide whether this month already
+  // has a salaries expense, and an envelope would always look empty and write
+  // a second one.
   const existingExpenses = await expenseRepository.getAllExpenses({
     categoryId: salariesCategory.id,
-    startDate: normalizedMonth,
-    endDate: lastDayOfMonthUtc(normalizedMonth),
+    date: {
+      gte: normalizedMonth,
+      lte: lastDayOfMonthUtc(normalizedMonth),
+    },
   });
 
   let expense;

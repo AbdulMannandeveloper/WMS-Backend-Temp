@@ -189,7 +189,10 @@ describe('batched invoice edits', () => {
   });
 
   it('is admin only', async () => {
-    const employee = await makeEmployee();
+    // makeEmployee returns { user, employee }. Handing the wrapper to as()
+    // signs a token with id: undefined, which fails the lookup as a 500 long
+    // before the role check this test is about.
+    const { user: employee } = await makeEmployee();
     const { invoice } = await arrange('DRAFT');
 
     const res = await as(employee)

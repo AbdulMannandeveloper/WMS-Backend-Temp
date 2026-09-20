@@ -1,7 +1,27 @@
 const attendanceLogRepository = require("../repositories/attendance_log.repository");
+const attendanceRosterRepository = require("../repositories/attendance_roster.repository");
+const {
+  buildListQuery,
+  dateRangeFilter,
+  parseBoolean,
+  parseEnum,
+  parseString,
+  parseUuid,
+  personNameFilter,
+  QueryParamError,
+} = require("../utils/queryFilters");
+
 const shiftRepository = require("../repositories/shift.repository");
 const holidayRepository = require("../repositories/holiday.repository");
 const { prisma } = require("../lib/prisma");
+/** A date that must parse, because the roster is always about one day. */
+const toDateOrThrow = (value) => {
+  const parsed = new Date(String(value).trim());
+  if (Number.isNaN(parsed.getTime())) {
+    throw new QueryParamError("date is not a valid date.");
+  }
+  return parsed;
+};
 
 /** Normalize any date-like value to a UTC calendar day (YYYY-MM-DD @ 00:00 UTC). */
 const toUtcDateOnly = (value) => {
@@ -179,8 +199,189 @@ const unmarkLeave = async ({ userId, date }) => {
   return await attendanceLogRepository.deleteAttendanceLog(existing.id);
 };
 
-const getAllAttendanceLogs = async (pagination) => {
-  return await attendanceLogRepository.getAllAttendanceLogs(pagination);
+const ATTENDANCE_STATUSES = ["on-time", "late", "leave"];
+const ROSTER_STATUSES = [...ATTENDANCE_STATUSES, "absent", "holiday"];
+
+/** What the raw attendance log list may be narrowed by. */
+const ATTENDANCE_LIST_SPEC = {
+  filters: [
+    (q) => {
+      const term = parseString(q.search, { label: "search", maxLength: 128 });
+      if (!term) return undefined;
+      return {
+        OR: [
+          ...personNameFilter(term, "user").OR,
+          { user: { email: { contains: term, mode: "insensitive" } } },
+        ],
+      };
+    },
+    (q) => {
+      const userId = parseUuid(q.userId, "userId");
+      return userId ? { userId } : undefined;
+    },
+    (q) => {
+      // status is a VarChar, not a Postgres enum, so the allowlist lives here.
+      const status = parseEnum(q.status, ATTENDANCE_STATUSES, { label: "status" });
+      return status ? { status } : undefined;
+    },
+    (q) => {
+      const range = dateRangeFilter(q.startDate, q.endDate, { granularity: "date" });
+      return range ? { date: range } : undefined;
+    },
+    (q) => {
+      const hasLogout = parseBoolean(q.hasLogout, "hasLogout");
+      if (hasLogout === undefined) return undefined;
+      return hasLogout
+        ? { logoutTimestamp: { not: null } }
+        : { logoutTimestamp: null };
+    },
+  ],
+  sort: {
+    allowed: {
+      date: (order) => ({ date: order }),
+      status: (order) => ({ status: order }),
+      loginTimestamp: (order) => ({ loginTimestamp: { sort: order, nulls: "last" } }),
+      employeeName: (order) => [
+        { user: { firstName: order } },
+        { user: { lastName: order } },
+      ],
+    },
+    defaultSort: { field: "date", order: "desc" },
+    tiebreaker: [{ id: "asc" }],
+  },
+};
+
+/**
+ * The roster pages people, so its filters are over User.
+ *
+ * status is deliberately absent from this spec: two of its five values are
+ * synthesised from the absence of a log plus the holiday calendar, and reading
+ * that calendar is a database call. Filters here are pure, so the status clause
+ * is composed in buildRosterQuery below, where it can await.
+ */
+const ATTENDANCE_ROSTER_SPEC = {
+  filters: [
+    // Matches the screen: staff, not clients. Deliberately not narrowed to
+    // active people by default — someone deactivated mid-month still worked
+    // the days before, and a roster that hides them loses those days.
+    () => ({ role: { in: ["employee", "admin"] } }),
+    (q) => {
+      const term = parseString(q.search, { label: "search", maxLength: 128 });
+      if (!term) return undefined;
+      return {
+        OR: [
+          ...personNameFilter(term, "").OR,
+          { email: { contains: term, mode: "insensitive" } },
+        ],
+      };
+    },
+    (q) => {
+      const isActive = parseBoolean(q.isActive, "isActive");
+      return isActive === undefined ? undefined : { isActive };
+    },
+  ],
+  sort: {
+    allowed: {
+      employeeName: (order) => [{ firstName: order }, { lastName: order }],
+      email: (order) => ({ email: order }),
+    },
+    defaultSort: { field: "employeeName", order: "asc" },
+    tiebreaker: [{ id: "asc" }],
+  },
+};
+
+const getAllAttendanceLogs = async (where, options) =>
+  await attendanceLogRepository.getAllAttendanceLogs(where, options);
+
+/**
+ * Turns a roster query string into a where, a day, and whether that day is a
+ * holiday.
+ *
+ * The status clause is built here rather than in the spec because it needs the
+ * holiday calendar, and because it has to reach the database as a predicate
+ * rather than a filter applied to the page. Applied afterwards, a request for
+ * the absentees would return "the absentees among these fifty people" and
+ * report a total counting everybody — the page and the number under it
+ * describing different things.
+ */
+const buildRosterQuery = async (query = {}) => {
+  const { where, orderBy, pagination } = buildListQuery(query, ATTENDANCE_ROSTER_SPEC);
+
+  const day = toUtcDateOnly(
+    query.date ? toDateOrThrow(query.date) : new Date(),
+  );
+  const isHoliday = await isDateHoliday(day);
+
+  const status = parseEnum(query.status, ROSTER_STATUSES, {
+    label: "status",
+    multiple: false,
+  });
+
+  let scoped = where;
+  let impossible = false;
+
+  if (status === "absent" || status === "holiday") {
+    // The same people either way — no log for the day. Which name applies is
+    // decided by the calendar, so asking for the other one is asking for a set
+    // that cannot exist on this date.
+    if ((status === "holiday") !== isHoliday) {
+      impossible = true;
+    }
+    scoped = { AND: [where, { attendanceLogs: { none: { date: day } } }] };
+  } else if (status) {
+    scoped = { AND: [where, { attendanceLogs: { some: { date: day, status } } }] };
+  }
+
+  return { where: scoped, baseWhere: where, orderBy, pagination, day, isHoliday, impossible };
+};
+
+/** One row per person: who they are, what they logged, and what that means. */
+const getRoster = async (query = {}) => {
+  const { where, orderBy, pagination, day, isHoliday, impossible } =
+    await buildRosterQuery(query);
+
+  if (impossible) {
+    return { items: [], total: 0 };
+  }
+
+  const { items, total } = await attendanceRosterRepository.listRosterUsers(where, {
+    orderBy,
+    pagination,
+  });
+
+  const logs = await attendanceRosterRepository.logsForUsersOnDate(
+    items.map((u) => u.id),
+    day,
+  );
+  const logByUserId = new Map(logs.map((log) => [log.userId, log]));
+
+  return {
+    items: items.map((user) => {
+      const record = logByUserId.get(user.id) ?? null;
+      return {
+        user,
+        record,
+        // The rule the screen already applied in the browser: a log says what
+        // happened; no log means the day itself decides.
+        effectiveStatus: record
+          ? record.status
+          : isHoliday
+            ? "holiday"
+            : "absent",
+      };
+    }),
+    total,
+  };
+};
+
+/** The figures above the roster, over the whole filtered set. */
+const summariseRoster = async (query = {}) => {
+  const { baseWhere, day, isHoliday } = await buildRosterQuery(query);
+  return await attendanceRosterRepository.countRosterByStatus(
+    baseWhere,
+    day,
+    isHoliday,
+  );
 };
 
 const getAttendanceLogByUserId = async (id) => {
@@ -507,6 +708,10 @@ const getEmployeeAttendanceAnalytics = async (userId, { year, month } = {}) => {
 };
 
 module.exports = {
+  ATTENDANCE_LIST_SPEC,
+  ATTENDANCE_ROSTER_SPEC,
+  getRoster,
+  summariseRoster,
   createAttendanceLog,
   markLeave,
   unmarkLeave,

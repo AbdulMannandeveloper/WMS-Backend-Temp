@@ -14,6 +14,10 @@ const router = express.Router();
 // Returns all locations as a nested parent-child tree
 router.get("/tree", authorizeRoles('admin', 'employee'), warehouseLocationController.getWarehouseLocationTree);
 
+// Above /:field/:value for the same reason /tree is: mounted below it, a
+// request for the summary is read as a lookup for the field named "summary".
+router.get("/summary", authorizeRoles('admin', 'employee'), warehouseLocationController.getWarehouseLocationSummary);
+
 router.get("/:field/:value", authorizeRoles('admin', 'employee'), warehouseLocationController.getWarehouseLocationByField);
 router.post("/", authorizeRoles('admin', 'employee'), warehouseLocationController.createWarehouseLocation);
 router.get("/", authorizeRoles('admin', 'employee'), warehouseLocationController.getAllWarehouseLocations);

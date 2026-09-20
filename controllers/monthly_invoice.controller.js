@@ -1,6 +1,9 @@
 const monthlyInvoiceLogic = require("../logic/monthly_invoice.logic");
 const invoiceLineItemLogic = require("../logic/invoice_line_item.logic");
-const { resolveOwnClientId, canAccessClientId } = require("../utils/clientScope");
+const { resolveOwnClientId, resolveClientFilter, canAccessClientId } = require("../utils/clientScope");
+const { paginatedResponse } = require("../utils/pagination");
+const { buildListQuery, parseUuid, withScope } = require("../utils/queryFilters");
+const { listError } = require("../utils/listResponse");
 const { chargeServiceToClient } = require("../logic/billing_services");
 const settingsLogic = require("../logic/settings.logic");
 const { pick } = require("../utils/pick");
@@ -15,10 +18,47 @@ const PAYMENT_FIELDS = ["paymentMethod", "paymentReference"];
 
 const getAllMonthlyInvoices = async (req, res) => {
   try {
-    const invoices = await monthlyInvoiceLogic.getAllMonthlyInvoices();
-    res.status(200).json(invoices);
+    const scope = await resolveClientFilter(
+      req.user,
+      parseUuid(req.query.clientId, "clientId"),
+    );
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      monthlyInvoiceLogic.MONTHLY_INVOICE_LIST_SPEC,
+    );
+
+    const result = await monthlyInvoiceLogic.getAllMonthlyInvoices(
+      withScope(where, scope ? { clientId: scope } : null),
+      { orderBy, pagination },
+    );
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return listError(res, err, "getAllMonthlyInvoices");
+  }
+};
+
+/** Billed, taxed and outstanding, across the whole filtered set. */
+const getMonthlyInvoiceSummary = async (req, res) => {
+  try {
+    const scope = await resolveClientFilter(
+      req.user,
+      parseUuid(req.query.clientId, "clientId"),
+    );
+    const { where } = buildListQuery(
+      req.query,
+      monthlyInvoiceLogic.MONTHLY_INVOICE_LIST_SPEC,
+    );
+
+    return res.status(200).json(
+      await monthlyInvoiceLogic.summariseMonthlyInvoices(
+        withScope(where, scope ? { clientId: scope } : null),
+      ),
+    );
+  } catch (err) {
+    return listError(res, err, "getMonthlyInvoiceSummary");
   }
 };
 
@@ -31,10 +71,21 @@ const getMonthlyInvoicesByClient = async (req, res) => {
       return res.status(403).json({ error: "You do not have access to this client's records." });
     }
 
-    const invoices = await monthlyInvoiceLogic.getMonthlyInvoiceByField("clientId", clientId);
-    res.status(200).json(invoices);
+    const { where, orderBy, pagination } = buildListQuery(
+      req.query,
+      monthlyInvoiceLogic.MONTHLY_INVOICE_LIST_SPEC,
+    );
+
+    const result = await monthlyInvoiceLogic.getAllMonthlyInvoices(
+      withScope(where, { clientId }),
+      { orderBy, pagination },
+    );
+
+    return res
+      .status(200)
+      .json(paginatedResponse(result.items, result.total, pagination));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return listError(res, err, "getMonthlyInvoicesByClient");
   }
 };
 
@@ -253,6 +304,7 @@ const chargeService = async (req, res) => {
 };
 
 module.exports = {
+  getMonthlyInvoiceSummary,
   chargeService,
   getAllMonthlyInvoices,
   getMonthlyInvoicesByClient,

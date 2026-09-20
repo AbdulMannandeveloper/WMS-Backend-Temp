@@ -402,3 +402,44 @@ export const makeWarehouseScenario = async ({ quantity = 100 } = {}) => {
     stock,
   };
 };
+
+/**
+ * N rows whose sort key strictly increases.
+ *
+ * Every fixture above pins its date — makeAttendanceLog is always 2026-08-03,
+ * makeExpense always 2026-08-15 — so a loop over one gives N rows that compare
+ * equal. A page boundary drawn across equal keys is not a boundary, it is
+ * whatever the planner chose that second, and a test built on one passes today
+ * and tomorrow for unrelated reasons. Walking the key one step per row is what
+ * makes page 1 and page 2 provably disjoint.
+ *
+ * Sequential rather than Promise.all on purpose: creation order is then
+ * deterministic, and unique columns cannot collide mid-flight.
+ *
+ * @param {number} count
+ * @param {(i: number, overrides: object) => Promise<any>} build
+ * @param {{field?: string, start?: Date, stepDays?: number}} [opts]
+ */
+export const seedSeries = async (
+  count,
+  build,
+  { field = 'date', start = utcDate(2026, 1, 1), stepDays = 1 } = {},
+) => {
+  const rows = [];
+  for (let i = 0; i < count; i += 1) {
+    const value = new Date(start.getTime() + i * stepDays * 86_400_000);
+    rows.push(await build(i, { [field]: value }));
+  }
+  return rows;
+};
+
+/** One audit log per call, with a distinct timestamp. */
+export const makeAuditLog = async (userId, overrides = {}) =>
+  await prisma.auditLog.create({
+    data: {
+      userId,
+      action: 'EDIT_PRODUCT',
+      details: JSON.stringify({ note: 'fixture' }),
+      ...overrides,
+    },
+  });

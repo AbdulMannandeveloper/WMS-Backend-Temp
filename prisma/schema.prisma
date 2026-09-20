@@ -45,6 +45,8 @@ model User {
   auditLogs                  AuditLog[]
   shipmentsCreated           Shipment[]                 @relation("ShipmentCreatedBy")
 
+  @@index([role, firstName, lastName, id], map: "idx_users_role_name")
+  @@index([isActive], map: "idx_users_is_active")
   @@map("users")
 }
 
@@ -143,6 +145,9 @@ model Shipment {
   @@index([employeeId, createdAt], map: "idx_shipments_employee_created_at")
   @@index([clientId, createdAt], map: "idx_shipments_client_created_at")
   @@index([trackingId], map: "idx_shipments_tracking_id")
+  @@index([createdAt(sort: Desc), id], map: "idx_shipments_created_at")
+  @@index([status, createdAt(sort: Desc)], map: "idx_shipments_status_created_at")
+  @@index([createdByUserId, createdAt(sort: Desc)], map: "idx_shipments_created_by_created_at")
   @@map("shipments")
 }
 
@@ -166,6 +171,7 @@ model Expense {
 
   @@index([categoryId, date], map: "idx_expenses_category_date")
   @@index([date], map: "idx_expenses_date")
+  @@index([amount], map: "idx_expenses_amount")
   @@map("expenses")
 }
 
@@ -201,6 +207,8 @@ model EmployeeAttendanceLog {
 
   @@unique([userId, date], map: "uq_attendance_user_date")
   @@index([userId, date], map: "idx_attendance_user_date")
+  @@index([date(sort: Desc), id], map: "idx_attendance_date")
+  @@index([date, status], map: "idx_attendance_date_status")
   @@map("employee_attendance_logs")
 }
 
@@ -247,6 +255,7 @@ model WarehouseLocation {
   @@index([locationClassId], map: "idx_warehouse_location_class_id")
   @@index([parentLocationId], map: "idx_warehouse_parent_location")
   @@index([materializedPath], map: "idx_warehouse_materialized_path")
+  @@index([locationName, id], map: "idx_warehouse_locations_name")
   @@map("warehouse_locations")
 }
 
@@ -284,6 +293,9 @@ model Product {
 
   @@unique([clientId, skuCode], map: "uq_products_client_sku")
   @@index([clientId], map: "idx_products_client_id")
+  @@index([productName, id], map: "idx_products_product_name")
+  @@index([clientId, productName], map: "idx_products_client_product_name")
+  @@index([skuCode], map: "idx_products_sku_code")
   @@map("products")
 }
 
@@ -383,6 +395,9 @@ model InventoryLedger {
   @@index([productId, timestamp])
   @@index([fromLocationId, toLocationId])
   @@index([referenceId]) // Critical for finding logs for a specific order
+  @@index([timestamp(sort: Desc), id], map: "idx_inventory_ledger_timestamp")
+  @@index([movementType, timestamp(sort: Desc)], map: "idx_inventory_ledger_movement_timestamp")
+  @@index([userId, timestamp(sort: Desc)], map: "idx_inventory_ledger_user_timestamp")
   @@map("inventory_ledger")
 }
 
@@ -446,8 +461,37 @@ model MonthlyInvoice {
   client    Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
   lineItems InvoiceLineItem[]
 
+  /// Total due — total_amount + tax_amount, computed by Postgres.
+  ///
+  /// The invoices list filters and sorts on this, and Prisma cannot filter or
+  /// order by an expression; applying it after the page was read would make the
+  /// reported total wrong. So the database computes it.
+  ///
+  /// GENERATED ALWAYS rather than a column the application maintains, because
+  /// three places move these figures — recalculateInvoiceTotal, setInvoiceTax
+  /// (which writes taxAmount directly) and applyInvoiceEdits — and a derived
+  /// total with three writers drifts eventually.
+  ///
+  /// Prisma 6 cannot express GENERATED ALWAYS, so this is modelled the closest
+  /// way it can be: NOT NULL with a database-supplied default. The clause
+  /// itself lives in 20260920010000_list_filter_indexes.
+  ///
+  /// The NOT NULL is load-bearing. Declared nullable, Prisma emits an explicit
+  /// NULL for this field on every insert, Postgres refuses it because the
+  /// column is generated, and every invoice creation fails — which is dispatch,
+  /// returns and billing all at once. Non-null, Prisma leaves it out of the
+  /// INSERT entirely. Do not make it optional to "match" the database.
+  ///
+  /// NEVER WRITE TO THIS. Postgres rejects a write to a generated column, and
+  /// computing it here would reintroduce the drift it exists to prevent.
+  grandTotal Decimal @default(dbgenerated("(total_amount + tax_amount)")) @map("grand_total") @db.Decimal(14, 2)
+
   @@unique([clientId, billingPeriod], map: "uidx_client_billing_period")
   @@index([clientId, status], map: "idx_monthly_invoices_client_status")
+  @@index([billingPeriod(sort: Desc), id], map: "idx_monthly_invoices_billing_period")
+  @@index([status, billingPeriod(sort: Desc)], map: "idx_monthly_invoices_status_billing_period")
+  @@index([createdAt(sort: Desc)], map: "idx_monthly_invoices_created_at")
+  @@index([grandTotal], map: "idx_monthly_invoices_grand_total")
   @@map("monthly_invoices")
 }
 
@@ -588,6 +632,9 @@ model FbaShipment {
 
   @@index([clientId, status], map: "idx_fba_shipments_client_status")
   @@index([barcode], map: "idx_fba_shipments_barcode")
+  @@index([receivedAt(sort: Desc), id], map: "idx_fba_shipments_received_at")
+  @@index([status, receivedAt(sort: Desc)], map: "idx_fba_shipments_status_received_at")
+  @@index([categoryId, receivedAt(sort: Desc)], map: "idx_fba_shipments_category_received_at")
   @@map("fba_shipments")
 }
 
@@ -620,6 +667,8 @@ model EmployeeFine {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([date(sort: Desc), id], map: "idx_employee_fines_date")
+  @@index([userId, date(sort: Desc)], map: "idx_employee_fines_user_date")
   @@map("employee_fines")
 }
 
@@ -633,6 +682,8 @@ model EmployeeBonus {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([date(sort: Desc), id], map: "idx_employee_bonuses_date")
+  @@index([userId, date(sort: Desc)], map: "idx_employee_bonuses_user_date")
   @@map("employee_bonuses")
 }
 
@@ -645,5 +696,8 @@ model AuditLog {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([timestamp(sort: Desc), id], map: "idx_audit_logs_timestamp")
+  @@index([userId, timestamp(sort: Desc)], map: "idx_audit_logs_user_timestamp")
+  @@index([action, timestamp(sort: Desc)], map: "idx_audit_logs_action_timestamp")
   @@map("audit_logs")
 }
