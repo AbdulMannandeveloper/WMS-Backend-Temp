@@ -6,6 +6,8 @@ const auditLogLogic = require('./audit_log.logic');
 const { toUtcDateOnly } = require('../utils/dates');
 const invitationTokenRepository = require('../repositories/invitation-token.repository');
 const { enqueueMail } = require('../utils/mailQueue');
+const { normalisePermissions } = require('../utils/permissions');
+const { invalidateCachedUser } = require('../utils/authUserCache');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
 
 const INVITE_EXPIRY_HOURS = Number(process.env.INVITE_EXPIRY_HOURS || 24);
@@ -262,7 +264,100 @@ const updateEmployee = async (id, rawUpdateData, actorUserId) => {
   }
 };
 
+/**
+ * What this employee may do.
+ *
+ * Reads through the same ownership rule as the record itself: an admin sees
+ * anyone, an employee sees only their own. The front end needs its own list at
+ * sign-in to decide what to offer, and that must not require being an admin.
+ */
+const getEmployeePermissions = async (employeeId, actor) => {
+  const employee = await getEmployeeById(employeeId, actor);
+  const user = await userRepository.getUserByField('id', employee.userId);
+
+  return {
+    employeeId: employee.id,
+    userId: employee.userId,
+    role: user ? user.role : null,
+    permissions: Array.isArray(user && user.permissions) ? user.permissions : [],
+  };
+};
+
+/**
+ * Replaces the whole set. Admin only.
+ *
+ * The body is the complete list rather than a diff, because a diff over a
+ * checkbox grid is a way to lose a revocation: an unticked box sends nothing,
+ * and nothing is indistinguishable from "leave it alone".
+ *
+ * Three things have to happen together, in this order:
+ *
+ *  1. Validate. normalisePermissions refuses an unknown string rather than
+ *     storing it, so a typo in the client cannot look like a granted
+ *     permission that silently never matches.
+ *  2. Write.
+ *  3. Invalidate the cached user. authorizeRoles serves the actor from
+ *     utils/authUserCache for up to AUTH_USER_CACHE_TTL_MS — 45 seconds by
+ *     default, and per worker under pm2. Without this the grant appears to do
+ *     nothing for most a minute and then starts working on its own, which is
+ *     the kind of bug that gets diagnosed as "it fixed itself".
+ */
+const setEmployeePermissions = async (employeeId, rawPermissions, actorUserId) => {
+  const employee = await employeeRepository.getEmployeeByField('id', employeeId);
+  if (!employee) {
+    const err = new Error('Employee not found.');
+    err.status = 404;
+    throw err;
+  }
+
+  const user = await userRepository.getUserByField('id', employee.userId);
+  if (!user) {
+    const err = new Error('No login is linked to this employment record.');
+    err.status = 404;
+    throw err;
+  }
+
+  // An admin is never governed by the list, so offering to set one would be a
+  // screen that appears to work and changes nothing.
+  if (user.role !== 'employee') {
+    const err = new Error(
+      `Permissions apply to the employee role only; this login is ${user.role}.`,
+    );
+    err.status = 400;
+    throw err;
+  }
+
+  const before = Array.isArray(user.permissions) ? user.permissions : [];
+  const after = normalisePermissions(rawPermissions);
+
+  await userRepository.updateUser(user.id, { permissions: after });
+  await invalidateCachedUser(user.id);
+
+  if (actorUserId) {
+    // Who may do what is exactly the kind of change the audit log exists for,
+    // and the before/after is the part anyone asking will want.
+    await auditLogLogic
+      .createAuditLog(actorUserId, 'SET_EMPLOYEE_PERMISSIONS', {
+        employeeId: employee.id,
+        userId: user.id,
+        granted: after.filter((p) => !before.includes(p)),
+        revoked: before.filter((p) => !after.includes(p)),
+        permissions: after,
+      })
+      .catch((err) => console.error('Audit log error:', err.message));
+  }
+
+  return {
+    employeeId: employee.id,
+    userId: user.id,
+    role: user.role,
+    permissions: after,
+  };
+};
+
 module.exports = {
+  getEmployeePermissions,
+  setEmployeePermissions,
   addEmployee,
   getAllEmployees,
   getEmployeeLookupList,

@@ -52,6 +52,9 @@ const refreshSession = async (req, res) => {
             token: accessToken,
             userId: user.id,
             role: user.role,
+            // Sent on every refresh, which is what makes a grant or a
+            // revocation reach an open tab without signing out and back in.
+            permissions: Array.isArray(user.permissions) ? user.permissions : [],
             firstName: user.firstName,
             lastName: user.lastName,
             email: user.email,

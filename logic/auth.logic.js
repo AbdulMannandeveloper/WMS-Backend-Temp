@@ -318,6 +318,9 @@ const verifyOTP = async (userId, otp) => {
     username: updatedUser.username,
     email: updatedUser.email,
     role: updatedUser.role,
+    // What this person may do, so the front end can decide what to offer
+    // without a second call. The server enforces it regardless.
+    permissions: Array.isArray(updatedUser.permissions) ? updatedUser.permissions : [],
     isActive: updatedUser.isActive,
   };
 };
