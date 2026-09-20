@@ -1,6 +1,14 @@
 const expenseCategoryRepository = require('../repositories/expense_category.repository');
 const expenseRepository = require('../repositories/expense.repository');
 const auditLogLogic = require('./audit_log.logic');
+const {
+  dateRangeFilter,
+  parseBoolean,
+  parseString,
+  parseUuid,
+  rangeFilter,
+  searchFilter,
+} = require('../utils/queryFilters');
 
 const createCategory = async (data, adminUserId) => {
   if (!data.categoryName || !data.categoryName.trim()) {
@@ -78,9 +86,57 @@ const createExpense = async (data, adminUserId) => {
   return expense;
 };
 
-const getAllExpenses = async (filters = {}) => {
-  return await expenseRepository.getAllExpenses(filters);
+/**
+ * What the expense list may be narrowed by.
+ *
+ * Exported so the /summary handler derives its where from the same object and
+ * the same req.query. The cards above the table and the rows in it then cannot
+ * describe different sets, because neither side decides independently what a
+ * filter means.
+ */
+const EXPENSE_LIST_SPEC = {
+  filters: [
+    (q) => searchFilter(q.search, ['description', 'category.categoryName']),
+    (q) => {
+      const categoryId = parseUuid(q.categoryId, 'categoryId');
+      return categoryId ? { categoryId } : undefined;
+    },
+    (q) => {
+      // date is @db.Date, so the end bound stays at midnight: the column
+      // stores the day, and stretching it to 23:59 would describe a precision
+      // the column does not have.
+      const range = dateRangeFilter(q.startDate, q.endDate, { granularity: 'date' });
+      return range ? { date: range } : undefined;
+    },
+    (q) => {
+      const range = rangeFilter(q.amountMin, q.amountMax, { label: 'amount' });
+      return range ? { amount: range } : undefined;
+    },
+    (q) => {
+      const hasReceipt = parseBoolean(q.hasReceipt, 'hasReceipt');
+      if (hasReceipt === undefined) return undefined;
+      return hasReceipt
+        ? { receiptImageUrl: { not: null } }
+        : { receiptImageUrl: null };
+    },
+  ],
+  sort: {
+    allowed: {
+      date: (order) => ({ date: order }),
+      amount: (order) => ({ amount: order }),
+      description: (order) => ({ description: order }),
+      categoryName: (order) => ({ category: { categoryName: order } }),
+    },
+    defaultSort: { field: 'date', order: 'desc' },
+    tiebreaker: [{ id: 'asc' }],
+  },
 };
+
+const getAllExpenses = async (where, options) =>
+  await expenseRepository.getAllExpenses(where, options);
+
+const summariseExpenses = async (where) =>
+  await expenseRepository.summariseExpenses(where);
 
 const deleteExpense = async (id, adminUserId) => {
   const expense = await expenseRepository.getExpenseById(id);
@@ -107,6 +163,8 @@ const deleteExpense = async (id, adminUserId) => {
 };
 
 module.exports = {
+  EXPENSE_LIST_SPEC,
+  summariseExpenses,
   createCategory,
   getAllCategories,
   createExpense,

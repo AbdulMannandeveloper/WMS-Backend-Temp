@@ -21,19 +21,21 @@ const createAuditLog = async (data) => {
 };
 
 /**
- * @param {object} filters - a Prisma `where`; {} matches everything.
- * @param {object} [pagination] - { skip, take }. Absent, the whole set comes
- *   back as a bare array, which is what internal callers expect.
+ * @param {object} where - a Prisma `where`; {} matches everything.
+ * @param {object} [options]
+ * @param {object[]} [options.orderBy] - ends in a unique key, or pages repeat rows.
+ * @param {object} [options.pagination] - { skip, take }. Absent, the whole set
+ *   comes back as a bare array, which is what internal callers read.
  */
-const getAllAuditLogs = async (filters = {}, pagination) => {
-  const where = filters;
+const getAllAuditLogs = async (where = {}, { orderBy, pagination } = {}) => {
+  const sort = orderBy || [{ timestamp: 'desc' }, { id: 'asc' }];
 
   if (pagination && pagination.take != null) {
     const [items, total] = await Promise.all([
       prismaAuditLog.findMany({
         where,
         include: { user: userSummary },
-        orderBy: { timestamp: 'desc' },
+        orderBy: sort,
         skip: pagination.skip || 0,
         take: pagination.take,
       }),
@@ -48,11 +50,39 @@ const getAllAuditLogs = async (filters = {}, pagination) => {
   return await prismaAuditLog.findMany({
     where,
     include: { user: userSummary },
-    orderBy: { timestamp: 'desc' },
+    orderBy: sort,
   });
+};
+
+/**
+ * Totals across the whole filtered set, not the page.
+ *
+ * The counts under the table describe every row the filter matches — which is
+ * the entire reason this is a query rather than a reduce over `items`. A tally
+ * of the fifty rows on screen would be a different number with every page turn.
+ */
+const summariseAuditLogs = async (where = {}) => {
+  const [total, byAction] = await Promise.all([
+    prismaAuditLog.count({ where }),
+    prismaAuditLog.groupBy({
+      by: ['action'],
+      where,
+      _count: { _all: true },
+      orderBy: { _count: { action: 'desc' } },
+    }),
+  ]);
+
+  return {
+    total,
+    byAction: byAction.map((row) => ({
+      action: row.action,
+      count: row._count._all,
+    })),
+  };
 };
 
 module.exports = {
   createAuditLog,
   getAllAuditLogs,
+  summariseAuditLogs,
 };
