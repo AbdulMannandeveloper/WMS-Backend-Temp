@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import { as } from '../helpers/auth.js';
 import {
+  grantPermissions,
   makeAdmin,
   makeEmployee,
   makeClient,
@@ -341,8 +342,9 @@ describe('one client cannot see another', () => {
 });
 
 describe('authorisation', () => {
-  it('is open to staff and to clients', async () => {
+  it('is open to an employee granted inventory:read, and to clients', async () => {
     const { user: employee } = await makeEmployee();
+    await grantPermissions(employee, 'inventory:read');
 
     expect((await as(employee).get('/api/stock')).status).toBe(200);
     expect((await as(employee).get('/api/stock/summary')).status).toBe(200);

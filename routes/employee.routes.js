@@ -6,6 +6,8 @@ const {
   getEmployeeLookup,
   getEmployeeById,
   updateEmployee,
+  getEmployeePermissions,
+  setEmployeePermissions,
 } = require('../controllers/employee.controller');
 
 const router = express.Router();
@@ -32,5 +34,18 @@ router.get('/:id', authorizeRoles('admin', 'employee'), getEmployeeById);
 // Base salary is not here. Payroll owns that, and it is the figure payroll
 // multiplies into net pay; two screens writing one number is how they drift.
 router.put('/:id', authorizeRoles('admin'), updateEmployee);
+
+// What this employee may do in Shipments, FBA and Inventory.
+//
+// Its own endpoint rather than a field on the update above, which allowlists
+// five employment details and deliberately left baseSalary to a dedicated
+// payroll route. A field controlling access does not belong in the same request
+// as a home address.
+//
+// The read is open to an employee for their own record — the front end asks at
+// sign-in to decide what to offer — and the ownership check lives in the logic
+// layer, as it does for GET /:id above.
+router.get('/:id/permissions', authorizeRoles('admin', 'employee'), getEmployeePermissions);
+router.put('/:id/permissions', authorizeRoles('admin'), setEmployeePermissions);
 
 module.exports = router;

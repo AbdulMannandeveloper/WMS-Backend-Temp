@@ -59,7 +59,34 @@ const updateEmployee = async (req, res) => {
   }
 };
 
+const getEmployeePermissions = async (req, res) => {
+  try {
+    const result = await employeeLogic.getEmployeePermissions(
+      req.params.id,
+      req.user,
+    );
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(err.status || 404).json({ error: err.message });
+  }
+};
+
+const setEmployeePermissions = async (req, res) => {
+  try {
+    const result = await employeeLogic.setEmployeePermissions(
+      req.params.id,
+      req.body ? req.body.permissions : undefined,
+      req.user.id,
+    );
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+};
+
 module.exports = {
+  getEmployeePermissions,
+  setEmployeePermissions,
   addEmployee,
   getAllEmployees,
   getEmployeeLookup,

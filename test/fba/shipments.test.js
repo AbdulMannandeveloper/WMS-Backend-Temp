@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 
 import { prisma } from '../helpers/db.js';
 import { as, anon } from '../helpers/auth.js';
-import { makeWarehouseScenario } from '../factories/index.js';
+import { makeEmployee, makeWarehouseScenario } from '../factories/index.js';
 
 /** The FBA charge service, plus this client's agreed per-item rate for it. */
 const giveFbaRate = async (clientId, chargedPrice = '3.00') => {
@@ -298,12 +298,13 @@ describe('dispatching, and the charge', () => {
     expect(res.status).toBe(400);
   });
 
-  it('is not cancellable by an employee', async () => {
+  it('is not cancellable by an employee without fba:delete', async () => {
     const ctx = await arrange();
+    const { user: unprivileged } = await makeEmployee();
     const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
 
     expect(
-      (await as(ctx.employeeUser).post(`/api/fba-shipments/${created.body.id}/cancel`)).status
+      (await as(unprivileged).post(`/api/fba-shipments/${created.body.id}/cancel`)).status
     ).toBe(403);
   });
 });
@@ -350,12 +351,13 @@ describe('deleting a consignment', () => {
     ).not.toBeNull();
   });
 
-  it('is closed to employees', async () => {
+  it('is closed to an employee without fba:delete', async () => {
     const ctx = await arrange();
+    const { user: unprivileged } = await makeEmployee();
     const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
 
     expect(
-      (await as(ctx.employeeUser).delete(`/api/fba-shipments/${created.body.id}`)).status
+      (await as(unprivileged).delete(`/api/fba-shipments/${created.body.id}`)).status
     ).toBe(403);
   });
 

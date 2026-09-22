@@ -30,6 +30,17 @@ model User {
   // the version they were minted at, so a password reset or a deactivation ends
   // live sessions instead of merely changing a value the holder no longer needs.
   tokenVersion               Int                        @default(0) @map("token_version")
+
+  /// What an employee may do, as `module:action` strings — see utils/permissions.js.
+  ///
+  /// A column on User rather than a table on Employee, because the auth
+  /// middleware already loads this whole row and caches it: a list of at most
+  /// twelve short strings rides along for free, where a relation would need an
+  /// include on a repository several other callers share.
+  ///
+  /// Empty for everyone until an admin grants. Ignored for admin and client —
+  /// an admin is never governed by it, and a client is narrowed by clientScope.
+  permissions                String[]                   @default([])
   createdAt                  DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
   client                     Client?
@@ -141,6 +152,7 @@ model Shipment {
   client           Client                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
   shipmentItems    ShipmentItem[]
   shipmentServices ShipmentServiceMapping[]
+  invoiceLines     InvoiceLineItem[]
 
   @@index([employeeId, createdAt], map: "idx_shipments_employee_created_at")
   @@index([clientId, createdAt], map: "idx_shipments_client_created_at")
@@ -508,11 +520,21 @@ model InvoiceLineItem {
   // Backlink mapping details
   clientServiceId String? @map("client_service_id") @db.Uuid
 
+  // The dispatched shipment this charge is for, when the line is a
+  // SHIPMENT_CHARGE. Nullable — most line types have no shipment — and set on
+  // dispatch so deleting a shipment can find and reverse exactly its own
+  // charge, rather than matching on the description string. onDelete SetNull is
+  // only a backstop: deleteShipment removes the line before the row goes, so
+  // this normally never fires.
+  shipmentId String? @map("shipment_id") @db.Uuid
+
   // Relations
   invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+  shipment      Shipment?      @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
+  @@index([shipmentId], map: "idx_line_items_shipment_id")
   @@map("invoice_line_items")
 }
 
