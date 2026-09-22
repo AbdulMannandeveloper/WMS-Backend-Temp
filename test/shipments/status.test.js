@@ -308,7 +308,11 @@ describe('shipment lifecycle', () => {
       expect(after.currentQuantity).toBe(100);
     });
 
-    it('refuses to delete a dispatched shipment', async () => {
+    it('deletes a dispatched shipment, reversing it', async () => {
+      // Deleting a dispatched shipment used to be refused outright; it now
+      // reverses the dispatch instead — the full stock-and-charge unwind is in
+      // delete-reversal.test.js. This bare row carries no items or charge, so
+      // the reversal is a no-op and it simply deletes.
       const { admin, employee, client } = await arrange();
       const dispatched = await makeShipment(employee.id, client.id, {
         status: 'DISPATCHED',
@@ -316,12 +320,10 @@ describe('shipment lifecycle', () => {
 
       const res = await as(admin).delete(`/api/shipments/${dispatched.id}`);
 
-      // Deleting it would orphan the inventory_ledger rows that reference it.
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/cannot be deleted/i);
+      expect(res.status).toBe(200);
       await expect(
         prisma.shipment.count({ where: { id: dispatched.id } })
-      ).resolves.toBe(1);
+      ).resolves.toBe(0);
     });
 
     it('still deletes a pending shipment and releases its stock', async () => {

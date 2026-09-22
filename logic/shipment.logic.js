@@ -139,6 +139,9 @@ const applyDispatchEffects = async (shipment, actorUserId, tx) => {
     {
       invoiceId: monthlyInvoice.id,
       clientServiceId: shipmentRate.clientService.id,
+      // The shipment this charge belongs to, so deleting the shipment can find
+      // and reverse this exact line by id rather than parsing its description.
+      shipmentId: shipment.id,
       // Per item, not per shipment. This was hardcoded to 1, so a
       // five-hundred-item shipment billed the same as a single-item one.
       quantity: shippedItemCount,
@@ -620,59 +623,156 @@ const updateShipment = async (id, data, actorUserId) => {
 };
 
 /**
- * Hard-deletes a shipment, for genuine mis-keys only.
+ * Hard-deletes a shipment.
  *
- * Refused once DISPATCHED. Previously this deleted the row regardless and merely
- * skipped the stock release, which destroyed the record of goods that had
- * physically left while their inventory_ledger rows survived pointing at a
- * shipment id that no longer existed. Cancel a dispatched shipment's successor
- * paperwork instead; the ledger is the audit trail.
+ * The three statuses need three different reversals, because "delete" means
+ * something different once goods have moved:
+ *
+ *   PENDING / READY_FOR_DISPATCH — the stock is only reserved, never taken off
+ *     the shelf. Hand the reservation back and delete the row.
+ *   CANCELLED — the reservation was already released when it was cancelled;
+ *     nothing to undo, just delete.
+ *   DISPATCHED — the goods physically left: the shelf was decremented and the
+ *     client was charged. Deleting has to put both back. For each line we return
+ *     the still-outstanding quantity (what a partial return has not already put
+ *     back) to its source bin as a RETURN movement, then remove the shipment's
+ *     invoice line and recompute the invoice.
+ *
+ * Deleting a dispatched shipment was refused until this — the reasoning was that
+ * the ledger rows reference it. They still do, and deliberately: the CHECKOUT
+ * and the reversing RETURN both carry the shipment reference, so the movement
+ * history survives the row and reads as a matched pair. What is refused now is
+ * narrower and correct: a shipment whose invoice has already been PAID, because
+ * money that has changed hands is reversed with a credit note, not by deleting
+ * the record of what it was for.
  */
 const deleteShipment = async (id, actorUserId) => {
-  const shipment = await requireShipment(id);
-
-  if (shipment.status === "DISPATCHED") {
-    throw new Error(
-      "A dispatched shipment cannot be deleted — its inventory movements reference it. Cancel or credit it instead.",
-    );
+  if (!actorUserId) {
+    throw new Error("An authenticated user is required to delete a shipment.");
   }
 
-  const deleted = await prisma.$transaction(async (tx) => {
-    // A cancelled shipment already handed its reservation back.
-    if (shipment.status !== "CANCELLED") {
+  const shipment = await requireShipment(id);
+
+  const reversal = await prisma.$transaction(
+    async (tx) => {
       const shipmentItems = await tx.shipmentItem.findMany({
         where: { shipmentId: id },
       });
-      for (const item of shipmentItems) {
-        const sourceStock =
-          await stockLevelRepository.getStockLevelByProductAndLocation(
-            item.productId,
-            item.sourceLocationId,
-            tx,
-          );
-        if (sourceStock) {
-          await stockLevelRepository.releaseReservedStockAtomically(
-            sourceStock.id,
-            item.quantity,
-            tx,
-          );
+
+      if (shipment.status === "DISPATCHED") {
+        return await reverseDispatchedShipment(shipment, shipmentItems, actorUserId, tx);
+      }
+
+      // Not dispatched: nothing left the shelf. A cancelled shipment already
+      // handed its reservation back; anything else still holds one.
+      if (shipment.status !== "CANCELLED") {
+        for (const item of shipmentItems) {
+          const sourceStock =
+            await stockLevelRepository.getStockLevelByProductAndLocation(
+              item.productId,
+              item.sourceLocationId,
+              tx,
+            );
+          if (sourceStock) {
+            await stockLevelRepository.releaseReservedStockAtomically(
+              sourceStock.id,
+              item.quantity,
+              tx,
+            );
+          }
         }
       }
-    }
 
-    return await shipmentRepositry.deleteShipment(id, tx);
-  }, {
-    maxWait: 10_000,
-    timeout: 30_000,
+      await shipmentRepositry.deleteShipment(id, tx);
+      return { restored: [], chargeRemoved: false };
+    },
+    {
+      maxWait: 10_000,
+      timeout: 30_000,
+    },
+  );
+
+  await audit(
+    actorUserId,
+    shipment.status === "DISPATCHED" ? "SHIPMENT_DELETED_DISPATCHED" : "SHIPMENT_DELETED",
+    {
+      shipmentId: id,
+      reference: shipment.reference,
+      status: shipment.status,
+      clientId: shipment.clientId,
+      ...(shipment.status === "DISPATCHED" ? reversal : {}),
+    },
+  );
+
+  return { id };
+};
+
+/**
+ * The DISPATCHED branch of deleteShipment, kept separate because it is the only
+ * one that moves stock and money.
+ *
+ * Runs entirely inside the caller's transaction. Order matters: the invoice
+ * check happens first, so a PAID invoice aborts before any stock is written and
+ * the whole transaction rolls back untouched.
+ */
+const reverseDispatchedShipment = async (shipment, shipmentItems, actorUserId, tx) => {
+  // The charge this shipment raised at dispatch, found by the backlink rather
+  // than by its description. Zero lines when the client had no dispatch rate —
+  // the goods still moved, they just were not billed.
+  const chargeLines = await tx.invoiceLineItem.findMany({
+    where: { shipmentId: shipment.id, itemType: "SHIPMENT_CHARGE" },
+    include: { invoice: { select: { id: true, status: true } } },
   });
 
-  await audit(actorUserId, "SHIPMENT_DELETED", {
-    shipmentId: id,
-    status: shipment.status,
-    clientId: shipment.clientId,
-  });
+  const paid = chargeLines.find((line) => line.invoice?.status === "PAID");
+  if (paid) {
+    throw new Error(
+      "This shipment's invoice has already been paid, so it cannot be deleted — raise a credit note against that invoice instead.",
+    );
+  }
 
-  return deleted;
+  // Put the outstanding quantity of each line back on its source shelf. A
+  // partial return may already have restored some, so only the part still out
+  // (quantity - returnedQuantity) is owed. The ledger applies the stock change;
+  // RETURN adds to current_quantity the same way CHECKOUT took it away.
+  const restored = [];
+  for (const item of shipmentItems) {
+    const outstanding = item.quantity - (item.returnedQuantity ?? 0);
+    if (outstanding <= 0) continue;
+
+    await inventoryLedgerLogic.createInventoryLedger(
+      {
+        productId: item.productId,
+        userId: actorUserId,
+        movementType: "RETURN",
+        quantity: outstanding,
+        toLocationId: item.sourceLocationId,
+        // The same reference the CHECKOUT carried, so the reversal and the
+        // dispatch it undoes read as a pair in the ledger after the row is gone.
+        referenceId: shipment.reference,
+        notes: `Reversed on deletion of shipment ${shipment.reference}`,
+      },
+      { tx },
+    );
+    restored.push({ productId: item.productId, quantity: outstanding });
+  }
+
+  // Remove the charge and recompute the invoices it touched. Recomputed per
+  // invoice id in case a future change ever splits a shipment's charge across
+  // more than one.
+  const affectedInvoiceIds = new Set(chargeLines.map((line) => line.invoiceId));
+  for (const line of chargeLines) {
+    await invoiceLineItemRepository.deleteInvoiceLineItem(line.id, tx);
+  }
+  for (const invoiceId of affectedInvoiceIds) {
+    await monthlyInvoiceRepository.recalculateInvoiceTotal(invoiceId, tx);
+  }
+
+  // The row last, so every reversing movement above was written while the
+  // shipment it references still existed. Items cascade.
+  await shipmentRepositry.deleteShipment(shipment.id, tx);
+
+  return { restored, chargeRemoved: chargeLines.length > 0 };
 };
 
 module.exports = {

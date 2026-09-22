@@ -152,6 +152,7 @@ model Shipment {
   client           Client                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
   shipmentItems    ShipmentItem[]
   shipmentServices ShipmentServiceMapping[]
+  invoiceLines     InvoiceLineItem[]
 
   @@index([employeeId, createdAt], map: "idx_shipments_employee_created_at")
   @@index([clientId, createdAt], map: "idx_shipments_client_created_at")
@@ -519,11 +520,21 @@ model InvoiceLineItem {
   // Backlink mapping details
   clientServiceId String? @map("client_service_id") @db.Uuid
 
+  // The dispatched shipment this charge is for, when the line is a
+  // SHIPMENT_CHARGE. Nullable — most line types have no shipment — and set on
+  // dispatch so deleting a shipment can find and reverse exactly its own
+  // charge, rather than matching on the description string. onDelete SetNull is
+  // only a backstop: deleteShipment removes the line before the row goes, so
+  // this normally never fires.
+  shipmentId String? @map("shipment_id") @db.Uuid
+
   // Relations
   invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+  shipment      Shipment?      @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
+  @@index([shipmentId], map: "idx_line_items_shipment_id")
   @@map("invoice_line_items")
 }
 
