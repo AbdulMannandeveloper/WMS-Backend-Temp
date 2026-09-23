@@ -35,6 +35,9 @@ const PRO_PACKERS = {
   website: 'www.propackers.uk',
   address: SHARED_ADDRESS,
   headerColor: [198, 40, 40],
+  // Its own brand mark. A non-VAT invoice is a Pro Packers invoice, so it must
+  // not carry the Nayoram logo. Filename resolved under assets/ by the renderer.
+  logo: 'invoice-logo.png',
   bank: {
     name: 'Pro Packers Uk',
     sortCode: '60-84-64',
@@ -56,6 +59,8 @@ const NAYORAM = {
   website: 'www.nayoram.com',
   address: SHARED_ADDRESS,
   headerColor: [21, 62, 138],
+  // The Nayoram brand mark, printed on the VAT-registered entity's invoices.
+  logo: 'invoice-logo.jpg',
   bank: {
     name: 'Nayoram Ltd',
     sortCode: '01-00-04',
