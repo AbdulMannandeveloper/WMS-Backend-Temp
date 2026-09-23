@@ -31,7 +31,7 @@ const { identityFor } = require('./invoiceIdentity');
 
 const autoTable = autoTableImport.default || autoTableImport;
 
-const LOGO_PATH = path.join(__dirname, '..', 'assets', 'invoice-logo.png');
+const ASSETS_DIR = path.join(__dirname, '..', 'assets');
 
 /**
  * Human labels for the line types.
@@ -51,10 +51,26 @@ const ITEM_TYPE_LABELS = {
 
 const money = (value) => Number(value ?? 0).toFixed(2);
 
-const readLogo = () => {
+/**
+ * The logo for an issuing entity, as a data URI plus the jsPDF format tag.
+ *
+ * The logo file is named by the identity (see invoiceIdentity.js), so a VAT
+ * invoice carries the Nayoram mark and a non-VAT one the Pro Packers mark. The
+ * two files are different formats — Pro Packers is a PNG, Nayoram a JPEG — so
+ * the format jsPDF needs is derived from the extension rather than hardcoded.
+ */
+const readLogo = (identity) => {
+  const file = identity?.logo;
+  if (!file) return null;
   try {
-    if (!fs.existsSync(LOGO_PATH)) return null;
-    return `data:image/png;base64,${fs.readFileSync(LOGO_PATH).toString('base64')}`;
+    const full = path.join(ASSETS_DIR, file);
+    if (!fs.existsSync(full)) return null;
+    const format = /\.jpe?g$/i.test(file) ? 'JPEG' : 'PNG';
+    const mime = format === 'JPEG' ? 'image/jpeg' : 'image/png';
+    return {
+      dataUri: `data:${mime};base64,${fs.readFileSync(full).toString('base64')}`,
+      format,
+    };
   } catch {
     return null;
   }
@@ -84,12 +100,12 @@ const renderInvoicePdf = (invoice) => {
   doc.setFillColor(r, g, b);
   doc.rect(0, 0, pageWidth, bandHeight, 'F');
 
-  const logo = readLogo();
+  const logo = readLogo(identity);
   if (logo) {
     // On a white plate, so a dark logo stays legible on the coloured band.
     doc.setFillColor(255, 255, 255);
     doc.roundedRect(12, 7, 32, 32, 2, 2, 'F');
-    doc.addImage(logo, 'PNG', 14, 9, 28, 28);
+    doc.addImage(logo.dataUri, logo.format, 14, 9, 28, 28);
   }
 
   const textX = logo ? 50 : 14;
