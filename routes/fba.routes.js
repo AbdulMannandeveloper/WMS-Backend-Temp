@@ -22,14 +22,19 @@ router.post('/categories', adminOnly, fbaController.createCategory);
 router.put('/categories/:id', adminOnly, fbaController.updateCategory);
 router.delete('/categories/:id', adminOnly, fbaController.deleteCategory);
 
-// Consignments. Declared after /categories so "categories" is never parsed as
-// a consignment id.
+// Bulk shipments. Declared after /categories so "categories" is never parsed as
+// a shipment id.
 router.get('/', [staffOrClient, requirePermission('fba', 'read')], fbaController.listShipments);
-router.post('/', staffWith('create'), fbaController.recordArrival);
+// Step 1 — create the shell (DRAFT).
+router.post('/', staffWith('create'), fbaController.createShipment);
 router.get('/:id', [staffOrClient, requirePermission('fba', 'read')], fbaController.getShipment);
 
-// Leaving is what triggers the charge, so staff can do it — the same people who
-// recorded it arriving.
+// Step 2 — scan products in (DRAFT → PREPARING). An update: it changes what the
+// shipment holds, not whether it exists.
+router.put('/:id/items', staffWith('update'), fbaController.setItems);
+
+// Step 3 — dispatch (PREPARING → DISPATCHED). This is what deducts stock and
+// raises the charge.
 router.post('/:id/dispatch', staffWith('update'), fbaController.dispatchShipment);
 
 // Voiding one that was never really here.
