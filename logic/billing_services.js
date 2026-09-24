@@ -127,7 +127,10 @@ const ensureFbaService = async (tx) => {
   return await db(tx).service.create({
     data: {
       code: FBA_SERVICE_CODE,
-      description: 'FBA consignment (per item)',
+      // The single Bulk Shipment service. One per-client rate, charged by the
+      // total units shipped. Code stays FBA_DISPATCH so existing rates and KPIs
+      // are untouched; "Bulk shipment" is the label a client sees.
+      description: 'Bulk shipment (per product)',
       ideaPrice: '0.00',
       unit: 'item',
     },
