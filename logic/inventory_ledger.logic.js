@@ -49,16 +49,28 @@ const validateLedgerInput = async (newData, tx) => {
     // is what the ledger now stores. It is unique, it is what is printed on the
     // paperwork, and it is what somebody reading a movement can act on; the
     // uuid told them nothing.
-    const shipment = tx
-      ? await tx.shipment.findFirst({ where: { reference: newData.referenceId } })
+    //
+    // A reference belongs to either an outbound Shipment (SHP-…) or a bulk
+    // shipment (BULK-…, held on FbaShipment): both take goods off the shelf and
+    // both bill on dispatch, so a CHECKOUT may reference either. The outbound
+    // table is tried first, then the bulk one; whichever is found must be
+    // DISPATCHED before its stock can move.
+    const client = tx || null;
+    const shipment = client
+      ? await client.shipment.findFirst({ where: { reference: newData.referenceId } })
       : await shipmentRepository.getShipmentByField(
           "reference",
           newData.referenceId,
         );
-    if (!shipment) {
+    const source =
+      shipment ||
+      (client
+        ? await client.fbaShipment.findFirst({ where: { reference: newData.referenceId } })
+        : await prisma.fbaShipment.findFirst({ where: { reference: newData.referenceId } }));
+    if (!source) {
       throw new Error(`Provided shipment not found.`);
     }
-    if (shipment.status !== "DISPATCHED") {
+    if (source.status !== "DISPATCHED") {
       throw new Error(
         `Shipment must be in DISPATCHED status to be referenced in a checkout movement.`,
       );

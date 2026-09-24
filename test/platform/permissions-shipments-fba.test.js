@@ -49,11 +49,12 @@ beforeEach(async () => {
 const fbaConsignment = async () =>
   await prisma.fbaShipment.create({
     data: {
+      // reference is required now (the bulk-shipment number); these permission
+      // tests only care about the 403/allowed status, not the flow, so a unique
+      // placeholder is enough.
+      reference: `BULK-TEST-${Math.random().toString(36).slice(2, 10)}`,
       categoryId: category.id,
       clientId: client.id,
-      barcode: 'FBA-1',
-      size: 'M',
-      count: 4,
     },
   });
 

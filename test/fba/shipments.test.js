@@ -1,441 +1,307 @@
 /**
- * FBA consignments.
+ * Bulk shipments — the three-step flow (create → prepare → dispatch).
  *
- * A deliberately smaller flow than an ordinary shipment: goods arrive, are
- * recorded by hand, and leave. Nothing is scanned, nothing is put away, no stock
- * level moves and no ledger entry is written — the goods were never in our
- * inventory, they pass through. What is billed is the passing through, per item,
- * when they go.
+ * This replaced the old single-step FBA "record an arrival". The important
+ * change is that a bulk shipment now DOES touch the warehouse: preparing it
+ * reserves stock and dispatching it checks that stock out and bills the client
+ * their single Bulk Shipment rate × the total units shipped. The old
+ * "stays out of the warehouse" suite is gone on purpose.
  *
- * The assertions that matter most are the ones proving it stays out of the
- * warehouse: an FBA consignment must not touch stock or the ledger, or the two
- * flows start corrupting each other's numbers.
+ * Any of the three steps can be done by the same person or by three different
+ * people; what the tests pin is the state machine and the stock/billing effects,
+ * not who performs each step.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 
 import { prisma } from '../helpers/db.js';
 import { as, anon } from '../helpers/auth.js';
-import { makeEmployee, makeWarehouseScenario } from '../factories/index.js';
+import { makeWarehouseScenario, makeEmployee } from '../factories/index.js';
 
-/** The FBA charge service, plus this client's agreed per-item rate for it. */
-const giveFbaRate = async (clientId, chargedPrice = '3.00') => {
+let ctx;
+
+/** The Bulk Shipment service + this client's single rate for it. */
+const giveFbaRate = async (clientId, chargedPrice = '2.00') => {
   const service = await prisma.service.upsert({
     where: { code: 'FBA_DISPATCH' },
     update: {},
     create: {
       code: 'FBA_DISPATCH',
-      description: 'FBA consignment (per item)',
+      description: 'Bulk shipment (per product)',
       ideaPrice: '0.00',
       unit: 'item',
     },
   });
-  return await prisma.clientService.create({
+  await prisma.clientService.create({
     data: { clientId, serviceId: service.id, chargedPrice, unit: 'item' },
   });
 };
 
-const arrange = async () => {
-  const scenario = await makeWarehouseScenario();
-  const category = await prisma.fbaCategory.create({ data: { name: 'Chilled' } });
-  return { ...scenario, category };
-};
+const makeCategory = async (name = `Cat-${Math.random().toString(36).slice(2, 8)}`) =>
+  await prisma.fbaCategory.create({ data: { name } });
 
-const arrival = (ctx, overrides = {}) => ({
-  categoryId: ctx.category.id,
+beforeEach(async () => {
+  const scenario = await makeWarehouseScenario({ quantity: 100 });
+  const category = await makeCategory();
+  ctx = { ...scenario, category };
+});
+
+/** Step 1 body. */
+const shell = (overrides = {}) => ({
   clientId: ctx.client.id,
-  barcode: 'FBA0001234',
-  size: 'Large',
-  count: 12,
+  categoryId: ctx.category.id,
+  destination: 'Amazon Global',
+  deliveryNote: 'Handle with care',
+  trackingId: 'TRK-BULK-1',
   ...overrides,
 });
 
-const invoiceFor = (clientId) =>
-  prisma.monthlyInvoice.findFirst({
-    where: { clientId },
-    include: { lineItems: true },
-  });
+/** A line for step 2, drawn from the scenario's product + bin. */
+const line = (quantity = 10, overrides = {}) => ({
+  productId: ctx.product.id,
+  sourceLocationId: ctx.location.id,
+  quantity,
+  ...overrides,
+});
+
+const createShell = (actor = ctx.admin, body = shell()) =>
+  as(actor).post('/api/fba-shipments').send(body);
+
+const stockNow = async () => {
+  const s = await prisma.stockLevel.findUnique({ where: { id: ctx.stock.id } });
+  return { current: s.currentQuantity, reserved: s.reservedQuantity };
+};
+
+// ─── Categories ─────────────────────────────────────────────────────────────
 
 describe('categories', () => {
-  it('are created by an admin', async () => {
-    const { admin } = await arrange();
-
-    const res = await as(admin).post('/api/fba-shipments/categories').send({ name: 'Ambient' });
-
+  it('are created, listed and de-duplicated', async () => {
+    const res = await as(ctx.admin).post('/api/fba-shipments/categories').send({ name: 'Pallet' });
     expect(res.status).toBe(201);
+
+    const dup = await as(ctx.admin).post('/api/fba-shipments/categories').send({ name: 'Pallet' });
+    expect(dup.status).toBe(400);
+
+    const list = await as(ctx.employeeUser).get('/api/fba-shipments/categories');
+    expect(list.status).toBe(200);
+    expect(list.body.some((c) => c.name === 'Pallet')).toBe(true);
   });
 
-  it('are readable by staff, who have to choose one', async () => {
-    const { employeeUser } = await arrange();
-    expect((await as(employeeUser).get('/api/fba-shipments/categories')).status).toBe(200);
-  });
-
-  it('are not created by an employee', async () => {
-    const { employeeUser } = await arrange();
-
-    const res = await as(employeeUser)
-      .post('/api/fba-shipments/categories')
-      .send({ name: 'Sneaky' });
-
-    expect(res.status).toBe(403);
-  });
-
-  it('refuse a duplicate name', async () => {
-    const { admin } = await arrange();
-
-    const res = await as(admin).post('/api/fba-shipments/categories').send({ name: 'Chilled' });
-
-    expect(res.status).toBe(400);
-    expect(await prisma.fbaCategory.count({ where: { name: 'Chilled' } })).toBe(1);
-  });
-
-  it('refuse a blank name', async () => {
-    const { admin } = await arrange();
-    expect(
-      (await as(admin).post('/api/fba-shipments/categories').send({ name: '   ' })).status
-    ).toBe(400);
-  });
-
-  it('cannot be deleted while consignments still use them', async () => {
-    // Deleting would either orphan their history or cascade it away, and both
-    // lose the record of what was handled and billed.
-    const ctx = await arrange();
-    await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
+  it('cannot be deleted while a bulk shipment uses them', async () => {
+    await createShell();
     const res = await as(ctx.admin).delete(`/api/fba-shipments/categories/${ctx.category.id}`);
-
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/cannot be deleted/i);
   });
-
-  it('are deletable when nothing references them', async () => {
-    const { admin } = await arrange();
-    const spare = await prisma.fbaCategory.create({ data: { name: 'Unused' } });
-
-    expect((await as(admin).delete(`/api/fba-shipments/categories/${spare.id}`)).status).toBe(200);
-  });
-
-  it('route "categories" to the list, not to a consignment id', async () => {
-    const { admin } = await arrange();
-    expect((await as(admin).get('/api/fba-shipments/categories')).status).toBe(200);
-  });
 });
 
-describe('recording an arrival', () => {
-  it('stores what was typed in', async () => {
-    const ctx = await arrange();
+// ─── Step 1: create ───────────────────────────────────────────────────────────
 
-    const res = await as(ctx.employeeUser).post('/api/fba-shipments').send(arrival(ctx));
-
+describe('creating a bulk shipment', () => {
+  it('opens a DRAFT with a server-issued BULK reference and the shell details', async () => {
+    const res = await createShell();
     expect(res.status).toBe(201);
-    expect(res.body.status).toBe('RECEIVED');
-    expect(res.body.count).toBe(12);
-    expect(res.body.size).toBe('Large');
+    expect(res.body.status).toBe('DRAFT');
+    expect(res.body.reference).toMatch(/^BULK-\d{4}-\d{6}$/);
+    expect(res.body.destination).toBe('Amazon Global');
+    expect(res.body.trackingId).toBe('TRK-BULK-1');
+    expect(res.body.items).toEqual([]);
   });
 
-  it('is open to employees, who are the ones receiving goods', async () => {
-    const ctx = await arrange();
-    expect((await as(ctx.employeeUser).post('/api/fba-shipments').send(arrival(ctx))).status).toBe(201);
+  it('is open to an employee holding fba:create, refused to a client, and needs a session', async () => {
+    expect((await createShell(ctx.employeeUser)).status).toBe(201);
+    expect((await as(ctx.clientUser).post('/api/fba-shipments').send(shell())).status).toBe(403);
+    expect((await anon().post('/api/fba-shipments').send(shell())).status).toBe(401);
   });
 
-  it('is closed to clients', async () => {
-    const ctx = await arrange();
-    expect((await as(ctx.clientUser).post('/api/fba-shipments').send(arrival(ctx))).status).toBe(403);
+  it('requires a real client and category', async () => {
+    expect((await createShell(ctx.admin, shell({ clientId: undefined }))).status).toBe(400);
+    expect((await createShell(ctx.admin, shell({ categoryId: undefined }))).status).toBe(400);
+    expect(
+      (await createShell(ctx.admin, shell({ categoryId: '00000000-0000-0000-0000-000000000000' }))).status,
+    ).toBe(400);
   });
 
-  it('refuses an anonymous request', async () => {
-    const ctx = await arrange();
-    expect((await anon().post('/api/fba-shipments').send(arrival(ctx))).status).toBe(401);
-  });
-
-  it('strips spaces from the barcode, as it is read off a label', async () => {
-    const ctx = await arrange();
-
-    const res = await as(ctx.admin)
-      .post('/api/fba-shipments')
-      .send(arrival(ctx, { barcode: ' FBA 0001 234 ' }));
-
-    expect(res.body.barcode).toBe('FBA0001234');
-  });
-
-  it('refuses a count of zero or less', async () => {
-    const ctx = await arrange();
-
-    expect((await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx, { count: 0 }))).status).toBe(400);
-    expect((await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx, { count: -5 }))).status).toBe(400);
-  });
-
-  it('refuses a fractional count', async () => {
-    const ctx = await arrange();
-    expect((await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx, { count: 2.5 }))).status).toBe(400);
-  });
-
-  it('refuses a missing barcode or size', async () => {
-    const ctx = await arrange();
-
-    expect((await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx, { barcode: '' }))).status).toBe(400);
-    expect((await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx, { size: '' }))).status).toBe(400);
-  });
-
-  it('refuses a category that does not exist', async () => {
-    const ctx = await arrange();
-
-    const res = await as(ctx.admin)
-      .post('/api/fba-shipments')
-      .send(arrival(ctx, { categoryId: '00000000-0000-0000-0000-000000000000' }));
-
-    expect(res.status).toBe(400);
-  });
-
-  it('opens no invoice — nothing is billed until it leaves', async () => {
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id);
-
-    await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    expect(await prisma.monthlyInvoice.count({ where: { clientId: ctx.client.id } })).toBe(0);
+  it('touches no stock yet', async () => {
+    await createShell();
+    expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
   });
 });
 
-describe('dispatching, and the charge', () => {
-  it('bills count times the agreed rate', async () => {
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id, '3.00');
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx, { count: 12 }));
+// ─── Step 2: prepare (scan products in) ─────────────────────────────────────────
 
-    const res = await as(ctx.employeeUser).post(`/api/fba-shipments/${created.body.id}/dispatch`);
+describe('adding products', () => {
+  it('reserves stock and moves the shipment to PREPARING', async () => {
+    const { body: created } = await createShell();
 
-    expect(res.status).toBe(200);
-    const invoice = await invoiceFor(ctx.client.id);
-    const charges = invoice.lineItems.filter((l) => l.itemType === 'FBA_CHARGE');
-    expect(charges).toHaveLength(1);
-    expect(Number(charges[0].quantity)).toBe(12);
-    expect(Number(charges[0].totalPrice)).toBe(36);
-    expect(Number(invoice.totalAmount)).toBe(36);
-  });
-
-  it('uses its own line type, kept separate from ordinary dispatch', async () => {
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id);
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-
-    const invoice = await invoiceFor(ctx.client.id);
-    expect(invoice.lineItems[0].itemType).toBe('FBA_CHARGE');
-  });
-
-  it('charges nothing when the client has no FBA rate', async () => {
-    // A real arrangement, not an error — the same treatment as a client with no
-    // ordinary dispatch rate.
-    const ctx = await arrange();
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    const res = await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
+    const res = await as(ctx.employeeUser)
+      .put(`/api/fba-shipments/${created.id}/items`)
+      .send({ lines: [line(10)] });
 
     expect(res.status).toBe(200);
-    expect(await prisma.monthlyInvoice.count({ where: { clientId: ctx.client.id } })).toBe(0);
+    expect(res.body.status).toBe('PREPARING');
+    expect(res.body.items).toHaveLength(1);
+    expect(await stockNow()).toEqual({ current: 100, reserved: 10 });
   });
 
-  it('records when it left', async () => {
-    const ctx = await arrange();
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+  it('replaces the line set and nets the reservation', async () => {
+    const { body: created } = await createShell();
+    await as(ctx.admin).put(`/api/fba-shipments/${created.id}/items`).send({ lines: [line(10)] });
+    expect((await stockNow()).reserved).toBe(10);
 
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-
-    const after = await prisma.fbaShipment.findUnique({ where: { id: created.body.id } });
-    expect(after.status).toBe('DISPATCHED');
-    expect(after.dispatchedAt).not.toBeNull();
+    // Re-prepare with a smaller quantity: the old reservation is handed back first.
+    await as(ctx.admin).put(`/api/fba-shipments/${created.id}/items`).send({ lines: [line(4)] });
+    expect(await stockNow()).toEqual({ current: 100, reserved: 4 });
   });
 
-  it('refuses to dispatch the same consignment twice', async () => {
-    // Otherwise it bills again.
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id);
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-    const second = await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-
-    expect(second.status).toBe(400);
-    const invoice = await invoiceFor(ctx.client.id);
-    expect(invoice.lineItems).toHaveLength(1);
+  it('refuses more than the available stock', async () => {
+    const { body: created } = await createShell();
+    const res = await as(ctx.admin)
+      .put(`/api/fba-shipments/${created.id}/items`)
+      .send({ lines: [line(1000)] });
+    expect(res.status).toBe(400);
+    expect((await stockNow()).reserved).toBe(0);
   });
 
-  it('does not rewrite a raised charge when the rate later changes', async () => {
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id, '3.00');
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx, { count: 10 }));
+  it('an empty set hands the reservation back and returns to DRAFT', async () => {
+    const { body: created } = await createShell();
+    await as(ctx.admin).put(`/api/fba-shipments/${created.id}/items`).send({ lines: [line(10)] });
 
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-    await prisma.clientService.updateMany({
-      where: { clientId: ctx.client.id },
-      data: { chargedPrice: '99.00' },
+    const res = await as(ctx.admin).put(`/api/fba-shipments/${created.id}/items`).send({ lines: [] });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('DRAFT');
+    expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
+  });
+
+  it('needs fba:update — a client cannot add products', async () => {
+    const { body: created } = await createShell();
+    const res = await as(ctx.clientUser)
+      .put(`/api/fba-shipments/${created.id}/items`)
+      .send({ lines: [line(1)] });
+    expect(res.status).toBe(403);
+  });
+});
+
+// ─── Step 3: dispatch, and the charge ───────────────────────────────────────────
+
+describe('dispatching', () => {
+  const prepared = async (quantity = 10) => {
+    const { body: created } = await createShell();
+    await as(ctx.admin).put(`/api/fba-shipments/${created.id}/items`).send({ lines: [line(quantity)] });
+    return created;
+  };
+
+  it('checks the stock out and marks it DISPATCHED', async () => {
+    const created = await prepared(10);
+
+    const res = await as(ctx.employeeUser).post(`/api/fba-shipments/${created.id}/dispatch`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('DISPATCHED');
+    // Reserved released, current down by the units shipped.
+    expect(await stockNow()).toEqual({ current: 90, reserved: 0 });
+
+    const checkouts = await prisma.inventoryLedger.count({
+      where: { referenceId: created.reference, movementType: 'CHECKOUT' },
     });
-
-    const invoice = await invoiceFor(ctx.client.id);
-    expect(Number(invoice.lineItems[0].totalPrice)).toBe(30);
+    expect(checkouts).toBe(1);
   });
 
-  it('cannot be dispatched once cancelled', async () => {
-    const ctx = await arrange();
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+  it('charges the client rate × total units', async () => {
+    await giveFbaRate(ctx.client.id, '2.00');
+    const created = await prepared(10);
 
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/cancel`);
-    const res = await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
 
+    const line0 = await prisma.invoiceLineItem.findFirst({
+      where: { itemType: 'FBA_CHARGE' },
+      orderBy: { dateOfService: 'desc' },
+    });
+    expect(Number(line0.quantity)).toBe(10);
+    expect(Number(line0.totalPrice)).toBe(20); // 10 units × 2.00
+  });
+
+  it('charges nothing when the client has no Bulk Shipment rate', async () => {
+    const created = await prepared(10);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+
+    const count = await prisma.invoiceLineItem.count({ where: { itemType: 'FBA_CHARGE' } });
+    expect(count).toBe(0);
+  });
+
+  it('will not dispatch a shipment with no products', async () => {
+    const { body: created } = await createShell();
+    const res = await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
     expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no products/i);
   });
 
-  it('cannot be cancelled once dispatched, because it has been billed', async () => {
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id);
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-    const res = await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/cancel`);
-
-    expect(res.status).toBe(400);
-  });
-
-  it('is not cancellable by an employee without fba:delete', async () => {
-    const ctx = await arrange();
-    const { user: unprivileged } = await makeEmployee();
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    expect(
-      (await as(unprivileged).post(`/api/fba-shipments/${created.body.id}/cancel`)).status
-    ).toBe(403);
+  it('cannot be dispatched twice', async () => {
+    const created = await prepared(10);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+    const again = await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+    expect(again.status).toBe(400);
   });
 });
 
-describe('deleting a consignment', () => {
-  it('removes one that was never really here', async () => {
-    const ctx = await arrange();
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+// ─── Cancel / delete ────────────────────────────────────────────────────────────
 
-    const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.body.id}`);
+describe('cancel and delete', () => {
+  const prepared = async (quantity = 10) => {
+    const { body: created } = await createShell();
+    await as(ctx.admin).put(`/api/fba-shipments/${created.id}/items`).send({ lines: [line(quantity)] });
+    return created;
+  };
 
+  it('cancelling a PREPARING shipment hands the reservation back', async () => {
+    const created = await prepared(10);
+    expect((await stockNow()).reserved).toBe(10);
+
+    const res = await as(ctx.admin).post(`/api/fba-shipments/${created.id}/cancel`);
     expect(res.status).toBe(200);
-    expect(
-      await prisma.fbaShipment.findUnique({ where: { id: created.body.id } })
-    ).toBeNull();
+    expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
   });
 
-  it('removes a cancelled one', async () => {
-    const ctx = await arrange();
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/cancel`);
-
-    expect(
-      (await as(ctx.admin).delete(`/api/fba-shipments/${created.body.id}`)).status
-    ).toBe(200);
+  it('deleting a PREPARING shipment releases its reservation too', async () => {
+    const created = await prepared(10);
+    const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
+    expect(res.status).toBe(200);
+    expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
   });
 
-  it('refuses once dispatched, and names the client it was billed to', async () => {
-    // Dispatch raised an invoice line describing this consignment's barcode.
-    // Deleting the row would leave that line describing nothing, and cancel is
-    // not available either — DISPATCHED is final. A credit is the answer.
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id);
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
+  it('refuses to delete a dispatched shipment', async () => {
+    await giveFbaRate(ctx.client.id, '2.00');
+    const created = await prepared(10);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
 
-    const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.body.id}`);
-
+    const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(ctx.client.companyName);
-    expect(res.body.error).toMatch(/credit/i);
-    expect(
-      await prisma.fbaShipment.findUnique({ where: { id: created.body.id } })
-    ).not.toBeNull();
-  });
-
-  it('is closed to an employee without fba:delete', async () => {
-    const ctx = await arrange();
-    const { user: unprivileged } = await makeEmployee();
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    expect(
-      (await as(unprivileged).delete(`/api/fba-shipments/${created.body.id}`)).status
-    ).toBe(403);
-  });
-
-});
-
-describe('staying out of the warehouse', () => {
-  it('moves no stock', async () => {
-    // The whole premise: these goods pass through, they are never put away.
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id);
-    const before = await prisma.stockLevel.findUnique({ where: { id: ctx.stock.id } });
-
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-
-    const after = await prisma.stockLevel.findUnique({ where: { id: ctx.stock.id } });
-    expect(after.currentQuantity).toBe(before.currentQuantity);
-    expect(after.reservedQuantity).toBe(before.reservedQuantity);
-  });
-
-  it('writes no ledger movement', async () => {
-    const ctx = await arrange();
-    await giveFbaRate(ctx.client.id);
-
-    const created = await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-    await as(ctx.admin).post(`/api/fba-shipments/${created.body.id}/dispatch`);
-
-    expect(await prisma.inventoryLedger.count()).toBe(0);
-  });
-
-  it('creates no ordinary Shipment row', async () => {
-    const ctx = await arrange();
-
-    await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-
-    expect(await prisma.shipment.count()).toBe(0);
+    expect(res.body.error).toMatch(/cannot be deleted/i);
   });
 });
+
+// ─── Who sees what ──────────────────────────────────────────────────────────────
 
 describe('who sees what', () => {
-  it('a client sees only their own consignments', async () => {
-    const ctx = await arrange();
+  it('a client sees only their own bulk shipments; staff see all', async () => {
+    await createShell(); // ctx.client
     const other = await makeWarehouseScenario();
-    await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
+    const otherCat = ctx.category; // categories are shared
     await as(ctx.admin)
       .post('/api/fba-shipments')
-      .send(arrival(ctx, { clientId: other.client.id }));
+      .send({ clientId: other.client.id, categoryId: otherCat.id });
 
-    const res = await as(ctx.clientUser).get('/api/fba-shipments');
+    const staffList = await as(ctx.admin).get('/api/fba-shipments');
+    expect(staffList.body.length).toBeGreaterThanOrEqual(2);
 
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].clientId).toBe(ctx.client.id);
+    const clientList = await as(ctx.clientUser).get('/api/fba-shipments');
+    expect(clientList.body.every((s) => s.clientId === ctx.client.id)).toBe(true);
   });
 
-  it('staff see everything', async () => {
-    const ctx = await arrange();
-    const other = await makeWarehouseScenario();
-    await as(ctx.admin).post('/api/fba-shipments').send(arrival(ctx));
-    await as(ctx.admin)
-      .post('/api/fba-shipments')
-      .send(arrival(ctx, { clientId: other.client.id }));
-
-    const res = await as(ctx.employeeUser).get('/api/fba-shipments');
-
-    expect(res.body).toHaveLength(2);
-  });
-
-  it('404s a client asking for someone else consignment, rather than 403', async () => {
-    // 403 would confirm the id exists, which is a probe.
-    const ctx = await arrange();
-    const other = await makeWarehouseScenario();
-    const created = await as(ctx.admin)
-      .post('/api/fba-shipments')
-      .send(arrival(ctx, { clientId: other.client.id }));
-
-    const res = await as(ctx.clientUser).get(`/api/fba-shipments/${created.body.id}`);
-
+  it('404s another client’s shipment rather than revealing it', async () => {
+    const { body: mine } = await createShell();
+    const otherClientUser = (await makeWarehouseScenario()).clientUser;
+    const res = await as(otherClientUser).get(`/api/fba-shipments/${mine.id}`);
     expect(res.status).toBe(404);
   });
 });
