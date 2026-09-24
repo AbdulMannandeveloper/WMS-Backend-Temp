@@ -10,7 +10,7 @@ const includeRelations = {
   items: {
     include: {
       product: { select: { id: true, skuCode: true, productName: true } },
-      sourceLocation: { select: { id: true, locationName: true, zone: true } },
+      sourceLocation: { select: { id: true, locationName: true, materializedPath: true } },
     },
     orderBy: { createdAt: 'asc' },
   },

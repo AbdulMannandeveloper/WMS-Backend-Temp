@@ -35,6 +35,11 @@ const auditLogLogic = require('./audit_log.logic');
 const { getFbaRateForClient, resolveOpenInvoiceFor } = require('./billing_services');
 const { prisma } = require('../lib/prisma');
 
+// Prisma's interactive-transaction default is 5s. Preparing a shipment does
+// several round trips per line (find stock, reserve, insert) against a remote
+// database, so a basket of any size overran it and rolled back mid-save.
+const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 60_000 };
+
 const FBA_TRANSITIONS = {
   DRAFT: ['PREPARING', 'CANCELLED'],
   PREPARING: ['DISPATCHED', 'DRAFT', 'CANCELLED'],
@@ -183,7 +188,7 @@ const createBulkShipment = async (data, actorUserId) => {
       const created = await prisma.$transaction(async (tx) => {
         const reference = await nextBulkReference(tx);
         return await fbaRepository.createShipment({ ...shell, reference }, tx);
-      });
+      }, TRANSACTION_OPTIONS);
       await audit(actorUserId, 'FBA_SHIPMENT_CREATED', {
         fbaShipmentId: created.id,
         reference: created.reference,
@@ -237,7 +242,7 @@ const setBulkItems = async (id, rawLines, actorUserId) => {
 
   const lines = normaliseLines(rawLines);
 
-  return await prisma.$transaction(async (tx) => {
+  const updated = await prisma.$transaction(async (tx) => {
     // Hand back what the current lines reserved, then clear them.
     const existing = await fbaRepository.getItemsByShipment(id, tx);
     for (const item of existing) {
@@ -285,20 +290,21 @@ const setBulkItems = async (id, rawLines, actorUserId) => {
     }
 
     const nextStatus = lines.length > 0 ? 'PREPARING' : 'DRAFT';
-    const updated = await fbaRepository.updateShipment(
+    return await fbaRepository.updateShipment(
       id,
       { status: nextStatus, preparedByUserId: actorUserId ?? null },
       tx,
     );
+  }, TRANSACTION_OPTIONS);
 
-    await audit(actorUserId, 'FBA_SHIPMENT_PREPARED', {
-      fbaShipmentId: id,
-      lineCount: lines.length,
-      units: lines.reduce((sum, l) => sum + l.quantity, 0),
-    });
-
-    return updated;
+  // After the commit: an audit write runs on its own connection, so inside the
+  // transaction it only held it open.
+  await audit(actorUserId, 'FBA_SHIPMENT_PREPARED', {
+    fbaShipmentId: id,
+    lineCount: lines.length,
+    units: lines.reduce((sum, l) => sum + l.quantity, 0),
   });
+  return updated;
 };
 
 /**
@@ -315,7 +321,7 @@ const dispatchBulk = async (id, actorUserId) => {
     throw new Error('A bulk shipment cannot be dispatched with no products added.');
   }
 
-  return await prisma.$transaction(async (tx) => {
+  const { updated, totalUnits, charged } = await prisma.$transaction(async (tx) => {
     const dispatchedAt = new Date();
 
     // Status first, so the CHECKOUT ledger validation below sees this shipment
@@ -374,16 +380,17 @@ const dispatchBulk = async (id, actorUserId) => {
       charged = Number((totalUnits * unitPrice).toFixed(2));
     }
 
-    await audit(actorUserId, 'FBA_SHIPMENT_DISPATCHED', {
-      fbaShipmentId: id,
-      clientId: shipment.clientId,
-      units: totalUnits,
-      products: items.length,
-      charged,
-    });
+    return { updated, totalUnits, charged };
+  }, TRANSACTION_OPTIONS);
 
-    return updated;
+  await audit(actorUserId, 'FBA_SHIPMENT_DISPATCHED', {
+    fbaShipmentId: id,
+    clientId: shipment.clientId,
+    units: totalUnits,
+    products: items.length,
+    charged,
   });
+  return updated;
 };
 
 /** Voids a bulk shipment before dispatch, handing back any reserved stock. */
@@ -391,7 +398,7 @@ const cancel = async (id, reason, actorUserId) => {
   const shipment = await requireShipment(id);
   assertTransition(shipment.status, 'CANCELLED');
 
-  return await prisma.$transaction(async (tx) => {
+  const updated = await prisma.$transaction(async (tx) => {
     // Only a PREPARING shipment holds reservations; DRAFT and legacy RECEIVED
     // hold none, so there is nothing to release for those.
     if (shipment.status === 'PREPARING') {
@@ -408,10 +415,11 @@ const cancel = async (id, reason, actorUserId) => {
       }
     }
 
-    const updated = await fbaRepository.updateShipment(id, { status: 'CANCELLED' }, tx);
-    await audit(actorUserId, 'FBA_SHIPMENT_CANCELLED', { fbaShipmentId: id, reason: reason ?? null });
-    return updated;
-  });
+    return await fbaRepository.updateShipment(id, { status: 'CANCELLED' }, tx);
+  }, TRANSACTION_OPTIONS);
+
+  await audit(actorUserId, 'FBA_SHIPMENT_CANCELLED', { fbaShipmentId: id, reason: reason ?? null });
+  return updated;
 };
 
 /**
@@ -430,7 +438,7 @@ const remove = async (id, actorUserId) => {
     );
   }
 
-  return await prisma.$transaction(async (tx) => {
+  const deleted = await prisma.$transaction(async (tx) => {
     if (shipment.status === 'PREPARING') {
       const items = await fbaRepository.getItemsByShipment(id, tx);
       for (const item of items) {
@@ -445,15 +453,16 @@ const remove = async (id, actorUserId) => {
       }
     }
 
-    const deleted = await fbaRepository.deleteShipment(id, tx);
-    await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {
-      fbaShipmentId: id,
-      reference: shipment.reference,
-      clientId: shipment.clientId,
-      status: shipment.status,
-    });
-    return deleted;
+    return await fbaRepository.deleteShipment(id, tx);
+  }, TRANSACTION_OPTIONS);
+
+  await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {
+    fbaShipmentId: id,
+    reference: shipment.reference,
+    clientId: shipment.clientId,
+    status: shipment.status,
   });
+  return deleted;
 };
 
 const getAllShipments = async () => await fbaRepository.getAllShipments();
