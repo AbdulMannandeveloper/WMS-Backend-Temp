@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import { prisma } from '../helpers/db.js';
 import { as } from '../helpers/auth.js';
 import {
+  makeEmployee,
   makeWarehouseScenario,
   makeShipment,
   makeShipmentItem,
@@ -129,14 +130,29 @@ describe('shipment lifecycle', () => {
   });
 
   describe('illegal transitions', () => {
-    it('an employee cannot jump a PENDING shipment straight to DISPATCHED', async () => {
+    it('status is not settable through the update, whoever is asking', async () => {
+      // This used to assert a 403 and note that an employee never reached the
+      // handler — which meant the state machine underneath was never actually
+      // exercised. A granted employee reaches it now, so the real rule can be
+      // stated: status moves through the transition endpoints or not at all.
       const { employeeUser, shipment } = await arrange();
 
       const res = await as(employeeUser)
         .put(`/api/shipments/${shipment.id}`)
         .send({ status: 'DISPATCHED' });
 
-      // Admin-only route now; an employee never reaches the handler.
+      expect(res.status).not.toBe(403);
+      await expect(statusOf(shipment.id)).resolves.toBe('PENDING');
+    });
+
+    it('an employee without shipments:update cannot reach the update at all', async () => {
+      const { shipment } = await arrange();
+      const { user: unprivileged } = await makeEmployee();
+
+      const res = await as(unprivileged)
+        .put(`/api/shipments/${shipment.id}`)
+        .send({ status: 'DISPATCHED' });
+
       expect(res.status).toBe(403);
       await expect(statusOf(shipment.id)).resolves.toBe('PENDING');
     });
@@ -203,10 +219,11 @@ describe('shipment lifecycle', () => {
   });
 
   describe('who may do what', () => {
-    it('an employee cannot change the courier', async () => {
-      const { employeeUser, shipment } = await arrange();
+    it('an employee without shipments:update cannot change the courier', async () => {
+      const { shipment } = await arrange();
+      const { user: unprivileged } = await makeEmployee();
 
-      const res = await as(employeeUser)
+      const res = await as(unprivileged)
         .put(`/api/shipments/${shipment.id}`)
         .send({ courierName: 'DPD' });
 
@@ -246,13 +263,17 @@ describe('shipment lifecycle', () => {
       expect(after.trackingId).toBeNull();
     });
 
-    it('an employee cannot cancel, reopen or delete', async () => {
-      const { employeeUser, shipment } = await arrange();
+    it('an employee holding nothing cannot cancel, reopen or delete', async () => {
+      // Granted shipments:delete they could cancel and delete, and granted
+      // shipments:update they could reopen — that is the point of the module.
+      // What is still true is that none of it comes with the role.
+      const { shipment } = await arrange();
+      const { user: unprivileged } = await makeEmployee();
 
       for (const call of [
-        as(employeeUser).post(`/api/shipments/${shipment.id}/cancel`),
-        as(employeeUser).post(`/api/shipments/${shipment.id}/reopen`),
-        as(employeeUser).delete(`/api/shipments/${shipment.id}`),
+        as(unprivileged).post(`/api/shipments/${shipment.id}/cancel`),
+        as(unprivileged).post(`/api/shipments/${shipment.id}/reopen`),
+        as(unprivileged).delete(`/api/shipments/${shipment.id}`),
       ]) {
         await expect(call.then((r) => r.status)).resolves.toBe(403);
       }
@@ -287,7 +308,11 @@ describe('shipment lifecycle', () => {
       expect(after.currentQuantity).toBe(100);
     });
 
-    it('refuses to delete a dispatched shipment', async () => {
+    it('deletes a dispatched shipment, reversing it', async () => {
+      // Deleting a dispatched shipment used to be refused outright; it now
+      // reverses the dispatch instead — the full stock-and-charge unwind is in
+      // delete-reversal.test.js. This bare row carries no items or charge, so
+      // the reversal is a no-op and it simply deletes.
       const { admin, employee, client } = await arrange();
       const dispatched = await makeShipment(employee.id, client.id, {
         status: 'DISPATCHED',
@@ -295,12 +320,10 @@ describe('shipment lifecycle', () => {
 
       const res = await as(admin).delete(`/api/shipments/${dispatched.id}`);
 
-      // Deleting it would orphan the inventory_ledger rows that reference it.
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/cannot be deleted/i);
+      expect(res.status).toBe(200);
       await expect(
         prisma.shipment.count({ where: { id: dispatched.id } })
-      ).resolves.toBe(1);
+      ).resolves.toBe(0);
     });
 
     it('still deletes a pending shipment and releases its stock', async () => {

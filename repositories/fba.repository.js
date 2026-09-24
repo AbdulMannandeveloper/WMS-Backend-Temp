@@ -7,6 +7,13 @@ const db = (tx) => tx || prisma;
 const includeRelations = {
   category: true,
   client: { select: { id: true, companyName: true } },
+  items: {
+    include: {
+      product: { select: { id: true, skuCode: true, productName: true } },
+      sourceLocation: { select: { id: true, locationName: true, zone: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  },
 };
 
 // ─── Categories ───────────────────────────────────────────────────────────────
@@ -37,6 +44,18 @@ const countShipmentsInCategory = async (categoryId, tx) =>
 const createShipment = async (data, tx) =>
   await db(tx).fbaShipment.create({ data, include: includeRelations });
 
+/**
+ * The most recent references in a series (e.g. "BULK-2026-"), highest first, for
+ * the sequence generator. Mirrors shipment.repository.getLatestReferencesInSeries.
+ */
+const getLatestReferencesInSeries = async (prefix, take, tx) =>
+  await db(tx).fbaShipment.findMany({
+    where: { reference: { startsWith: prefix } },
+    orderBy: { reference: 'desc' },
+    select: { reference: true },
+    take,
+  });
+
 const getAllShipments = async (tx) =>
   await db(tx).fbaShipment.findMany({
     include: includeRelations,
@@ -59,6 +78,17 @@ const updateShipment = async (id, data, tx) =>
 const deleteShipment = async (id, tx) =>
   await db(tx).fbaShipment.delete({ where: { id } });
 
+// ─── Shipment items (the scanned products) ──────────────────────────────────────
+
+const getItemsByShipment = async (fbaShipmentId, tx) =>
+  await db(tx).fbaShipmentItem.findMany({ where: { fbaShipmentId } });
+
+const createItem = async (data, tx) =>
+  await db(tx).fbaShipmentItem.create({ data });
+
+const deleteItemsByShipment = async (fbaShipmentId, tx) =>
+  await db(tx).fbaShipmentItem.deleteMany({ where: { fbaShipmentId } });
+
 module.exports = {
   createCategory,
   getAllCategories,
@@ -68,9 +98,13 @@ module.exports = {
   deleteCategory,
   countShipmentsInCategory,
   createShipment,
+  getLatestReferencesInSeries,
   getAllShipments,
   getShipmentsByClientId,
   getShipmentById,
   updateShipment,
   deleteShipment,
+  getItemsByShipment,
+  createItem,
+  deleteItemsByShipment,
 };

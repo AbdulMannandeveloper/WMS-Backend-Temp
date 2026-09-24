@@ -91,6 +91,14 @@ const authorizeRoles = (...allowedRoles) => {
                 lastName: user.lastName,
                 username: user.username,
                 isActive: user.isActive,
+                // What this employee may do, read from the same cached record
+                // as the role. requirePermission is the only consumer, and it
+                // costs nothing here because the row is already loaded.
+                //
+                // Defaulted rather than trusted: a row written before the
+                // column existed reads as null, and a null here would make
+                // every permission check throw rather than refuse.
+                permissions: Array.isArray(user.permissions) ? user.permissions : [],
             };
 
             return next();

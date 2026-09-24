@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import { prisma } from '../helpers/db.js';
 import { as, anon } from '../helpers/auth.js';
 import {
+  grantPermissions,
   makeWarehouseScenario,
   makeLocation,
   makeProduct,
@@ -255,8 +256,11 @@ describe('nothing lands when anything is wrong', () => {
 });
 
 describe('who may receive stock', () => {
-  it('allows an employee — this is their job', async () => {
+  it('allows an employee granted inventory:create — this is their job', async () => {
     const { location, productA, employeeUser } = await arrange();
+    // Receiving is a create. Employees hold nothing until an admin grants, so
+    // the job now has to be given rather than assumed from the role.
+    await grantPermissions(employeeUser, 'inventory:create');
 
     const res = await post(employeeUser, {
       toLocationId: location.id,
@@ -268,6 +272,7 @@ describe('who may receive stock', () => {
 
   it('records the movement against whoever was signed in, not the body', async () => {
     const { location, productA, employeeUser } = await arrange();
+    await grantPermissions(employeeUser, 'inventory:create');
 
     await post(employeeUser, {
       toLocationId: location.id,

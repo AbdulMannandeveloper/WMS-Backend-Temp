@@ -1,27 +1,43 @@
 'use strict';
 
 /**
- * FBA consignments.
+ * Bulk shipments (held on the FBA model, labelled "Bulk Shipment" in the UI).
  *
- * A separate flow from ordinary shipments, and deliberately a much smaller one:
- * goods arrive, they are recorded by hand, they leave. Nothing is scanned,
- * nothing is put away, no stock level moves and no ledger entry is written,
- * because the goods were never in our inventory to begin with — they pass
- * through. What is billed is the passing through, per item, when they go.
+ * A three-step flow, each step its own action so one, two or three different
+ * people can carry them out:
  *
- * The state machine is explicit for the same reason it is on Shipment: status
- * being a settable field is what once let a shipment be moved to DISPATCHED
- * without any of the work dispatch is supposed to do.
+ *   1. create   — someone opens a bulk shipment for a client, choosing a
+ *                 category (box/pallet), destination, delivery note and
+ *                 tracking number. It gets a BULK-YYYY-NNNNNN reference and
+ *                 starts in DRAFT.
+ *   2. prepare  — someone scans products into it with quantities. Each line
+ *                 reserves its stock so it cannot be committed elsewhere while
+ *                 the shipment sits waiting. Status becomes PREPARING.
+ *   3. dispatch — someone sends it. The reserved stock is checked out (a real
+ *                 inventory movement, unlike the old pass-through FBA), and the
+ *                 client is charged their single Bulk Shipment rate × the total
+ *                 units shipped.
+ *
+ * Status is a state machine here rather than a settable field, the same reason
+ * it is on Shipment: a settable status is what once let goods "dispatch" without
+ * the stock and billing dispatch is supposed to do.
+ *
+ * RECEIVED is the legacy single-step status; old rows keep it and can still be
+ * dispatched or cancelled.
  */
 
 const fbaRepository = require('../repositories/fba.repository');
 const invoiceLineItemRepository = require('../repositories/invoice_line_item.repository');
 const clientRepository = require('../repositories/client.repository');
+const stockLevelRepository = require('../repositories/stock_level.repository');
+const inventoryLedgerLogic = require('./inventory_ledger.logic');
 const auditLogLogic = require('./audit_log.logic');
 const { getFbaRateForClient, resolveOpenInvoiceFor } = require('./billing_services');
 const { prisma } = require('../lib/prisma');
 
 const FBA_TRANSITIONS = {
+  DRAFT: ['PREPARING', 'CANCELLED'],
+  PREPARING: ['DISPATCHED', 'DRAFT', 'CANCELLED'],
   RECEIVED: ['DISPATCHED', 'CANCELLED'],
   DISPATCHED: [],
   CANCELLED: [],
@@ -29,11 +45,11 @@ const FBA_TRANSITIONS = {
 
 const assertTransition = (from, to) => {
   const allowed = FBA_TRANSITIONS[from];
-  if (!allowed) throw new Error(`Consignment has an unrecognised status: ${from}.`);
+  if (!allowed) throw new Error(`Bulk shipment has an unrecognised status: ${from}.`);
   if (!allowed.includes(to)) {
     const options = allowed.length ? allowed.join(', ') : 'nothing — it is final';
     throw new Error(
-      `A ${from} consignment cannot become ${to}. From ${from} you can move to: ${options}.`,
+      `A ${from} bulk shipment cannot become ${to}. From ${from} you can move to: ${options}.`,
     );
   }
 };
@@ -46,13 +62,11 @@ const audit = (actorUserId, action, details) => {
     .catch((err) => console.error(`Audit log error (${action}):`, err.message));
 };
 
-// ─── Categories ───────────────────────────────────────────────────────────────
+const countUnits = (items) =>
+  items.reduce((total, item) => total + Number(item.quantity || 0), 0);
 
-/**
- * Categories are set up before anything can be recorded — a consignment must
- * belong to one, so an empty category list is a deliberate first step rather
- * than an oversight.
- */
+// ─── Categories (box / pallet labels — no price) ────────────────────────────────
+
 const addCategory = async ({ name }, actorUserId) => {
   const trimmed = String(name ?? '').trim();
   if (!trimmed) throw new Error('A category name is required.');
@@ -83,11 +97,6 @@ const updateCategory = async (id, { name }, actorUserId) => {
   return updated;
 };
 
-/**
- * Refused while consignments still reference it. Deleting would either orphan
- * their history or cascade it away, and both lose the record of what was
- * handled and billed.
- */
 const deleteCategory = async (id, actorUserId) => {
   const category = await fbaRepository.getCategoryById(id);
   if (!category) throw new Error('Category not found.');
@@ -95,7 +104,7 @@ const deleteCategory = async (id, actorUserId) => {
   const inUse = await fbaRepository.countShipmentsInCategory(id);
   if (inUse > 0) {
     throw new Error(
-      `"${category.name}" is used by ${inUse} consignment(s) and cannot be deleted.`,
+      `"${category.name}" is used by ${inUse} bulk shipment(s) and cannot be deleted.`,
     );
   }
 
@@ -104,33 +113,52 @@ const deleteCategory = async (id, actorUserId) => {
   return { message: 'Category deleted.' };
 };
 
+// ─── The bulk-shipment reference ────────────────────────────────────────────────
+// BULK-<year>-<sequence>, generated the same way as Shipment.reference.
+
+const REFERENCE_PREFIX = 'BULK';
+const REFERENCE_DIGITS = 6;
+const REFERENCE_ATTEMPTS = 5;
+const REFERENCE_SCAN = 10;
+
+const referenceSeriesFor = (date) => `${REFERENCE_PREFIX}-${date.getUTCFullYear()}-`;
+
+const nextBulkReference = async (tx) => {
+  const series = referenceSeriesFor(new Date());
+  const recent = await fbaRepository.getLatestReferencesInSeries(series, REFERENCE_SCAN, tx);
+
+  let last = 0;
+  for (const row of recent) {
+    const tail = row.reference.slice(series.length);
+    if (!/^\d+$/.test(tail)) continue;
+    last = Number.parseInt(tail, 10);
+    break;
+  }
+
+  return `${series}${String(last + 1).padStart(REFERENCE_DIGITS, '0')}`;
+};
+
+const isReferenceClash = (error) => {
+  if (error?.code !== 'P2002') return false;
+  const target = error.meta?.target;
+  const fields = Array.isArray(target) ? target : [target];
+  return fields.some((f) => String(f ?? '').includes('reference'));
+};
+
 // ─── Consignments ─────────────────────────────────────────────────────────────
 
 const requireShipment = async (id) => {
   const shipment = await fbaRepository.getShipmentById(id);
-  if (!shipment) throw new Error('Consignment not found.');
+  if (!shipment) throw new Error('Bulk shipment not found.');
   return shipment;
 };
 
-/** Records goods arriving. Everything is typed in; nothing is looked up. */
-const recordArrival = async (data, actorUserId) => {
-  const { categoryId, clientId, barcode, size, count, notes } = data;
+/** Step 1: open an empty bulk shipment. */
+const createBulkShipment = async (data, actorUserId) => {
+  const { clientId, categoryId, destination, deliveryNote, trackingId } = data;
 
-  if (!categoryId) throw new Error('A category is required.');
   if (!clientId) throw new Error('A client is required.');
-
-  const barcodeValue = String(barcode ?? '').replace(/\s+/g, '');
-  if (!barcodeValue) throw new Error('A barcode is required.');
-  if (barcodeValue.length > 64) throw new Error('Barcode is too long — 64 characters maximum.');
-
-  const sizeValue = String(size ?? '').trim();
-  if (!sizeValue) throw new Error('A size is required.');
-  if (sizeValue.length > 60) throw new Error('Size is too long — 60 characters maximum.');
-
-  const countValue = Number(count);
-  if (!Number.isInteger(countValue) || countValue <= 0) {
-    throw new Error('Count must be a whole number above zero.');
-  }
+  if (!categoryId) throw new Error('A category is required.');
 
   const category = await fbaRepository.getCategoryById(categoryId);
   if (!category) throw new Error('That category does not exist.');
@@ -138,49 +166,184 @@ const recordArrival = async (data, actorUserId) => {
   const client = await clientRepository.getClientByField('id', clientId);
   if (!client) throw new Error('That client does not exist.');
 
-  const created = await fbaRepository.createShipment({
+  const shell = {
     categoryId,
     clientId,
-    barcode: barcodeValue,
-    size: sizeValue,
-    count: countValue,
-    notes: notes ? String(notes) : null,
-    status: 'RECEIVED',
-  });
+    destination: destination ? String(destination).trim().slice(0, 160) : null,
+    deliveryNote: deliveryNote ? String(deliveryNote) : null,
+    trackingId: trackingId ? String(trackingId).trim().slice(0, 64) : null,
+    status: 'DRAFT',
+    createdByUserId: actorUserId ?? null,
+  };
 
-  await audit(actorUserId, 'FBA_SHIPMENT_RECEIVED', {
-    fbaShipmentId: created.id,
-    clientId,
-    barcode: barcodeValue,
-    count: countValue,
-  });
+  // Reference is issued inside the transaction and retried on the one unique
+  // clash it can hit — two creates picking the same number at once.
+  for (let attempt = 0; attempt < REFERENCE_ATTEMPTS; attempt += 1) {
+    try {
+      const created = await prisma.$transaction(async (tx) => {
+        const reference = await nextBulkReference(tx);
+        return await fbaRepository.createShipment({ ...shell, reference }, tx);
+      });
+      await audit(actorUserId, 'FBA_SHIPMENT_CREATED', {
+        fbaShipmentId: created.id,
+        reference: created.reference,
+        clientId,
+      });
+      return created;
+    } catch (err) {
+      if (isReferenceClash(err) && attempt < REFERENCE_ATTEMPTS - 1) continue;
+      throw err;
+    }
+  }
+  // Unreachable: the loop returns or throws.
+  throw new Error('Could not issue a bulk shipment reference. Please try again.');
+};
 
-  return created;
+const normaliseLines = (raw) => {
+  if (!Array.isArray(raw)) throw new Error('Products must be a list.');
+  return raw.map((line, i) => {
+    const productId = line.productId;
+    const sourceLocationId = line.sourceLocationId;
+    const quantity = Number(line.quantity);
+    if (!productId) throw new Error(`Line ${i + 1}: a product is required.`);
+    if (!sourceLocationId) throw new Error(`Line ${i + 1}: a source location is required.`);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error(`Line ${i + 1}: quantity must be a whole number above zero.`);
+    }
+    return {
+      productId,
+      sourceLocationId,
+      quantity,
+      barcode: line.barcode ? String(line.barcode) : null,
+    };
+  });
 };
 
 /**
- * Records goods leaving, and bills for them.
+ * Step 2: set the products on a bulk shipment (scan → quantity).
  *
- * The charge is count × the client's agreed FBA rate, frozen onto the line, so a
- * later rate change cannot rewrite what was already raised. A client with no FBA
- * rate is simply not charged — the same treatment as a client with no dispatch
- * rate, and a real arrangement rather than an error.
+ * Replaces the whole line set, so the prepare screen sends the basket as it
+ * stands. Every line reserves its stock; the previous lines' reservations are
+ * handed back first, so re-preparing nets correctly. An empty set drops the
+ * shipment back to DRAFT.
  */
-const recordDispatch = async (id, actorUserId) => {
+const setBulkItems = async (id, rawLines, actorUserId) => {
+  const shipment = await requireShipment(id);
+  if (!['DRAFT', 'PREPARING'].includes(shipment.status)) {
+    throw new Error(
+      `Products can only be added while a bulk shipment is being prepared — this one is ${shipment.status}.`,
+    );
+  }
+
+  const lines = normaliseLines(rawLines);
+
+  return await prisma.$transaction(async (tx) => {
+    // Hand back what the current lines reserved, then clear them.
+    const existing = await fbaRepository.getItemsByShipment(id, tx);
+    for (const item of existing) {
+      const stock = await stockLevelRepository.getStockLevelByProductAndLocation(
+        item.productId,
+        item.sourceLocationId,
+        tx,
+      );
+      if (stock) {
+        await stockLevelRepository.releaseReservedStockAtomically(stock.id, item.quantity, tx);
+      }
+    }
+    await fbaRepository.deleteItemsByShipment(id, tx);
+
+    // Reserve and record the new lines.
+    for (const line of lines) {
+      const stock = await stockLevelRepository.getStockLevelByProductAndLocation(
+        line.productId,
+        line.sourceLocationId,
+        tx,
+      );
+      if (!stock) {
+        throw new Error('That product has no stock record at the chosen location.');
+      }
+      const reserved = await stockLevelRepository.reserveStockAtomically(
+        stock.id,
+        line.quantity,
+        tx,
+      );
+      if (reserved === 0) {
+        throw new Error(
+          `Not enough available stock to reserve ${line.quantity} unit(s) at that location.`,
+        );
+      }
+      await fbaRepository.createItem(
+        {
+          fbaShipmentId: id,
+          productId: line.productId,
+          quantity: line.quantity,
+          sourceLocationId: line.sourceLocationId,
+          barcode: line.barcode,
+        },
+        tx,
+      );
+    }
+
+    const nextStatus = lines.length > 0 ? 'PREPARING' : 'DRAFT';
+    const updated = await fbaRepository.updateShipment(
+      id,
+      { status: nextStatus, preparedByUserId: actorUserId ?? null },
+      tx,
+    );
+
+    await audit(actorUserId, 'FBA_SHIPMENT_PREPARED', {
+      fbaShipmentId: id,
+      lineCount: lines.length,
+      units: lines.reduce((sum, l) => sum + l.quantity, 0),
+    });
+
+    return updated;
+  });
+};
+
+/**
+ * Step 3: dispatch. Checks the reserved stock out (a real CHECKOUT movement,
+ * against this shipment's reference) and bills the client their single Bulk
+ * Shipment rate × total units. A client with no rate is not charged.
+ */
+const dispatchBulk = async (id, actorUserId) => {
   const shipment = await requireShipment(id);
   assertTransition(shipment.status, 'DISPATCHED');
+
+  const items = shipment.items || [];
+  if (items.length === 0) {
+    throw new Error('A bulk shipment cannot be dispatched with no products added.');
+  }
 
   return await prisma.$transaction(async (tx) => {
     const dispatchedAt = new Date();
 
+    // Status first, so the CHECKOUT ledger validation below sees this shipment
+    // as DISPATCHED when it looks it up by reference.
     const updated = await fbaRepository.updateShipment(
       id,
-      { status: 'DISPATCHED', dispatchedAt },
+      { status: 'DISPATCHED', dispatchedAt, dispatchedByUserId: actorUserId ?? null },
       tx,
     );
 
+    for (const item of items) {
+      await inventoryLedgerLogic.createInventoryLedger(
+        {
+          productId: item.productId,
+          userId: actorUserId,
+          movementType: 'CHECKOUT',
+          quantity: item.quantity,
+          referenceId: shipment.reference,
+          fromLocationId: item.sourceLocationId,
+        },
+        { tx },
+      );
+    }
+
+    const totalUnits = countUnits(items);
     const rate = await getFbaRateForClient(shipment.clientId, tx);
     const unitPrice = rate ? Number(rate.unitPrice) : 0;
+    let charged = null;
 
     if (rate && unitPrice > 0) {
       const invoice = await resolveOpenInvoiceFor(shipment.clientId, tx);
@@ -189,17 +352,16 @@ const recordDispatch = async (id, actorUserId) => {
         {
           invoiceId: invoice.id,
           clientServiceId: rate.clientService.id,
-          quantity: shipment.count,
+          quantity: totalUnits,
           unitPrice,
-          totalPrice: Number((shipment.count * unitPrice).toFixed(2)),
-          description: `FBA consignment — ${shipment.count} item(s), ${shipment.category?.name ?? 'uncategorised'}, barcode ${shipment.barcode}`,
+          totalPrice: Number((totalUnits * unitPrice).toFixed(2)),
+          description: `Bulk shipment ${shipment.reference} — ${totalUnits} unit(s) across ${items.length} product(s)`,
           dateOfService: dispatchedAt,
           itemType: 'FBA_CHARGE',
         },
         tx,
       );
 
-      // Derived from the lines, never accumulated here.
       const { _sum } = await tx.invoiceLineItem.aggregate({
         where: { invoiceId: invoice.id },
         _sum: { totalPrice: true },
@@ -208,39 +370,55 @@ const recordDispatch = async (id, actorUserId) => {
         where: { id: invoice.id },
         data: { totalAmount: _sum.totalPrice ?? 0 },
       });
+
+      charged = Number((totalUnits * unitPrice).toFixed(2));
     }
 
     await audit(actorUserId, 'FBA_SHIPMENT_DISPATCHED', {
       fbaShipmentId: id,
       clientId: shipment.clientId,
-      count: shipment.count,
-      charged: rate ? Number((shipment.count * unitPrice).toFixed(2)) : null,
+      units: totalUnits,
+      products: items.length,
+      charged,
     });
 
     return updated;
   });
 };
 
-/** For a mis-key. Refused once dispatched, because it has already been billed. */
+/** Voids a bulk shipment before dispatch, handing back any reserved stock. */
 const cancel = async (id, reason, actorUserId) => {
   const shipment = await requireShipment(id);
   assertTransition(shipment.status, 'CANCELLED');
 
-  const updated = await fbaRepository.updateShipment(id, { status: 'CANCELLED' });
-  await audit(actorUserId, 'FBA_SHIPMENT_CANCELLED', { fbaShipmentId: id, reason: reason ?? null });
-  return updated;
+  return await prisma.$transaction(async (tx) => {
+    // Only a PREPARING shipment holds reservations; DRAFT and legacy RECEIVED
+    // hold none, so there is nothing to release for those.
+    if (shipment.status === 'PREPARING') {
+      const items = await fbaRepository.getItemsByShipment(id, tx);
+      for (const item of items) {
+        const stock = await stockLevelRepository.getStockLevelByProductAndLocation(
+          item.productId,
+          item.sourceLocationId,
+          tx,
+        );
+        if (stock) {
+          await stockLevelRepository.releaseReservedStockAtomically(stock.id, item.quantity, tx);
+        }
+      }
+    }
+
+    const updated = await fbaRepository.updateShipment(id, { status: 'CANCELLED' }, tx);
+    await audit(actorUserId, 'FBA_SHIPMENT_CANCELLED', { fbaShipmentId: id, reason: reason ?? null });
+    return updated;
+  });
 };
 
 /**
- * Hard-deletes a consignment, for one recorded that was never really here.
- *
- * Refused once DISPATCHED, mirroring deleteShipment on the outbound side: that
- * is the moment the client was charged, and the invoice line naming this
- * consignment's barcode would be left describing a row that no longer exists.
- * Cancel is not available then either — the state machine makes DISPATCHED
- * final — so the answer at that point is a credit, not a deletion.
- *
- * Nothing depends on FbaShipment, so nothing cascades away with it.
+ * Hard-deletes a bulk shipment. Refused once DISPATCHED — that is when the stock
+ * moved and the client was billed, so the answer then is a credit, not a delete.
+ * Any reservation a PREPARING shipment still holds is handed back first; its
+ * item rows cascade with it.
  */
 const remove = async (id, actorUserId) => {
   const shipment = await requireShipment(id);
@@ -248,19 +426,34 @@ const remove = async (id, actorUserId) => {
   if (shipment.status === 'DISPATCHED') {
     const client = shipment.client?.companyName ?? 'the client';
     throw new Error(
-      `This consignment was dispatched and billed to ${client}. It cannot be deleted — credit the invoice instead.`,
+      `This bulk shipment was dispatched and billed to ${client}. It cannot be deleted — credit the invoice instead.`,
     );
   }
 
-  const deleted = await fbaRepository.deleteShipment(id);
-  await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {
-    fbaShipmentId: id,
-    clientId: shipment.clientId,
-    barcode: shipment.barcode,
-    count: shipment.count,
-    status: shipment.status,
+  return await prisma.$transaction(async (tx) => {
+    if (shipment.status === 'PREPARING') {
+      const items = await fbaRepository.getItemsByShipment(id, tx);
+      for (const item of items) {
+        const stock = await stockLevelRepository.getStockLevelByProductAndLocation(
+          item.productId,
+          item.sourceLocationId,
+          tx,
+        );
+        if (stock) {
+          await stockLevelRepository.releaseReservedStockAtomically(stock.id, item.quantity, tx);
+        }
+      }
+    }
+
+    const deleted = await fbaRepository.deleteShipment(id, tx);
+    await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {
+      fbaShipmentId: id,
+      reference: shipment.reference,
+      clientId: shipment.clientId,
+      status: shipment.status,
+    });
+    return deleted;
   });
-  return deleted;
 };
 
 const getAllShipments = async () => await fbaRepository.getAllShipments();
@@ -273,8 +466,9 @@ module.exports = {
   getAllCategories,
   updateCategory,
   deleteCategory,
-  recordArrival,
-  recordDispatch,
+  createBulkShipment,
+  setBulkItems,
+  dispatchBulk,
   cancel,
   remove,
   getAllShipments,

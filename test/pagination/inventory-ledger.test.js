@@ -21,6 +21,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import { as } from '../helpers/auth.js';
 import {
+  grantPermissions,
   makeAdmin,
   makeEmployee,
   makeClient,
@@ -438,8 +439,9 @@ describe('the contracts other code depends on', () => {
 });
 
 describe('authorisation', () => {
-  it('is open to staff', async () => {
+  it('is open to an employee granted inventory:read', async () => {
     const { user: employee } = await makeEmployee();
+    await grantPermissions(employee, 'inventory:read');
 
     expect((await as(employee).get('/api/inventory-ledgers')).status).toBe(200);
     expect((await as(employee).get('/api/inventory-ledgers/summary')).status).toBe(

@@ -30,6 +30,17 @@ model User {
   // the version they were minted at, so a password reset or a deactivation ends
   // live sessions instead of merely changing a value the holder no longer needs.
   tokenVersion               Int                        @default(0) @map("token_version")
+
+  /// What an employee may do, as `module:action` strings — see utils/permissions.js.
+  ///
+  /// A column on User rather than a table on Employee, because the auth
+  /// middleware already loads this whole row and caches it: a list of at most
+  /// twelve short strings rides along for free, where a relation would need an
+  /// include on a repository several other callers share.
+  ///
+  /// Empty for everyone until an admin grants. Ignored for admin and client —
+  /// an admin is never governed by it, and a client is narrowed by clientScope.
+  permissions                String[]                   @default([])
   createdAt                  DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
   client                     Client?
@@ -141,6 +152,7 @@ model Shipment {
   client           Client                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
   shipmentItems    ShipmentItem[]
   shipmentServices ShipmentServiceMapping[]
+  invoiceLines     InvoiceLineItem[]
 
   @@index([employeeId, createdAt], map: "idx_shipments_employee_created_at")
   @@index([clientId, createdAt], map: "idx_shipments_client_created_at")
@@ -244,6 +256,7 @@ model WarehouseLocation {
   // Stock State
   stockLevels   StockLevel[]
   shipmentItems ShipmentItem[]
+  fbaItems      FbaShipmentItem[]
 
   // Double-Entry Ledger Relations (Updated)
   ledgerOutflows InventoryLedger[] @relation("LedgerFromLocation")
@@ -290,6 +303,7 @@ model Product {
   stockLevels      StockLevel[]
   inventoryEntries InventoryLedger[]
   shipmentItems    ShipmentItem[]
+  fbaItems         FbaShipmentItem[]
 
   @@unique([clientId, skuCode], map: "uq_products_client_sku")
   @@index([clientId], map: "idx_products_client_id")
@@ -508,11 +522,21 @@ model InvoiceLineItem {
   // Backlink mapping details
   clientServiceId String? @map("client_service_id") @db.Uuid
 
+  // The dispatched shipment this charge is for, when the line is a
+  // SHIPMENT_CHARGE. Nullable — most line types have no shipment — and set on
+  // dispatch so deleting a shipment can find and reverse exactly its own
+  // charge, rather than matching on the description string. onDelete SetNull is
+  // only a backstop: deleteShipment removes the line before the row goes, so
+  // this normally never fires.
+  shipmentId String? @map("shipment_id") @db.Uuid
+
   // Relations
   invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+  shipment      Shipment?      @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
+  @@index([shipmentId], map: "idx_line_items_shipment_id")
   @@map("invoice_line_items")
 }
 
@@ -601,6 +625,10 @@ enum InvoiceStatus {
  * arrived, for whom, and when it left.
  */
 enum FbaShipmentStatus {
+  // The three-step bulk flow: created empty, then products scanned in, then
+  // dispatched. RECEIVED is the legacy single-step status, kept for old rows.
+  DRAFT
+  PREPARING
   RECEIVED
   DISPATCHED
   CANCELLED
@@ -617,18 +645,34 @@ model FbaCategory {
 
 model FbaShipment {
   id           String            @id @default(uuid()) @db.Uuid
+  // The bulk-shipment number the system issues, e.g. BULK-2026-000123. Unique
+  // and generated the same way as the outbound Shipment.reference.
+  reference    String            @unique(map: "uq_fba_shipments_reference") @db.VarChar(64)
   categoryId   String            @map("category_id") @db.Uuid
   clientId     String            @map("client_id") @db.Uuid
-  barcode      String            @db.VarChar(64)
-  size         String            @db.VarChar(60)
-  count        Int
-  status       FbaShipmentStatus @default(RECEIVED)
+  // Legacy single-consignment fields from the old record-arrival flow. Nullable
+  // now — the multi-product flow carries goods as FbaShipmentItem rows instead.
+  barcode      String?           @db.VarChar(64)
+  size         String?           @db.VarChar(60)
+  count        Int?
+  // Where the bulk shipment is going (e.g. "Amazon Global"), the delivery note,
+  // and the courier's tracking number.
+  destination  String?           @db.VarChar(160)
+  deliveryNote String?           @map("delivery_note") @db.Text
+  trackingId   String?           @map("tracking_id") @db.VarChar(64)
+  status       FbaShipmentStatus @default(DRAFT)
+  // Who carried out each of the three steps. Plain ids rather than relations:
+  // this is an audit breadcrumb, and the three steps may all be one person.
+  createdByUserId    String?     @map("created_by_user_id") @db.Uuid
+  preparedByUserId   String?     @map("prepared_by_user_id") @db.Uuid
+  dispatchedByUserId String?     @map("dispatched_by_user_id") @db.Uuid
   receivedAt   DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
   dispatchedAt DateTime?         @map("dispatched_at") @db.Timestamptz(6)
   notes        String?           @db.Text
 
-  category FbaCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  client   Client      @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  category FbaCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  client   Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items    FbaShipmentItem[]
 
   @@index([clientId, status], map: "idx_fba_shipments_client_status")
   @@index([barcode], map: "idx_fba_shipments_barcode")
@@ -636,6 +680,30 @@ model FbaShipment {
   @@index([status, receivedAt(sort: Desc)], map: "idx_fba_shipments_status_received_at")
   @@index([categoryId, receivedAt(sort: Desc)], map: "idx_fba_shipments_category_received_at")
   @@map("fba_shipments")
+}
+
+/**
+ * A product scanned into a bulk shipment during the prepare step, with the
+ * quantity going out and the bin it comes from. Reserved on prepare and checked
+ * out on dispatch, the same two-phase move an outbound ShipmentItem makes.
+ */
+model FbaShipmentItem {
+  id               String   @id @default(uuid()) @db.Uuid
+  fbaShipmentId    String   @map("fba_shipment_id") @db.Uuid
+  productId        String   @map("product_id") @db.Uuid
+  quantity         Int
+  sourceLocationId String   @map("source_location_id") @db.Uuid
+  // The code scanned to add it, kept for the packing record.
+  barcode          String?  @db.VarChar(64)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  fbaShipment    FbaShipment       @relation(fields: [fbaShipmentId], references: [id], onDelete: Cascade)
+  product        Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  sourceLocation WarehouseLocation @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
+
+  @@index([fbaShipmentId], map: "idx_fba_shipment_items_shipment")
+  @@index([productId], map: "idx_fba_shipment_items_product")
+  @@map("fba_shipment_items")
 }
 
 enum LineItemType {

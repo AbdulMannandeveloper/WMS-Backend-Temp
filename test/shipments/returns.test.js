@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import { prisma } from '../helpers/db.js';
 import { as } from '../helpers/auth.js';
 import {
+  makeEmployee,
   makeWarehouseScenario,
   makeShipment,
   makeShipmentItem,
@@ -251,10 +252,15 @@ describe('what is refused', () => {
     expect(res.body.error).toMatch(/dispatched/i);
   });
 
-  it('an employee, because it is a commercial decision', async () => {
+  it('an employee without shipments:update', async () => {
+    // Reframed: a return puts stock back on the shelf and deliberately leaves
+    // the invoice alone, so it is warehouse work rather than the commercial
+    // decision this once called it. It is grantable now, and what remains true
+    // is that it does not come with the role.
     const ctx = await arrangeDispatched();
+    const { user: unprivileged } = await makeEmployee();
 
-    const res = await as(ctx.employeeUser)
+    const res = await as(unprivileged)
       .post(`/api/shipment-items/${ctx.item.id}/return`)
       .send({ quantity: 2 });
 

@@ -42,9 +42,21 @@ const deleteCategory = async (req, res) => {
 
 // ─── Consignments ─────────────────────────────────────────────────────────────
 
-const recordArrival = async (req, res) => {
+// Step 1: open an empty bulk shipment.
+const createShipment = async (req, res) => {
   try {
-    res.status(201).json(await fbaLogic.recordArrival(req.body, req.user.id));
+    res.status(201).json(await fbaLogic.createBulkShipment(req.body, req.user.id));
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+// Step 2: set the scanned products on it.
+const setItems = async (req, res) => {
+  try {
+    res.status(200).json(
+      await fbaLogic.setBulkItems(req.params.id, req.body?.lines, req.user.id),
+    );
   } catch (err) {
     fail(res, err);
   }
@@ -81,9 +93,10 @@ const getShipment = async (req, res) => {
   }
 };
 
+// Step 3: dispatch it.
 const dispatchShipment = async (req, res) => {
   try {
-    res.status(200).json(await fbaLogic.recordDispatch(req.params.id, req.user.id));
+    res.status(200).json(await fbaLogic.dispatchBulk(req.params.id, req.user.id));
   } catch (err) {
     fail(res, err);
   }
@@ -102,7 +115,7 @@ const cancelShipment = async (req, res) => {
 const deleteShipment = async (req, res) => {
   try {
     await fbaLogic.remove(req.params.id, req.user.id);
-    res.status(200).json({ message: 'Consignment deleted.' });
+    res.status(200).json({ message: 'Bulk shipment deleted.' });
   } catch (err) {
     fail(res, err);
   }
@@ -113,7 +126,8 @@ module.exports = {
   listCategories,
   updateCategory,
   deleteCategory,
-  recordArrival,
+  createShipment,
+  setItems,
   listShipments,
   getShipment,
   dispatchShipment,

@@ -125,8 +125,13 @@ describe('barcode lookup', () => {
       expect(res.status).toBe(403);
     });
 
-    it('an employee may scan, an anonymous caller may not', async () => {
-      const employee = await makeUser({ role: 'employee' });
+    it('an employee granted inventory:read may scan, an anonymous caller may not', async () => {
+      // The scanner is a read. Without the grant this is a 403, which is the
+      // point of the module — it is no longer implied by being staff.
+      const employee = await makeUser({
+        role: 'employee',
+        permissions: ['inventory:read'],
+      });
       const { client } = await makeClient();
       await makeProduct(client.id, { barcode: '5014444444444' });
 
