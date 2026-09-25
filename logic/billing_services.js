@@ -32,10 +32,17 @@ const SHIPMENT_SERVICE_CODE = 'SHIPMENT_DISPATCH';
 
 /** The catalogue code for an FBA consignment leaving. */
 const FBA_SERVICE_CODE = 'FBA_DISPATCH';
-// What it costs to take an item back. Optional twice over: a client without an
-// agreed rate is never charged, and even with one the admin decides per return.
-// Stock goes back regardless — the goods are on the shelf either way.
+// What it costs to take an item back. A client without an agreed rate is never
+// charged. The per-line return on the Shipments screen leaves it to the admin to
+// tick; the Returns tab raises it automatically when a return is recorded,
+// because booking the parcel in at the bench is itself the handling being paid
+// for.
 const RETURN_SERVICE_CODE = 'ITEM_RETURN';
+
+// The extra cost when a returned item is inspected and put back on a shelf,
+// rather than disposed of. Raised by the Returns tab on restock, never on
+// disposal. Same rule as the rest: no agreed rate, no charge.
+const RESTOCK_SERVICE_CODE = 'RETURN_RESTOCK';
 
 /**
  * The shipment-dispatch service row, created on first use.
@@ -113,6 +120,27 @@ const ensureReturnService = async (tx) => {
     data: {
       code: RETURN_SERVICE_CODE,
       description: 'Item return handling (per item)',
+      ideaPrice: '0.00',
+      unit: 'item',
+    },
+  });
+};
+
+/** The client's agreed per-item rate for inspecting and restocking a return, or null. */
+const getRestockRateForClient = (clientId, tx) =>
+  getRateForClient(clientId, RESTOCK_SERVICE_CODE, tx);
+
+/** The return-restock service row, created on first use. */
+const ensureRestockService = async (tx) => {
+  const existing = await db(tx).service.findUnique({
+    where: { code: RESTOCK_SERVICE_CODE },
+  });
+  if (existing) return existing;
+
+  return await db(tx).service.create({
+    data: {
+      code: RESTOCK_SERVICE_CODE,
+      description: 'Return inspection & restock (per item)',
       ideaPrice: '0.00',
       unit: 'item',
     },
@@ -251,14 +279,17 @@ module.exports = {
   SHIPMENT_SERVICE_CODE,
   FBA_SERVICE_CODE,
   RETURN_SERVICE_CODE,
+  RESTOCK_SERVICE_CODE,
   ensureShipmentService,
   ensureFbaService,
   ensureReturnService,
+  ensureRestockService,
   countShippedItems,
   getRateForClient,
   getShipmentRateForClient,
   getFbaRateForClient,
   getReturnRateForClient,
+  getRestockRateForClient,
   resolveOpenInvoiceFor,
   chargeServiceToClient,
 };
