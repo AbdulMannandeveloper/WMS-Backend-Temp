@@ -19,6 +19,7 @@ const {
   ensureShipmentService,
   ensureFbaService,
   ensureReturnService,
+  ensureRestockService,
 } = require("./logic/billing_services");
 
 const PORT = process.env.PORT || 5000;
@@ -74,6 +75,7 @@ const startServer = async () => {
     await ensureShipmentService();
     await ensureFbaService();
     await ensureReturnService();
+    await ensureRestockService();
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

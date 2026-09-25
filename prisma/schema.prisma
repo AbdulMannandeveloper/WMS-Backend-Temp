@@ -35,7 +35,7 @@ model User {
   ///
   /// A column on User rather than a table on Employee, because the auth
   /// middleware already loads this whole row and caches it: a list of at most
-  /// twelve short strings rides along for free, where a relation would need an
+  /// sixteen short strings rides along for free, where a relation would need an
   /// include on a repository several other callers share.
   ///
   /// Empty for everyone until an admin grants. Ignored for admin and client —
@@ -76,6 +76,7 @@ model Client {
   fbaShipments       FbaShipment[]
   products           Product[]
   monthlyInvoices    MonthlyInvoice[]
+  productReturns     ProductReturn[]
 
   @@map("clients")
 }
@@ -153,6 +154,7 @@ model Shipment {
   shipmentItems    ShipmentItem[]
   shipmentServices ShipmentServiceMapping[]
   invoiceLines     InvoiceLineItem[]
+  productReturns   ProductReturn[]
 
   @@index([employeeId, createdAt], map: "idx_shipments_employee_created_at")
   @@index([clientId, createdAt], map: "idx_shipments_client_created_at")
@@ -254,9 +256,10 @@ model WarehouseLocation {
   locationClass  WarehouseLocationClass @relation(fields: [locationClassId], references: [id], onDelete: Restrict)
 
   // Stock State
-  stockLevels   StockLevel[]
-  shipmentItems ShipmentItem[]
-  fbaItems      FbaShipmentItem[]
+  stockLevels      StockLevel[]
+  shipmentItems    ShipmentItem[]
+  fbaItems         FbaShipmentItem[]
+  restockedReturns ProductReturn[]
 
   // Double-Entry Ledger Relations (Updated)
   ledgerOutflows InventoryLedger[] @relation("LedgerFromLocation")
@@ -304,6 +307,7 @@ model Product {
   inventoryEntries InventoryLedger[]
   shipmentItems    ShipmentItem[]
   fbaItems         FbaShipmentItem[]
+  productReturns   ProductReturn[]
 
   @@unique([clientId, skuCode], map: "uq_products_client_sku")
   @@index([clientId], map: "idx_products_client_id")
@@ -377,6 +381,7 @@ model ShipmentItem {
   shipment       Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
   product        Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
   sourceLocation WarehouseLocation @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  productReturns ProductReturn[]
 
   @@index([shipmentId], map: "idx_shipment_items_shipment_id")
   @@index([trackingId], map: "idx_shipment_items_tracking_id")
@@ -530,13 +535,21 @@ model InvoiceLineItem {
   // this normally never fires.
   shipmentId String? @map("shipment_id") @db.Uuid
 
+  // The return this charge is for — the handling charge raised when it was
+  // recorded, or the restock charge raised when it went back on the shelf. The
+  // same reasoning as shipmentId: the returns screen shows what a return cost
+  // by following this, not by matching RET-… in the description.
+  returnId String? @map("return_id") @db.Uuid
+
   // Relations
   invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
   shipment      Shipment?      @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  productReturn ProductReturn? @relation(fields: [returnId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
   @@index([shipmentId], map: "idx_line_items_shipment_id")
+  @@index([returnId], map: "idx_line_items_return_id")
   @@map("invoice_line_items")
 }
 
@@ -704,6 +717,70 @@ model FbaShipmentItem {
   @@index([fbaShipmentId], map: "idx_fba_shipment_items_shipment")
   @@index([productId], map: "idx_fba_shipment_items_product")
   @@map("fba_shipment_items")
+}
+
+/**
+ * Goods coming back to the warehouse, booked at the returns bench.
+ *
+ * Two steps. Recording it (tracking number + product scan) issues the RET-…
+ * number and charges the client's ITEM_RETURN rate. Then someone decides what
+ * happens to the goods: disposed of, which costs nothing further, or inspected
+ * and put back on a shelf, which is a RETURN stock movement and a second charge
+ * at the client's RETURN_RESTOCK rate.
+ *
+ * When the tracking number matches a dispatched shipment carrying this product,
+ * the return is linked to that line and moves its returnedQuantity at the moment
+ * it is recorded — the goods have come back whatever is decided for them. That
+ * keeps one count shared with the per-line return on the Shipments screen, and
+ * stops a later shipment delete putting these units back on the shelf a second
+ * time (it restores only what is still out).
+ */
+enum ReturnStatus {
+  RECORDED
+  DISPOSED
+  RESTOCKED
+}
+
+model ProductReturn {
+  id               String       @id @default(uuid()) @db.Uuid
+  // RET-<year>-<sequence>, issued the same way as Shipment.reference.
+  reference        String       @unique(map: "uq_product_returns_reference") @db.VarChar(64)
+  // The courier number on the parcel that came back, as scanned.
+  trackingNumber   String       @map("tracking_number") @db.VarChar(64)
+  // Whose goods these are. Taken from the product, never from the request.
+  clientId         String       @map("client_id") @db.Uuid
+  productId        String       @map("product_id") @db.Uuid
+  quantity         Int
+  status           ReturnStatus @default(RECORDED)
+  // The dispatched shipment the tracking number matched, and the line on it
+  // carrying this product. Both optional: plenty of returns arrive under a
+  // label this system never issued.
+  shipmentId       String?      @map("shipment_id") @db.Uuid
+  shipmentItemId   String?      @map("shipment_item_id") @db.Uuid
+  // Where it went back on the shelf. Set only when RESTOCKED.
+  restockLocationId String?     @map("restock_location_id") @db.Uuid
+  notes            String?      @db.Text
+  dispositionNotes String?      @map("disposition_notes") @db.Text
+  // Plain ids, as on FbaShipment: an audit breadcrumb, not a relation to walk.
+  recordedByUserId String?      @map("recorded_by_user_id") @db.Uuid
+  resolvedByUserId String?      @map("resolved_by_user_id") @db.Uuid
+  recordedAt       DateTime     @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  resolvedAt       DateTime?    @map("resolved_at") @db.Timestamptz(6)
+
+  client          Client             @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  product         Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  shipment        Shipment?          @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  shipmentItem    ShipmentItem?      @relation(fields: [shipmentItemId], references: [id], onDelete: SetNull)
+  restockLocation WarehouseLocation? @relation(fields: [restockLocationId], references: [id], onDelete: Restrict)
+  invoiceLines    InvoiceLineItem[]
+
+  @@index([recordedAt(sort: Desc), id], map: "idx_product_returns_recorded_at")
+  @@index([status, recordedAt(sort: Desc)], map: "idx_product_returns_status_recorded_at")
+  @@index([clientId, recordedAt(sort: Desc)], map: "idx_product_returns_client_recorded_at")
+  @@index([trackingNumber], map: "idx_product_returns_tracking_number")
+  @@index([productId], map: "idx_product_returns_product_id")
+  @@index([shipmentItemId], map: "idx_product_returns_shipment_item_id")
+  @@map("product_returns")
 }
 
 enum LineItemType {

@@ -298,6 +298,18 @@ const deleteProduct = async (id, actorUserId) => {
     );
   }
 
+  // A return is a record of what a client was charged for handling these goods,
+  // and product_returns.product_id is Restrict — without this the delete would
+  // fail on the foreign key rather than saying why.
+  const returned = await prisma.productReturn.count({
+    where: { productId: id },
+  });
+  if (returned > 0) {
+    refuse(
+      `${product.productName} has ${returned} ${returned === 1 ? "return" : "returns"} on record and cannot be deleted. Deactivate it instead.`,
+    );
+  }
+
   const shipped = await prisma.inventoryLedger.count({
     where: { productId: id, movementType: { in: OUTBOUND_MOVEMENTS } },
   });

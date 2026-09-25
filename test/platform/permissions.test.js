@@ -35,11 +35,12 @@ beforeEach(async () => {
 });
 
 describe('the vocabulary', () => {
-  it('is twelve permissions — three modules, four actions', () => {
-    expect(ALL_PERMISSIONS).toHaveLength(12);
+  it('is sixteen permissions — four modules, four actions', () => {
+    expect(ALL_PERMISSIONS).toHaveLength(16);
     expect(ALL_PERMISSIONS).toContain('shipments:create');
     expect(ALL_PERMISSIONS).toContain('fba:delete');
     expect(ALL_PERMISSIONS).toContain('inventory:update');
+    expect(ALL_PERMISSIONS).toContain('returns:update');
   });
 
   it('refuses a string that is not one of them', () => {
