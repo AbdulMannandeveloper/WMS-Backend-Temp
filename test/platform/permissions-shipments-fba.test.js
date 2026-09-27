@@ -5,9 +5,10 @@
  * are judgement calls and are asserted here rather than left to be inferred:
  * cancelling is a delete, and reopening is an update.
  *
- * Two things stay admin-only whatever is granted — attaching a billable service
- * to a shipment, and writing the FBA category list. Both are commercial or
- * reference decisions rather than warehouse work, and the last block pins that
+ * Some things stay admin-only whatever is granted — attaching a billable service
+ * to a shipment, writing the FBA category list, and editing or deleting a bulk
+ * shipment outright. They are commercial, reference or record-keeping decisions
+ * rather than warehouse work, and the last block pins that
  * so a later "make everything grantable" does not quietly take them with it.
  */
 
@@ -233,16 +234,6 @@ describe('fba', () => {
     expect(res.status).not.toBe(403);
   });
 
-  it('delete opens removing one outright', async () => {
-    const consignment = await fbaConsignment();
-    await grant('fba:delete');
-
-    const res = await as(employeeUser).delete(
-      `/api/fba-shipments/${consignment.id}`,
-    );
-
-    expect(res.status).not.toBe(403);
-  });
 });
 
 describe('the modules are separate', () => {
@@ -282,6 +273,27 @@ describe('what stays admin-only whatever is granted', () => {
         `/api/shipments/${shipment.id}/services/00000000-0000-0000-0000-000000000000`,
       )).status,
     ).toBe(403);
+  });
+
+  it('editing or deleting a bulk shipment outright', async () => {
+    // fba:delete still voids one (above), which keeps it on file. Rewriting or
+    // removing the record is an admin's call.
+    const consignment = await fbaConsignment();
+    await grant('fba:create', 'fba:read', 'fba:update', 'fba:delete');
+
+    expect(
+      (await as(employeeUser).put(`/api/fba-shipments/${consignment.id}`).send({
+        destination: 'Elsewhere',
+      })).status,
+    ).toBe(403);
+    expect(
+      (await as(employeeUser).delete(`/api/fba-shipments/${consignment.id}`)).status,
+    ).toBe(403);
+    expect(
+      (await as(admin).put(`/api/fba-shipments/${consignment.id}`).send({
+        destination: 'Elsewhere',
+      })).status,
+    ).toBe(200);
   });
 
   it('writing the FBA category list', async () => {
