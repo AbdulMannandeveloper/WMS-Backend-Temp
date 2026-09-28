@@ -204,6 +204,50 @@ const createBulkShipment = async (data, actorUserId) => {
   throw new Error('Could not issue a bulk shipment reference. Please try again.');
 };
 
+/**
+ * Corrects a bulk shipment's details (admin only), whatever its status. Only
+ * the fields sent are changed; an empty string clears an optional one. It
+ * touches the record alone — a charge already raised on dispatch, and any
+ * stock movement, stay as they were.
+ */
+const updateBulkShipment = async (id, data = {}, actorUserId) => {
+  const shipment = await requireShipment(id);
+  const changes = {};
+
+  if (data.clientId !== undefined && data.clientId !== shipment.clientId) {
+    if (!data.clientId) throw new Error('A client is required.');
+    const client = await clientRepository.getClientByField('id', data.clientId);
+    if (!client) throw new Error('That client does not exist.');
+    changes.clientId = data.clientId;
+  }
+
+  if (data.categoryId !== undefined && data.categoryId !== shipment.categoryId) {
+    if (!data.categoryId) throw new Error('A category is required.');
+    const category = await fbaRepository.getCategoryById(data.categoryId);
+    if (!category) throw new Error('That category does not exist.');
+    changes.categoryId = data.categoryId;
+  }
+
+  const text = (value, max) => {
+    const trimmed = String(value ?? '').trim();
+    if (!trimmed) return null;
+    return max ? trimmed.slice(0, max) : trimmed;
+  };
+  if (data.destination !== undefined) changes.destination = text(data.destination, 160);
+  if (data.deliveryNote !== undefined) changes.deliveryNote = text(data.deliveryNote);
+  if (data.trackingId !== undefined) changes.trackingId = text(data.trackingId, 64);
+
+  if (Object.keys(changes).length === 0) return shipment;
+
+  const updated = await fbaRepository.updateShipment(id, changes);
+  await audit(actorUserId, 'FBA_SHIPMENT_UPDATED', {
+    fbaShipmentId: id,
+    reference: shipment.reference,
+    changes,
+  });
+  return updated;
+};
+
 const normaliseLines = (raw) => {
   if (!Array.isArray(raw)) throw new Error('Products must be a list.');
   return raw.map((line, i) => {
@@ -423,22 +467,40 @@ const cancel = async (id, reason, actorUserId) => {
 };
 
 /**
- * Hard-deletes a bulk shipment. Refused once DISPATCHED — that is when the stock
- * moved and the client was billed, so the answer then is a credit, not a delete.
- * Any reservation a PREPARING shipment still holds is handed back first; its
- * item rows cascade with it.
+ * Hard-deletes a bulk shipment (admin only), whatever its status. Item rows
+ * cascade with it.
+ *
+ *   PREPARING  — its reservation is handed back.
+ *   DISPATCHED — the goods left the shelf, so each line goes back to its
+ *                source bin as a RETURN movement carrying the shipment
+ *                reference (so it reads as a pair with the CHECKOUT). The
+ *                charge raised on dispatch stays on its invoice for now.
  */
 const remove = async (id, actorUserId) => {
   const shipment = await requireShipment(id);
 
-  if (shipment.status === 'DISPATCHED') {
-    const client = shipment.client?.companyName ?? 'the client';
-    throw new Error(
-      `This bulk shipment was dispatched and billed to ${client}. It cannot be deleted — credit the invoice instead.`,
-    );
-  }
+  const restored = await prisma.$transaction(async (tx) => {
+    const restored = [];
 
-  const deleted = await prisma.$transaction(async (tx) => {
+    if (shipment.status === 'DISPATCHED') {
+      const items = await fbaRepository.getItemsByShipment(id, tx);
+      for (const item of items) {
+        await inventoryLedgerLogic.createInventoryLedger(
+          {
+            productId: item.productId,
+            userId: actorUserId,
+            movementType: 'RETURN',
+            quantity: item.quantity,
+            toLocationId: item.sourceLocationId,
+            referenceId: shipment.reference,
+            notes: `Reversed on deletion of bulk shipment ${shipment.reference}`,
+          },
+          { tx },
+        );
+        restored.push({ productId: item.productId, quantity: item.quantity });
+      }
+    }
+
     if (shipment.status === 'PREPARING') {
       const items = await fbaRepository.getItemsByShipment(id, tx);
       for (const item of items) {
@@ -453,7 +515,8 @@ const remove = async (id, actorUserId) => {
       }
     }
 
-    return await fbaRepository.deleteShipment(id, tx);
+    await fbaRepository.deleteShipment(id, tx);
+    return restored;
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {
@@ -461,8 +524,9 @@ const remove = async (id, actorUserId) => {
     reference: shipment.reference,
     clientId: shipment.clientId,
     status: shipment.status,
+    ...(shipment.status === 'DISPATCHED' ? { restored } : {}),
   });
-  return deleted;
+  return { id, restored };
 };
 
 const getAllShipments = async () => await fbaRepository.getAllShipments();
@@ -476,6 +540,7 @@ module.exports = {
   updateCategory,
   deleteCategory,
   createBulkShipment,
+  updateBulkShipment,
   setBulkItems,
   dispatchBulk,
   cancel,
