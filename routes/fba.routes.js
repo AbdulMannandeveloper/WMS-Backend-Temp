@@ -29,6 +29,11 @@ router.get('/', [staffOrClient, requirePermission('fba', 'read')], fbaController
 router.post('/', staffWith('create'), fbaController.createShipment);
 router.get('/:id', [staffOrClient, requirePermission('fba', 'read')], fbaController.getShipment);
 
+// Editing a shipment's details (client, category, destination, delivery note,
+// tracking number) after it is opened. Admin-only whatever is granted: a
+// correction to a record other people have already worked from.
+router.put('/:id', adminOnly, fbaController.updateShipment);
+
 // Step 2 — scan products in (DRAFT → PREPARING). An update: it changes what the
 // shipment holds, not whether it exists.
 router.put('/:id/items', staffWith('update'), fbaController.setItems);
@@ -42,9 +47,10 @@ router.post('/:id/dispatch', staffWith('update'), fbaController.dispatchShipment
 // update — the same call made for cancelling a shipment.
 router.post('/:id/cancel', staffWith('delete'), fbaController.cancelShipment);
 
-// Removing the record of one entirely, for a mis-key. Refused once dispatched —
-// that one has been billed. (Unlike GET, this needs no ordering care against
-// /categories/:id: that path is two segments and /:id is one.)
-router.delete('/:id', staffWith('delete'), fbaController.deleteShipment);
+// Removing the record of one entirely, for a mis-key. Admin-only whatever is
+// granted — fba:delete still opens voiding, which keeps the record. Allowed at
+// any status. (Unlike GET, this needs no ordering care against /categories/:id:
+// that path is two segments and /:id is one.)
+router.delete('/:id', adminOnly, fbaController.deleteShipment);
 
 module.exports = router;

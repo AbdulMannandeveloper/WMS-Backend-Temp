@@ -62,6 +62,15 @@ const setItems = async (req, res) => {
   }
 };
 
+// Correcting its details (admin only — see the route).
+const updateShipment = async (req, res) => {
+  try {
+    res.status(200).json(await fbaLogic.updateBulkShipment(req.params.id, req.body, req.user.id));
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
 /**
  * A client sees only their own consignments; staff see everything. Scoped the
  * same way as invoices, through resolveOwnClientId.
@@ -128,6 +137,7 @@ module.exports = {
   deleteCategory,
   createShipment,
   setItems,
+  updateShipment,
   listShipments,
   getShipment,
   dispatchShipment,

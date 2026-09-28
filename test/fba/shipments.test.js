@@ -262,6 +262,12 @@ describe('cancel and delete', () => {
     expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
   });
 
+  it('deleting is refused to an employee, even one holding fba:delete', async () => {
+    const created = (await createShell()).body;
+    const res = await as(ctx.employeeUser).delete(`/api/fba-shipments/${created.id}`);
+    expect(res.status).toBe(403);
+  });
+
   it('deleting a PREPARING shipment releases its reservation too', async () => {
     const created = await prepared(10);
     const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
@@ -269,14 +275,67 @@ describe('cancel and delete', () => {
     expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
   });
 
-  it('refuses to delete a dispatched shipment', async () => {
+  it('deleting a dispatched shipment returns its stock and leaves its charge billed', async () => {
     await giveFbaRate(ctx.client.id, '2.00');
     const created = await prepared(10);
     await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+    expect(await stockNow()).toEqual({ current: 90, reserved: 0 });
 
     const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/cannot be deleted/i);
+    expect(res.status).toBe(200);
+    expect(await prisma.fbaShipment.findUnique({ where: { id: created.id } })).toBeNull();
+    expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
+    expect(await prisma.invoiceLineItem.count({ where: { itemType: 'FBA_CHARGE' } })).toBe(1);
+
+    const returned = await prisma.inventoryLedger.findFirst({
+      where: { movementType: 'RETURN', referenceId: created.reference },
+    });
+    expect(returned.quantity).toBe(10);
+  });
+});
+
+// ─── Editing ────────────────────────────────────────────────────────────────────
+
+describe('editing a bulk shipment', () => {
+  const prepared = async (quantity = 10) => {
+    const { body: created } = await createShell();
+    await as(ctx.admin).put(`/api/fba-shipments/${created.id}/items`).send({ lines: [line(quantity)] });
+    return created;
+  };
+
+  it('lets an admin correct its details, clearing a field sent empty', async () => {
+    const created = (await createShell()).body;
+    const res = await as(ctx.admin)
+      .put(`/api/fba-shipments/${created.id}`)
+      .send({ destination: 'Amazon EU', trackingId: '' });
+    expect(res.status).toBe(200);
+    expect(res.body.destination).toBe('Amazon EU');
+    expect(res.body.trackingId).toBeNull();
+    expect(res.body.deliveryNote).toBe('Handle with care');
+  });
+
+  it('is refused to an employee and a client', async () => {
+    const created = (await createShell()).body;
+    for (const actor of [ctx.employeeUser, ctx.clientUser]) {
+      const res = await as(actor)
+        .put(`/api/fba-shipments/${created.id}`)
+        .send({ destination: 'X' });
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it('lets an admin edit any field whatever the status, even once dispatched', async () => {
+    const created = await prepared(10);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+    const other = await makeWarehouseScenario();
+
+    const res = await as(ctx.admin)
+      .put(`/api/fba-shipments/${created.id}`)
+      .send({ clientId: other.client.id, trackingId: 'TRK-LATE' });
+    expect(res.status).toBe(200);
+    expect(res.body.clientId).toBe(other.client.id);
+    expect(res.body.trackingId).toBe('TRK-LATE');
+    expect(res.body.status).toBe('DISPATCHED');
   });
 });
 
