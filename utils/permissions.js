@@ -24,6 +24,10 @@ const MODULES = Object.freeze({
   FBA: 'fba',
   INVENTORY: 'inventory',
   RETURNS: 'returns',
+  // The Pakistan → UK freight leg. Booking a parcel, dispatching it and
+  // receiving it at the UK bench are three different people's work, which is
+  // exactly the case this list exists for.
+  FREIGHT: 'freight',
 });
 
 const ACTIONS = Object.freeze(['create', 'read', 'update', 'delete']);

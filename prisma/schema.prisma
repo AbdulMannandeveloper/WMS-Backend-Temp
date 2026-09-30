@@ -18,18 +18,18 @@ datasource db {
 }
 
 model User {
-  id                         String                     @id @default(uuid()) @db.Uuid
-  username                   String?                    @unique @db.VarChar(50)
-  firstName                  String                     @map("first_name") @db.VarChar(50)
-  lastName                   String                     @map("last_name") @db.VarChar(50)
-  email                      String                     @unique @db.VarChar(255)
-  passwordHash               String?                    @map("password_hash")
-  role                       UserRole
-  isActive                   Boolean                    @default(false) @map("is_active")
+  id           String   @id @default(uuid()) @db.Uuid
+  username     String?  @unique @db.VarChar(50)
+  firstName    String   @map("first_name") @db.VarChar(50)
+  lastName     String   @map("last_name") @db.VarChar(50)
+  email        String   @unique @db.VarChar(255)
+  passwordHash String?  @map("password_hash")
+  role         UserRole
+  isActive     Boolean  @default(false) @map("is_active")
   // Bumped to invalidate every token already issued to this user. Tokens carry
   // the version they were minted at, so a password reset or a deactivation ends
   // live sessions instead of merely changing a value the holder no longer needs.
-  tokenVersion               Int                        @default(0) @map("token_version")
+  tokenVersion Int      @default(0) @map("token_version")
 
   /// What an employee may do, as `module:action` strings — see utils/permissions.js.
   ///
@@ -113,11 +113,11 @@ model Service {
 }
 
 model ClientService {
-  id                String  @id @default(uuid()) @db.Uuid
-  clientId          String  @map("client_id") @db.Uuid
-  serviceId         String  @map("service_id") @db.Uuid
-  chargedPrice      Decimal @map("charged_price") @db.Decimal(12, 2)
-  unit              String  @db.VarChar(30)
+  id               String                   @id @default(uuid()) @db.Uuid
+  clientId         String                   @map("client_id") @db.Uuid
+  serviceId        String                   @map("service_id") @db.Uuid
+  chargedPrice     Decimal                  @map("charged_price") @db.Decimal(12, 2)
+  unit             String                   @db.VarChar(30)
   client           Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   service          Service                  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   invoiceLines     InvoiceLineItem[]
@@ -657,31 +657,31 @@ model FbaCategory {
 }
 
 model FbaShipment {
-  id           String            @id @default(uuid()) @db.Uuid
+  id                 String            @id @default(uuid()) @db.Uuid
   // The bulk-shipment number the system issues, e.g. BULK-2026-000123. Unique
   // and generated the same way as the outbound Shipment.reference.
-  reference    String            @unique(map: "uq_fba_shipments_reference") @db.VarChar(64)
-  categoryId   String            @map("category_id") @db.Uuid
-  clientId     String            @map("client_id") @db.Uuid
+  reference          String            @unique(map: "uq_fba_shipments_reference") @db.VarChar(64)
+  categoryId         String            @map("category_id") @db.Uuid
+  clientId           String            @map("client_id") @db.Uuid
   // Legacy single-consignment fields from the old record-arrival flow. Nullable
   // now — the multi-product flow carries goods as FbaShipmentItem rows instead.
-  barcode      String?           @db.VarChar(64)
-  size         String?           @db.VarChar(60)
-  count        Int?
+  barcode            String?           @db.VarChar(64)
+  size               String?           @db.VarChar(60)
+  count              Int?
   // Where the bulk shipment is going (e.g. "Amazon Global"), the delivery note,
   // and the courier's tracking number.
-  destination  String?           @db.VarChar(160)
-  deliveryNote String?           @map("delivery_note") @db.Text
-  trackingId   String?           @map("tracking_id") @db.VarChar(64)
-  status       FbaShipmentStatus @default(DRAFT)
+  destination        String?           @db.VarChar(160)
+  deliveryNote       String?           @map("delivery_note") @db.Text
+  trackingId         String?           @map("tracking_id") @db.VarChar(64)
+  status             FbaShipmentStatus @default(DRAFT)
   // Who carried out each of the three steps. Plain ids rather than relations:
   // this is an audit breadcrumb, and the three steps may all be one person.
-  createdByUserId    String?     @map("created_by_user_id") @db.Uuid
-  preparedByUserId   String?     @map("prepared_by_user_id") @db.Uuid
-  dispatchedByUserId String?     @map("dispatched_by_user_id") @db.Uuid
-  receivedAt   DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
-  dispatchedAt DateTime?         @map("dispatched_at") @db.Timestamptz(6)
-  notes        String?           @db.Text
+  createdByUserId    String?           @map("created_by_user_id") @db.Uuid
+  preparedByUserId   String?           @map("prepared_by_user_id") @db.Uuid
+  dispatchedByUserId String?           @map("dispatched_by_user_id") @db.Uuid
+  receivedAt         DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
+  dispatchedAt       DateTime?         @map("dispatched_at") @db.Timestamptz(6)
+  notes              String?           @db.Text
 
   category FbaCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   client   Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
@@ -845,4 +845,147 @@ model AuditLog {
   @@index([userId, timestamp(sort: Desc)], map: "idx_audit_logs_user_timestamp")
   @@index([action, timestamp(sort: Desc)], map: "idx_audit_logs_action_timestamp")
   @@map("audit_logs")
+}
+
+/**
+ * ── Freight: Pakistan → UK ───────────────────────────────────────────────────
+ * A separate leg from everything above it. `Shipment` is stock leaving this
+ * warehouse for a client's customer and `FbaShipment` is a consignment going to
+ * Amazon; a freight shipment is a parcel booked in Pakistan by a private sender
+ * and received at the UK bench weeks later.
+ * It deliberately touches neither Client nor Product. The sender is a person who
+ * walked into a shop, not a WMS tenant, and the contents are a line of prose on
+ * a booking slip, not a SKU with a stock level. Forcing either would have meant
+ * inventing placeholder client and product rows for every parcel.
+ */
+
+enum FreightShipmentStatus {
+  // Created, not yet handed to the airline.
+  BOOKED
+  // Left Pakistan, expected at the UK warehouse.
+  DISPATCHED
+  // Matched against its barcode at the UK bench.
+  RECEIVED
+  // The soft delete. Following the doctrine the outbound shipments set: a
+  // cancelled record stays readable, because somebody asked what happened to it.
+  CANCELLED
+}
+
+enum FreightWeightUnit {
+  KG
+  LB
+}
+
+model FreightShipment {
+  id String @id @default(uuid()) @db.Uuid
+
+  // The number this system issues, e.g. FRT-2026-000123. Not SHP-: that prefix
+  // already belongs to shipments.reference, and two tables answering to one
+  // prefix is a search box that returns the wrong parcel.
+  reference String @unique(map: "uq_freight_shipments_reference") @db.VarChar(64)
+
+  // What is printed on the label and scanned at the UK bench. Carries the same
+  // value as `reference` today, and is still its own column: the spec asks for
+  // barcode uniqueness as a guarantee in its own right, and a parcel relabelled
+  // in transit needs somewhere to put the new code without rewriting its
+  // identity. The lookup rides this unique index.
+  barcode String @unique(map: "uq_freight_shipments_barcode") @db.VarChar(64)
+
+  // Who sent it, as free text. This is the answer the whole module exists to
+  // give: scan the parcel, read the sender.
+  senderName    String @map("sender_name") @db.VarChar(160)
+  senderContact String @map("sender_contact") @db.VarChar(40)
+  senderAddress String @map("sender_address") @db.Text
+
+  receiverName    String @map("receiver_name") @db.VarChar(160)
+  receiverContact String @map("receiver_contact") @db.VarChar(40)
+  receiverAddress String @map("receiver_address") @db.Text
+
+  destinationCountry String @map("destination_country") @db.VarChar(80)
+
+  // What is in the parcel, in the sender's words.
+  description String            @db.Text
+  quantity    Int
+  // Three decimal places: parcels are weighed to the gram on the shop scale.
+  weight      Decimal           @db.Decimal(10, 3)
+  // Stored rather than normalised to kilograms, because the booking slip the
+  // sender holds says one or the other and a receipt that disagreed with it
+  // would be argued about at the counter.
+  weightUnit  FreightWeightUnit @default(KG) @map("weight_unit")
+  remarks     String?           @db.Text
+
+  status FreightShipmentStatus @default(BOOKED)
+
+  // Who carried out each step. Plain ids with no relations, as FbaShipment does:
+  // these are audit breadcrumbs, and one person often books, dispatches and
+  // cancels. The names are resolved in one batch read when a record is served.
+  createdByUserId    String? @map("created_by_user_id") @db.Uuid
+  updatedByUserId    String? @map("updated_by_user_id") @db.Uuid
+  dispatchedByUserId String? @map("dispatched_by_user_id") @db.Uuid
+  cancelledByUserId  String? @map("cancelled_by_user_id") @db.Uuid
+
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  dispatchedAt DateTime? @map("dispatched_at") @db.Timestamptz(6)
+  cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(6)
+
+  documents FreightShipmentDocument[]
+  receiving FreightReceivingRecord?
+
+  @@index([createdAt(sort: Desc), id], map: "idx_freight_shipments_created_at")
+  @@index([status, createdAt(sort: Desc)], map: "idx_freight_shipments_status_created_at")
+  @@index([senderName], map: "idx_freight_shipments_sender_name")
+  @@index([receiverName], map: "idx_freight_shipments_receiver_name")
+  @@map("freight_shipments")
+}
+
+model FreightShipmentDocument {
+  id                String @id @default(uuid()) @db.Uuid
+  freightShipmentId String @map("freight_shipment_id") @db.Uuid
+
+  // The name the sender's file had on the uploader's machine, kept so the
+  // booking slip is recognisable in a list; `storageKey` is what objectStorage
+  // actually holds, which is generated and says nothing about the file.
+  fileName   String @map("file_name") @db.VarChar(255)
+  storageKey String @map("storage_key") @db.VarChar(255)
+  fileType   String @map("file_type") @db.VarChar(120)
+
+  uploadedByUserId String?  @map("uploaded_by_user_id") @db.Uuid
+  uploadedAt       DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+
+  freightShipment FreightShipment @relation(fields: [freightShipmentId], references: [id], onDelete: Cascade)
+
+  @@index([freightShipmentId, uploadedAt(sort: Desc)], map: "idx_freight_shipment_documents_shipment")
+  @@map("freight_shipment_documents")
+}
+
+model FreightReceivingRecord {
+  id String @id @default(uuid()) @db.Uuid
+
+  // Unique, and that constraint is the rule rather than a decoration: "an
+  // already-received shipment cannot accidentally be received again" is enforced
+  // by the database. The check in the logic exists to say who received it and
+  // when; this stops a second row being written at all when two benches scan the
+  // same parcel at the same moment.
+  freightShipmentId String @unique(map: "uq_freight_receiving_records_shipment") @map("freight_shipment_id") @db.Uuid
+
+  // The code actually scanned, verbatim. Normally the shipment's own barcode,
+  // but kept separately because what the gun read is evidence and the shipment's
+  // column may be corrected later.
+  barcode String @db.VarChar(64)
+
+  receivedByUserId String?  @map("received_by_user_id") @db.Uuid
+  receivedAt       DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  // What the UK scale said, which is frequently not what the Pakistan slip said.
+  // Optional: a bench without a scale still records the arrival.
+  actualWeight     Decimal?           @map("actual_weight") @db.Decimal(10, 3)
+  actualWeightUnit FreightWeightUnit? @map("actual_weight_unit")
+  remarks          String?            @db.Text
+
+  freightShipment FreightShipment @relation(fields: [freightShipmentId], references: [id], onDelete: Cascade)
+
+  @@index([receivedAt(sort: Desc), id], map: "idx_freight_receiving_records_received_at")
+  @@index([barcode], map: "idx_freight_receiving_records_barcode")
+  @@map("freight_receiving_records")
 }

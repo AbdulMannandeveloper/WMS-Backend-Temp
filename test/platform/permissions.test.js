@@ -41,6 +41,7 @@ describe('the vocabulary', () => {
     expect(ALL_PERMISSIONS).toContain('fba:delete');
     expect(ALL_PERMISSIONS).toContain('inventory:update');
     expect(ALL_PERMISSIONS).toContain('returns:update');
+    expect(ALL_PERMISSIONS).toContain('freight:read');
   });
 
   it('refuses a string that is not one of them', () => {
