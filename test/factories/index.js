@@ -456,6 +456,37 @@ export const seedSeries = async (
   return rows;
 };
 
+/**
+ * A freight shipment row written directly, for tests about states other than the
+ * BOOKED one creation produces — and for seeding a list without fourteen POSTs.
+ *
+ * `reference` and `barcode` are both unique and both generated, because two
+ * factory calls in one test would otherwise collide on the index. They carry the
+ * same value, as the application makes them.
+ */
+export const makeFreightShipment = (overrides = {}) => {
+  const reference = uniq('FRT').toUpperCase();
+  return prisma.freightShipment.create({
+    data: {
+      reference,
+      barcode: reference,
+      senderName: 'Ali Khan',
+      senderContact: '+92 300 1234567',
+      senderAddress: '12 Mall Road, Lahore',
+      receiverName: 'XYZ Trading',
+      receiverContact: '+44 7700 900123',
+      receiverAddress: '4 Dock Street, London',
+      destinationCountry: 'United Kingdom',
+      description: 'Two boxes of textiles',
+      quantity: 2,
+      weight: '8.500',
+      weightUnit: 'KG',
+      status: 'BOOKED',
+      ...overrides,
+    },
+  });
+};
+
 /** One audit log per call, with a distinct timestamp. */
 export const makeAuditLog = async (userId, overrides = {}) =>
   await prisma.auditLog.create({

@@ -9,7 +9,7 @@
  * deletes were admin-only. An admin needs to say that this person receives
  * goods but does not adjust stock.
  *
- * Three modules, four actions, twelve strings. Deliberately a closed list
+ * Four modules, four actions, sixteen strings. Deliberately a closed list
  * rather than a free-form string: the write endpoint checks every entry against
  * it, so a typo is refused rather than stored and silently granting nothing.
  *
@@ -23,6 +23,10 @@ const MODULES = Object.freeze({
   SHIPMENTS: 'shipments',
   FBA: 'fba',
   INVENTORY: 'inventory',
+  // The Pakistan → UK freight leg. Booking a parcel, dispatching it and
+  // receiving it at the UK bench are three different people's work, which is
+  // exactly the case this list exists for.
+  FREIGHT: 'freight',
 });
 
 const ACTIONS = Object.freeze(['create', 'read', 'update', 'delete']);
