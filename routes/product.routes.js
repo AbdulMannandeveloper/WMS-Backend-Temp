@@ -1,7 +1,7 @@
 const productController = require('../controllers/product.controller');
 const express = require('express');
 const { authorizeRoles } = require('../middlewares/authorize');
-const { requirePermission } = require('../middlewares/requirePermission');
+const { requirePermission, requireAnyPermission } = require('../middlewares/requirePermission');
 
 /**
  * Inventory is governed per employee now.
@@ -30,8 +30,23 @@ const staffOrClient = authorizeRoles('admin', 'employee', 'client');
 // default — but it is now grantable, rather than reserved to the role.
 const staffWith = (action) => [staffOnly, requirePermission('inventory', action)];
 
-// Employee-accessible barcode/SKU lookup for the mobile check-in flow
-router.get('/lookup/barcode/:value', staffWith('read'), productController.lookupProductByBarcode);
+// Employee-accessible barcode/SKU lookup for the mobile check-in flow. Also the
+// only way to find a product when creating a shipment, planning a bulk one or
+// picking it, so those grants open it too — otherwise someone allowed to do
+// that work could not find a single product to do it with.
+router.get(
+  '/lookup/barcode/:value',
+  [
+    staffOnly,
+    requireAnyPermission(
+      ['inventory', 'read'],
+      ['shipments', 'create'],
+      ['fba', 'create'],
+      ['fba', 'update'],
+    ),
+  ],
+  productController.lookupProductByBarcode,
+);
 
 router.get('/field/:field/:value', staffWith('read'), productController.getProductByField);
 router.post('/', staffWith('create'), productController.createProduct);
