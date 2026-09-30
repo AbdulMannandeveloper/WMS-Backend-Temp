@@ -377,7 +377,7 @@ export const makeShipmentServiceMapping = (shipmentId, serviceId, overrides = {}
   });
 
 /** Every permission, for a fixture that stands for a working warehouse. */
-const ALL_TEST_PERMISSIONS = ['shipments', 'fba', 'inventory'].flatMap((module) =>
+const ALL_TEST_PERMISSIONS = ['shipments', 'fba', 'inventory', 'returns'].flatMap((module) =>
   ['create', 'read', 'update', 'delete'].map((action) => `${module}:${action}`),
 );
 
