@@ -6,13 +6,16 @@ const db = (tx) => tx || prisma;
 
 const includeRelations = {
   category: true,
-  client: { select: { id: true, companyName: true } },
+  client: { select: { id: true, companyName: true, clientUniqueNumber: true } },
   items: {
     include: {
       product: { select: { id: true, skuCode: true, productName: true } },
       sourceLocation: { select: { id: true, locationName: true, materializedPath: true } },
     },
     orderBy: { createdAt: 'asc' },
+  },
+  services: {
+    include: { service: { select: { id: true, description: true, unit: true } } },
   },
 };
 
@@ -86,8 +89,25 @@ const getItemsByShipment = async (fbaShipmentId, tx) =>
 const createItem = async (data, tx) =>
   await db(tx).fbaShipmentItem.create({ data });
 
+const updateItem = async (id, data, tx) =>
+  await db(tx).fbaShipmentItem.update({ where: { id }, data });
+
 const deleteItemsByShipment = async (fbaShipmentId, tx) =>
   await db(tx).fbaShipmentItem.deleteMany({ where: { fbaShipmentId } });
+
+const deleteItemsByIds = async (ids, tx) =>
+  await db(tx).fbaShipmentItem.deleteMany({ where: { id: { in: ids } } });
+
+// ─── Attached services ─────────────────────────────────────────────────────────
+
+const createService = async (data, tx) =>
+  await db(tx).fbaShipmentService.create({ data });
+
+const updateService = async (id, data, tx) =>
+  await db(tx).fbaShipmentService.update({ where: { id }, data });
+
+const deleteServicesByShipment = async (fbaShipmentId, tx) =>
+  await db(tx).fbaShipmentService.deleteMany({ where: { fbaShipmentId } });
 
 module.exports = {
   createCategory,
@@ -106,5 +126,10 @@ module.exports = {
   deleteShipment,
   getItemsByShipment,
   createItem,
+  updateItem,
   deleteItemsByShipment,
+  deleteItemsByIds,
+  createService,
+  updateService,
+  deleteServicesByShipment,
 };

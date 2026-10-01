@@ -37,4 +37,21 @@ const requirePermission = (module, action) => (req, res, next) => {
     .json({ error: 'You do not have permission to perform this action.' });
 };
 
-module.exports = { requirePermission };
+/**
+ * As requirePermission, but any one of several grants will do. For a shared
+ * read that more than one module's work depends on — the product lookup is
+ * inventory's, but creating a shipment or picking a bulk one cannot happen
+ * without it.
+ *
+ *   requireAnyPermission(['inventory', 'read'], ['fba', 'update'])
+ */
+const requireAnyPermission = (...grants) => (req, res, next) => {
+  if (grants.some(([module, action]) => holdsPermission(req.user, module, action))) {
+    return next();
+  }
+  return res
+    .status(403)
+    .json({ error: 'You do not have permission to perform this action.' });
+};
+
+module.exports = { requirePermission, requireAnyPermission };

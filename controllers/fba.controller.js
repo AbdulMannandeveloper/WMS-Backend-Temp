@@ -42,7 +42,7 @@ const deleteCategory = async (req, res) => {
 
 // ─── Consignments ─────────────────────────────────────────────────────────────
 
-// Step 1: open an empty bulk shipment.
+// Step 1: open a bulk shipment with the products planned for it.
 const createShipment = async (req, res) => {
   try {
     res.status(201).json(await fbaLogic.createBulkShipment(req.body, req.user.id));
@@ -51,7 +51,7 @@ const createShipment = async (req, res) => {
   }
 };
 
-// Step 2: set the scanned products on it.
+// Changing the planned products.
 const setItems = async (req, res) => {
   try {
     res.status(200).json(
@@ -62,12 +62,107 @@ const setItems = async (req, res) => {
   }
 };
 
+// Step 2: record what the floor has picked against the plan.
+const setPicks = async (req, res) => {
+  try {
+    res.status(200).json(
+      await fbaLogic.recordPicks(req.params.id, req.body?.picks, req.user.id),
+    );
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+// Replacing its attached services, before dispatch (fba:update — see the route).
+const setServices = async (req, res) => {
+  try {
+    res.status(200).json(
+      await fbaLogic.setBulkServices(req.params.id, req.body?.services, req.user.id),
+    );
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+/**
+ * The services a client has agreed rates for, to offer when attaching them.
+ * Employees get the names only: what a client pays is admin information, and
+ * the charge is raised automatically either way.
+ */
+const listAttachableServices = async (req, res) => {
+  try {
+    const rates = await fbaLogic.getAttachableServices(req.params.clientId);
+    const showPrice = req.user.role === 'admin';
+    res.status(200).json(
+      rates.map((rate) => ({
+        serviceId: rate.serviceId,
+        description: rate.service.description,
+        unit: rate.unit || rate.service.unit,
+        ...(showPrice ? { chargedPrice: rate.chargedPrice } : {}),
+      })),
+    );
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/** The delivery note PDF. A client may print their own, as with getShipment. */
+const getDeliveryNote = async (req, res) => {
+  try {
+    const ownClientId = await resolveOwnClientId(req.user);
+    const { shipment, buffer, filename } = await fbaLogic.getDeliveryNote(req.params.id);
+    if (ownClientId && shipment.clientId !== ownClientId) {
+      return res.status(404).json({ error: 'Consignment not found.' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.status(200).send(buffer);
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+// A client change that would remove products or services is refused until it
+// is confirmed, with the list of what would go so the screen can say so.
+const failUpdate = (res, err) => {
+  if (err.code === 'CONFIRM_CLIENT_RESET') {
+    return res.status(409).json({ error: err.message, code: err.code, removes: err.removes });
+  }
+  return fail(res, err);
+};
+
 // Correcting its details (admin only — see the route).
 const updateShipment = async (req, res) => {
   try {
     res.status(200).json(await fbaLogic.updateBulkShipment(req.params.id, req.body, req.user.id));
   } catch (err) {
-    fail(res, err);
+    failUpdate(res, err);
+  }
+};
+
+/**
+ * Moving a shipment to another client, and nothing else — the route employees
+ * use to put right a client picked by mistake. Only the client and the
+ * confirmation are read from the body, so no other detail can ride along.
+ */
+const changeClient = async (req, res) => {
+  try {
+    if (!req.body?.clientId) return res.status(400).json({ error: 'A client is required.' });
+    const shipment = await fbaLogic.getShipmentById(req.params.id);
+    if (!['DRAFT', 'PREPARING'].includes(shipment.status)) {
+      return res.status(400).json({
+        error: `The client can only be changed before dispatch — this one is ${shipment.status}.`,
+      });
+    }
+    res.status(200).json(
+      await fbaLogic.updateBulkShipment(
+        req.params.id,
+        { clientId: req.body.clientId, confirmClientReset: req.body.confirmClientReset === true },
+        req.user.id,
+      ),
+    );
+  } catch (err) {
+    failUpdate(res, err);
   }
 };
 
@@ -123,8 +218,42 @@ const cancelShipment = async (req, res) => {
 
 const deleteShipment = async (req, res) => {
   try {
-    await fbaLogic.remove(req.params.id, req.user.id);
-    res.status(200).json({ message: 'Bulk shipment deleted.' });
+    const { restored = [], chargesRemoved = 0 } = await fbaLogic.remove(req.params.id, req.user.id);
+    res.status(200).json({ message: 'Bulk shipment deleted.', restored, chargesRemoved });
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+// The tracking number, at any status but voided — including after dispatch.
+const setTracking = async (req, res) => {
+  try {
+    res.status(200).json(
+      await fbaLogic.setBulkTracking(req.params.id, req.body?.trackingId ?? null, req.user.id),
+    );
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+/**
+ * Returning part of a dispatched line. A return fee is only ever raised for an
+ * admin who asked for one (explicitly true): employees do not see what a
+ * client pays, so they cannot knowingly agree to charge it.
+ */
+const returnItem = async (req, res) => {
+  try {
+    const chargeReturn = req.user.role === 'admin' && req.body?.chargeReturn === true;
+    res.status(200).json(
+      await fbaLogic.returnItem(
+        req.params.id,
+        req.params.itemId,
+        req.body?.quantity,
+        req.body?.reason,
+        req.user.id,
+        { chargeReturn },
+      ),
+    );
   } catch (err) {
     fail(res, err);
   }
@@ -137,7 +266,14 @@ module.exports = {
   deleteCategory,
   createShipment,
   setItems,
+  setPicks,
+  setServices,
+  changeClient,
+  listAttachableServices,
+  getDeliveryNote,
   updateShipment,
+  setTracking,
+  returnItem,
   listShipments,
   getShipment,
   dispatchShipment,

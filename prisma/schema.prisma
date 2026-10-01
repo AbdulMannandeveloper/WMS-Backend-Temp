@@ -108,6 +108,7 @@ model Service {
   code             String?                  @unique @db.VarChar(40)
   clientServices   ClientService[]
   shipmentMappings ShipmentServiceMapping[]
+  fbaServices      FbaShipmentService[]
 
   @@map("services")
 }
@@ -122,6 +123,7 @@ model ClientService {
   service          Service                  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   invoiceLines     InvoiceLineItem[]
   shipmentMappings ShipmentServiceMapping[]
+  fbaServices      FbaShipmentService[]
 
   @@unique([clientId, serviceId], map: "uq_clients_services_pair")
   @@index([serviceId], map: "idx_clients_services_service_id")
@@ -535,6 +537,10 @@ model InvoiceLineItem {
   // this normally never fires.
   shipmentId String? @map("shipment_id") @db.Uuid
 
+  // The same for a bulk shipment: its Bulk Shipment charge and the services
+  // charged with it at dispatch.
+  fbaShipmentId String? @map("fba_shipment_id") @db.Uuid
+
   // The return this charge is for — the handling charge raised when it was
   // recorded, or the restock charge raised when it went back on the shelf. The
   // same reasoning as shipmentId: the returns screen shows what a return cost
@@ -545,10 +551,12 @@ model InvoiceLineItem {
   invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
   shipment      Shipment?      @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  fbaShipment   FbaShipment?   @relation(fields: [fbaShipmentId], references: [id], onDelete: SetNull)
   productReturn ProductReturn? @relation(fields: [returnId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
   @@index([shipmentId], map: "idx_line_items_shipment_id")
+  @@index([fbaShipmentId], map: "idx_line_items_fba_shipment_id")
   @@index([returnId], map: "idx_line_items_return_id")
   @@map("invoice_line_items")
 }
@@ -670,10 +678,25 @@ model FbaShipment {
   count              Int?
   // Where the bulk shipment is going (e.g. "Amazon Global"), the delivery note,
   // and the courier's tracking number.
-  destination        String?           @db.VarChar(160)
-  deliveryNote       String?           @map("delivery_note") @db.Text
-  trackingId         String?           @map("tracking_id") @db.VarChar(64)
-  status             FbaShipmentStatus @default(DRAFT)
+  destination  String?           @db.VarChar(160)
+  // Instructions printed on the delivery note. Legacy rows used this for the
+  // floor too, which is why the pick screen still shows it.
+  deliveryNote String?           @map("delivery_note") @db.Text
+  trackingId   String?           @map("tracking_id") @db.VarChar(64)
+  // Mode of dispatch — carrier and service, e.g. "EVRI NEXT DAY". Printed as the
+  // carrier on the delivery note.
+  dispatchMode        String?    @map("dispatch_mode") @db.VarChar(80)
+  // For the people picking it. Never printed.
+  staffNote           String?    @map("staff_note") @db.Text
+  // The rest of the delivery note: the client's order reference, the full
+  // deliver-to block (destination above is its name), and the collection.
+  orderReference      String?    @map("order_reference") @db.VarChar(64)
+  deliveryAddress     String?    @map("delivery_address") @db.Text
+  deliveryPostcode    String?    @map("delivery_postcode") @db.VarChar(20)
+  deliveryContact     String?    @map("delivery_contact") @db.VarChar(120)
+  vehicleRegistration String?    @map("vehicle_registration") @db.VarChar(20)
+  palletCount         Int?       @map("pallet_count")
+  status       FbaShipmentStatus @default(DRAFT)
   // Who carried out each of the three steps. Plain ids rather than relations:
   // this is an audit breadcrumb, and the three steps may all be one person.
   createdByUserId    String?           @map("created_by_user_id") @db.Uuid
@@ -683,9 +706,13 @@ model FbaShipment {
   dispatchedAt       DateTime?         @map("dispatched_at") @db.Timestamptz(6)
   notes              String?           @db.Text
 
-  category FbaCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  client   Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  category FbaCategory          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  client   Client               @relation(fields: [clientId], references: [id], onDelete: Restrict)
   items    FbaShipmentItem[]
+  services FbaShipmentService[]
+  // The charges its dispatch raised, so deleting it can take exactly those off
+  // the invoice.
+  invoiceLines InvoiceLineItem[]
 
   @@index([clientId, status], map: "idx_fba_shipments_client_status")
   @@index([barcode], map: "idx_fba_shipments_barcode")
@@ -704,7 +731,22 @@ model FbaShipmentItem {
   id               String   @id @default(uuid()) @db.Uuid
   fbaShipmentId    String   @map("fba_shipment_id") @db.Uuid
   productId        String   @map("product_id") @db.Uuid
+  // What the office planned to send. Reserved from the source bin at creation.
   quantity         Int
+  // How many the floor has scanned against this line. Dispatch is refused
+  // until it equals quantity on every line, so nothing leaves unchecked.
+  pickedQuantity   Int      @default(0) @map("picked_quantity")
+  // Running total of picked units put back on the shelf, recorded when a pick
+  // count is lowered. Picked goods block voiding, deleting, changing client and
+  // cutting the plan below them until they are put back.
+  putBackQuantity  Int      @default(0) @map("put_back_quantity")
+  // How much of this line has come back after dispatch. Capped at quantity, so
+  // the same units cannot be returned twice. The dispatch charge is never
+  // changed by a return; a return fee, when one applies, is its own line.
+  returnedQuantity Int      @default(0) @map("returned_quantity")
+  // Cartons this line travels in, for the delivery note. Optional: units per
+  // box is derived from it rather than stored.
+  boxes            Int?
   sourceLocationId String   @map("source_location_id") @db.Uuid
   // The code scanned to add it, kept for the packing record.
   barcode          String?  @db.VarChar(64)
@@ -735,6 +777,31 @@ model FbaShipmentItem {
  * stops a later shipment delete putting these units back on the shelf a second
  * time (it restores only what is still out).
  */
+// Billable services attached to a bulk shipment when it is created (labelling,
+// palletising...). Charged automatically on dispatch, beside the per-unit Bulk
+// Shipment rate, at the client's rate on the day it is dispatched.
+model FbaShipmentService {
+  id               String  @id @default(uuid()) @db.Uuid
+  fbaShipmentId    String  @map("fba_shipment_id") @db.Uuid
+  serviceId        String  @map("service_id") @db.Uuid
+  // The rate it was checked against when attached, then the one it was charged
+  // at. Nullable so the row survives the rate being removed.
+  clientServiceId  String?  @map("client_service_id") @db.Uuid
+  quantity         Decimal  @db.Decimal(10, 2)
+  // What it was charged at, written on dispatch. Null until then: the price is
+  // whatever the client's rate is when the charge is actually raised.
+  appliedUnitPrice Decimal? @map("applied_unit_price") @db.Decimal(14, 2)
+
+  fbaShipment   FbaShipment    @relation(fields: [fbaShipmentId], references: [id], onDelete: Cascade)
+  service       Service        @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+
+  // Once per shipment; quantity carries the repetition.
+  @@unique([fbaShipmentId, serviceId], map: "uq_fba_shipment_service_pair")
+  @@index([fbaShipmentId], map: "idx_fba_shipment_services_shipment_id")
+  @@map("fba_shipment_services")
+}
+
 enum ReturnStatus {
   RECORDED
   DISPOSED
