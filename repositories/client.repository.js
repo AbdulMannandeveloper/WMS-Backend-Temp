@@ -14,6 +14,13 @@ const getAllClients = async () => {
     });
 }
 
+// Only what it takes to tell pending, active and deactivated logins apart.
+const getAllClientsWithAccount = async () => {
+    return await prismaClient.findMany({
+        include: { user: { select: { isActive: true, passwordHash: true } } },
+    });
+}
+
 const getClientByField = async (field, value) => {
     return await prismaClient.findUnique({
         where: { [field]: value },
@@ -46,6 +53,7 @@ const deleteClient = async (id) => {
 module.exports = {
     createClient,
     getAllClients,
+    getAllClientsWithAccount,
     getClientByField,
     getClientById,
     updateClient,

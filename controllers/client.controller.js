@@ -1,4 +1,5 @@
 const clientLogic = require('../logic/client.logic');
+const { dependentsBody } = require('../utils/dependents');
 
 // US-010 & US-011: Admin adds a new client; email is sent automatically
 const addClient = async (req, res) => {
@@ -61,12 +62,37 @@ const updateClient = async (req, res) => {
   }
 };
 
+// What would stop a delete, asked before the admin presses it.
+const getClientDependents = async (req, res) => {
+  try {
+    const { report } = await clientLogic.getClientDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+};
+
+const setClientActive = async (req, res) => {
+  try {
+    const client = await clientLogic.setClientActive(req.params.id, req.body?.isActive, req.user.id);
+    res.status(200).json({
+      message: client.accountStatus === 'active' ? 'Client reactivated.' : 'Client deactivated.',
+      client,
+    });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+};
+
 const deleteClient = async (req, res) => {
   try {
-    await clientLogic.deleteClient(req.params.id);
+    await clientLogic.deleteClient(req.params.id, req.user.id);
     res.status(200).json({ message: 'Client deleted successfully.' });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    if (err.code === 'HAS_DEPENDENTS') {
+      return res.status(409).json(dependentsBody(err));
+    }
+    res.status(err.status || 400).json({ error: err.message });
   }
 };
 
@@ -77,5 +103,7 @@ module.exports = {
   getMyClient,
   getClientById,
   updateClient,
+  getClientDependents,
+  setClientActive,
   deleteClient,
 };
