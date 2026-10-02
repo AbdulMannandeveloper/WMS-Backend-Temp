@@ -38,7 +38,7 @@ const updateHoliday = async (req, res) => {
     );
     res.status(200).json(holiday);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 
@@ -47,7 +47,7 @@ const deleteHoliday = async (req, res) => {
     const holiday = await holidayLogic.deleteHoliday(req.params.id);
     res.status(200).json(holiday);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 

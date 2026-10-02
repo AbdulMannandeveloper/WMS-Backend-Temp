@@ -23,20 +23,49 @@ const getHolidayById = async (id) => {
   return await holidayRepository.getHolidayById(id);
 };
 
-const updateHoliday = async (id, updateData) => {
-  if (updateData.startDate) {
-    if (updateData.endDate) {
-      if (new Date(updateData.startDate) > new Date(updateData.endDate)) {
-        throw new Error("startDate must be before endDate");
-      }
-    } else {
-      updateData.endDate = updateData.startDate;
-    }
+/** What a holiday edit may change. Anything else in the body is ignored. */
+const HOLIDAY_UPDATE_FIELDS = ["name", "startDate", "endDate"];
+
+const notFound = () => {
+  const error = new Error("Holiday not found.");
+  error.status = 404;
+  return error;
+};
+
+const updateHoliday = async (id, rawData) => {
+  const holiday = await holidayRepository.getHolidayById(id);
+  if (!holiday) throw notFound();
+
+  const updateData = {};
+  for (const field of HOLIDAY_UPDATE_FIELDS) {
+    if (rawData && field in rawData) updateData[field] = rawData[field];
   }
+  if ("name" in updateData) {
+    updateData.name = String(updateData.name ?? "").trim();
+    if (!updateData.name) throw new Error("A holiday needs a name.");
+  }
+  // An empty end date means a one-day holiday.
+  if ("endDate" in updateData && !updateData.endDate) {
+    updateData.endDate = updateData.startDate ?? holiday.startDate;
+  }
+
+  // Checked against what is stored, so changing one end alone neither slips
+  // past the check nor collapses a multi-day holiday to its first day.
+  const start = new Date(updateData.startDate ?? holiday.startDate);
+  const end = new Date(updateData.endDate ?? holiday.endDate ?? start);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw new Error("Holiday dates must be valid dates");
+  }
+  if (start > end) {
+    throw new Error("startDate must be before endDate");
+  }
+
   return await holidayRepository.updateHoliday(id, updateData);
 };
 
 const deleteHoliday = async (id) => {
+  const holiday = await holidayRepository.getHolidayById(id);
+  if (!holiday) throw notFound();
   return await holidayRepository.deleteHoliday(id);
 };
 
