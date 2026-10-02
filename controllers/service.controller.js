@@ -1,4 +1,5 @@
 const serviceLogic = require("../logic/service.logic");
+const { dependentsBody } = require("../utils/dependents");
 
 const createService = async (req, res) => {
   try {
@@ -45,12 +46,27 @@ const updateService = async (req, res) => {
   }
 };
 
+// What would stop a delete, asked before the admin presses it.
+const getServiceDependents = async (req, res) => {
+  try {
+    const { report } = await serviceLogic.getServiceDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+};
+
 const deleteService = async (req, res) => {
   try {
-    await serviceLogic.deleteService(req.params.id);
+    await serviceLogic.deleteService(req.params.id, req.user.id);
     res.status(200).json({ message: "Service deleted successfully" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // Was a 500 for every refusal, including the foreign key a service still
+    // on a shipment trips — so "in use" read as "the server broke".
+    if (err.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(err));
+    }
+    res.status(err.status || 400).json({ error: err.message });
   }
 };
 
@@ -59,5 +75,6 @@ module.exports = {
   getAllServices,
   getServiceById,
   updateService,
+  getServiceDependents,
   deleteService,
 };

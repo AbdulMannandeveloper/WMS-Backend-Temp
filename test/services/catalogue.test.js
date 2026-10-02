@@ -17,6 +17,8 @@ import {
   makeEmployee,
   makeService,
   makeClientService,
+  makeShipment,
+  makeShipmentServiceMapping,
 } from '../factories/index.js';
 
 describe('the service catalogue', () => {
@@ -60,6 +62,70 @@ describe('the service catalogue', () => {
     expect(res.status).toBe(200);
     const after = await prisma.service.findUnique({ where: { id: service.id } });
     expect(after.description).toBe('Renamed');
+  });
+
+  it('will not let an edit set or clear the system code', async () => {
+    // Billing finds the services it raises by this code.
+    const admin = await makeAdmin();
+    const service = await makeService({ code: 'SHIPMENT_DISPATCH' });
+
+    await as(admin).put(`/api/services/${service.id}`).send({ description: 'Dispatch', code: null });
+
+    const after = await prisma.service.findUnique({ where: { id: service.id } });
+    expect(after.code).toBe('SHIPMENT_DISPATCH');
+    expect(after.description).toBe('Dispatch');
+  });
+});
+
+describe('deleting a service', () => {
+  it('deletes an unused one, taking its agreed rates with it', async () => {
+    const admin = await makeAdmin();
+    const { client } = await makeClient();
+    const service = await makeService();
+    await makeClientService(client.id, service.id);
+
+    const dependents = await as(admin).get(`/api/services/${service.id}/dependents`);
+    expect(dependents.body.canDelete).toBe(true);
+    expect(dependents.body.removedWith[0]).toMatchObject({ key: 'clientRates', count: 1 });
+
+    const res = await as(admin).delete(`/api/services/${service.id}`);
+
+    expect(res.status).toBe(200);
+    expect(await prisma.service.findUnique({ where: { id: service.id } })).toBeNull();
+    expect(await prisma.clientService.count({ where: { serviceId: service.id } })).toBe(0);
+  });
+
+  it('refuses while a shipment is charged for it — a 409, not a 500', async () => {
+    const admin = await makeAdmin();
+    const { employee } = await makeEmployee();
+    const { client } = await makeClient();
+    const service = await makeService();
+    const shipment = await makeShipment(employee.id, client.id);
+    await makeShipmentServiceMapping(shipment.id, service.id);
+
+    const res = await as(admin).delete(`/api/services/${service.id}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['shipments']);
+    expect(await prisma.service.findUnique({ where: { id: service.id } })).not.toBeNull();
+  });
+
+  it('never deletes a service billing raises by itself', async () => {
+    const admin = await makeAdmin();
+    const service = await makeService({ code: 'SHIPMENT_DISPATCH' });
+
+    const res = await as(admin).delete(`/api/services/${service.id}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['system']);
+  });
+
+  it('is admin only', async () => {
+    const { user: employeeUser } = await makeEmployee();
+    const service = await makeService();
+
+    expect((await as(employeeUser).delete(`/api/services/${service.id}`)).status).toBe(403);
+    expect((await as(employeeUser).get(`/api/services/${service.id}/dependents`)).status).toBe(403);
   });
 });
 

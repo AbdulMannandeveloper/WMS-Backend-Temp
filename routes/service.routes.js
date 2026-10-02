@@ -5,6 +5,7 @@ const {
   getAllServices,
   getServiceById,
   updateService,
+  getServiceDependents,
   deleteService,
 } = require("../controllers/service.controller");
 
@@ -14,6 +15,10 @@ router.post("/", authorizeRoles('admin'), createService);
 router.get("/", authorizeRoles('admin'), getAllServices);
 router.get("/:id", authorizeRoles('admin'), getServiceById);
 router.put("/:id", authorizeRoles('admin'), updateService);
+
+// Deleting is refused while shipments still carry the service; /dependents
+// says which, so the admin sees it before pressing delete.
+router.get("/:id/dependents", authorizeRoles('admin'), getServiceDependents);
 router.delete("/:id", authorizeRoles('admin'), deleteService);
 
 module.exports = router;
