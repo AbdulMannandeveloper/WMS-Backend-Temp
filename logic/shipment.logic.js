@@ -17,6 +17,7 @@ const {
 } = require("./billing_services");
 const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
 const { buildReport, assertDeletable } = require("../utils/dependents");
+const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require("./reversal");
 
 /**
  * The shipment lifecycle, enforced here rather than in the browser.
@@ -689,10 +690,9 @@ const getShipmentDependents = async (id) => {
 
   const paidCharges = chargeLines.filter((line) => line.invoice?.status === "PAID").length;
 
-  // Both kinds of return add to a line's returnedQuantity; only the Returns
-  // screen leaves a record behind. What the line counts beyond its return
-  // records came back through the line's own return button
-  // (shipment_item.logic returnShipmentItem), which has no record of its own.
+  // Every return adds to a line's returnedQuantity. What the line counts beyond
+  // its return records came back through the line's Return button before it
+  // booked records (see undoLineReturns), and has no record of its own.
   const returnedOnLines = items.reduce((sum, item) => sum + (item.returnedQuantity ?? 0), 0);
   const returnedViaRecords = returns
     .filter((r) => r.shipmentItemId)
@@ -730,7 +730,7 @@ const getShipmentDependents = async (id) => {
           key: "lineReturns",
           label: "Units returned from its lines",
           count: returnedViaLines,
-          note: "Returned with the shipment line's return button. These cannot be undone yet.",
+          note: "Returned with the line return button before it recorded returns. Undo them from the shipment's details.",
         },
       ],
       removedWith: [
@@ -884,7 +884,200 @@ const reverseDispatchedShipment = async (shipment, shipmentItems, actorUserId, t
   return { restored, chargeRemoved: chargeLines.length > 0 };
 };
 
+// ─── Undoing the returns booked on a shipment's lines ────────────────────────
+//
+// Before every return was a record, the line's Return button only bumped the
+// line's returnedQuantity, moved the stock and optionally raised a charge. It
+// books a return record now (product_return.logic recordLineReturn), so what is
+// undone here is only what it booked before that change.
+
+/**
+ * What the old line return button booked on each line: its returnedQuantity,
+ * less what return records account for (those are deleted from the Returns
+ * screen). Only lines with something to undo.
+ */
+const lineReturnsOn = async (shipmentId, tx) => {
+  const client = tx || prisma;
+  const [items, records] = await Promise.all([
+    client.shipmentItem.findMany({
+      where: { shipmentId, returnedQuantity: { gt: 0 } },
+      select: {
+        id: true,
+        productId: true,
+        sourceLocationId: true,
+        returnedQuantity: true,
+        sourceLocation: { select: { locationName: true, materializedPath: true } },
+      },
+    }),
+    client.productReturn.groupBy({
+      by: ["shipmentItemId"],
+      where: { shipmentId, shipmentItemId: { not: null } },
+      _sum: { quantity: true },
+    }),
+  ]);
+  const viaRecords = new Map(records.map((r) => [r.shipmentItemId, r._sum.quantity ?? 0]));
+  return items
+    .map((item) => ({
+      ...item,
+      quantity: Math.max(0, item.returnedQuantity - (viaRecords.get(item.id) ?? 0)),
+    }))
+    .filter((item) => item.quantity > 0);
+};
+
+/**
+ * How the old line return button described its charge. Only MANUAL_CHARGE lines
+ * on the shipment starting with this are swept up, so manual charges attached
+ * some other way never are. Linked to the shipment by migration
+ * 20261002110000_link_line_return_charges.
+ */
+const LEGACY_LINE_RETURN_CHARGE_PREFIX = "Return handling — ";
+
+/** The return-handling charges the old line return button raised for this shipment. */
+const lineReturnCharges = (shipmentId, tx) =>
+  (tx || prisma).invoiceLineItem.findMany({
+    where: {
+      shipmentId,
+      itemType: "MANUAL_CHARGE",
+      description: { startsWith: LEGACY_LINE_RETURN_CHARGE_PREFIX },
+    },
+    include: { invoice: { select: { status: true } } },
+  });
+
+/**
+ * What undoing a shipment's line returns would refuse on, and what it undoes.
+ *
+ * The line return button leaves no record of its own — a count on the line, a
+ * RETURN movement, and optionally a charge — so these are undone together, per
+ * shipment, rather than one by one: there is nothing that tells two returns on
+ * the same line apart. A partial return that was right can be booked again.
+ *
+ * Blocking, as for a return record: a charge on a paid invoice, and units that
+ * are no longer free in the bin they went back to.
+ */
+const getLineReturnDependents = async (id) => {
+  const shipment = await requireShipment(id);
+  const [lines, charges] = await Promise.all([lineReturnsOn(id), lineReturnCharges(id)]);
+
+  // Two lines can share a product and a bin; the shelf has to cover both.
+  const wanted = new Map();
+  for (const line of lines) {
+    const key = `${line.productId}|${line.sourceLocationId}`;
+    wanted.set(key, (wanted.get(key) ?? 0) + line.quantity);
+  }
+  let shortfall = 0;
+  for (const [key, quantity] of wanted) {
+    const [productId, locationId] = key.split("|");
+    shortfall += Math.max(0, quantity - (await freeUnitsIn(productId, locationId)));
+  }
+
+  const paid = paidAmong(charges).length;
+  const units = lines.reduce((sum, line) => sum + line.quantity, 0);
+
+  return {
+    shipment,
+    lines,
+    report: buildReport({
+      blocking: [
+        {
+          key: "paidInvoice",
+          label: "Return charges on a paid invoice",
+          count: paid,
+          where: "/invoices",
+          note: "Money has changed hands. Raise a credit note on that invoice instead.",
+        },
+        {
+          key: "stockGone",
+          label: "Returned units no longer free on the shelf",
+          count: shortfall,
+          where: "/inventory",
+          note: "They have been reserved, picked or moved since they came back.",
+        },
+      ],
+      removedWith: [
+        { key: "units", label: "Units taken back off their shelves", count: units },
+        {
+          key: "charges",
+          label: "Return charges taken off unpaid invoices",
+          count: charges.length - paid,
+          where: "/invoices",
+        },
+      ],
+    }),
+  };
+};
+
+/**
+ * Undoes every return booked with the line return button on a shipment: the
+ * units come back off the bins they were put into, each line counts them as
+ * out again, and the return charges come off unpaid invoices.
+ *
+ * Returns booked on the Returns screen are untouched — they are records, and
+ * are deleted there.
+ */
+const undoLineReturns = async (id, actorUserId) => {
+  if (!actorUserId) {
+    throw new Error("An authenticated user is required to undo returns.");
+  }
+  const { shipment, lines, report } = await getLineReturnDependents(id);
+  if (lines.length === 0) {
+    throw new Error(`Nothing was returned with the line return button on ${shipment.reference}.`);
+  }
+  assertDeletable(`Shipment ${shipment.reference}`, report);
+
+  const undone = await prisma.$transaction(
+    async (tx) => {
+      // Re-read inside the transaction, as deleteShipment does.
+      const [fresh, charges] = await Promise.all([lineReturnsOn(id, tx), lineReturnCharges(id, tx)]);
+      if (paidAmong(charges).length > 0) {
+        throw new Error(
+          `A return charge for ${shipment.reference} is on a paid invoice — raise a credit note instead.`,
+        );
+      }
+
+      for (const line of fresh) {
+        const { count } = await tx.shipmentItem.updateMany({
+          where: { id: line.id, returnedQuantity: { gte: line.quantity } },
+          data: { returnedQuantity: { decrement: line.quantity } },
+        });
+        if (count === 0) {
+          throw new Error("A line's returns changed while this was being undone. Try again.");
+        }
+        await takeOffShelf(
+          {
+            productId: line.productId,
+            locationId: line.sourceLocationId,
+            quantity: line.quantity,
+            // The shipment reference, as on the RETURN this reverses.
+            reference: shipment.reference,
+            notes: `Line return on ${shipment.reference} undone`,
+            actorUserId,
+          },
+          tx,
+        );
+      }
+
+      await removeChargeLines(charges, tx);
+      return {
+        lines: fresh.map((line) => ({ shipmentItemId: line.id, quantity: line.quantity })),
+        chargesRemoved: charges.length,
+      };
+    },
+    { maxWait: 10_000, timeout: 30_000 },
+  );
+
+  await audit(actorUserId, "SHIPMENT_LINE_RETURNS_UNDONE", {
+    shipmentId: shipment.id,
+    reference: shipment.reference,
+    clientId: shipment.clientId,
+    ...undone,
+  });
+
+  return { id: shipment.id, ...undone };
+};
+
 module.exports = {
+  getLineReturnDependents,
+  undoLineReturns,
   createShipment,
   dispatchShipment,
   markShipmentReady,

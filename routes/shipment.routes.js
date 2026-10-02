@@ -69,4 +69,10 @@ router.put('/:id', staffWith('update'), shipmentController.updateShipment);
 router.get('/:id/dependents', staffWith('delete'), shipmentController.getShipmentDependents);
 router.delete('/:id', staffWith('delete'), shipmentController.deleteShipment);
 
+// Undoing the returns booked with the line return button. Removal rather than
+// an update: it deletes what the returns did — their stock and their charges —
+// so it sits with delete, as the shipment delete those returns block does.
+router.get('/:id/line-returns/dependents', staffWith('delete'), shipmentController.getLineReturnDependents);
+router.delete('/:id/line-returns', staffWith('delete'), shipmentController.undoLineReturns);
+
 module.exports = router;

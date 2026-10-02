@@ -188,6 +188,27 @@ const getShipmentDependents = async (req, res) => {
   }
 };
 
+// Undoing what the line return button booked — the warning first, then the undo.
+const getLineReturnDependents = async (req, res) => {
+  try {
+    const { report } = await shipmentLogic.getLineReturnDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (error) {
+    res.status(/not found/i.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+};
+
+const undoLineReturns = async (req, res) => {
+  try {
+    res.status(200).json(await shipmentLogic.undoLineReturns(req.params.id, req.user.id));
+  } catch (error) {
+    if (error.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(error));
+    }
+    res.status(/not found/i.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+};
+
 const getAllShipments = async (req, res) => {
   try {
     const shipments = await shipmentLogic.getAllShipments();
@@ -210,4 +231,6 @@ module.exports = {
   setShipmentTracking,
   getShipmentDependents,
   deleteShipment,
+  getLineReturnDependents,
+  undoLineReturns,
 };

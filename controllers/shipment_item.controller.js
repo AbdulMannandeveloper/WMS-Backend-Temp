@@ -1,4 +1,5 @@
 const shipmentItemLogic = require("../logic/shipment_item.logic");
+const productReturnLogic = require("../logic/product_return.logic");
 
 const createShipmentItem = async (req, res) => {
   try {
@@ -52,25 +53,30 @@ const pickShipmentItem = async (req, res) => {
 };
 
 /**
- * Returns part or all of a dispatched line to the shelf. Admin only, and the
- * invoice is deliberately untouched.
+ * Returns part or all of a dispatched line to the shelf, booked as a return
+ * record (productReturnLogic.recordLineReturn). The shipment's own charge is
+ * deliberately untouched.
  */
 const returnShipmentItem = async (req, res) => {
   try {
-    const updated = await shipmentItemLogic.returnShipmentItem(
+    const recorded = await productReturnLogic.recordLineReturn(
       req.params.id,
-      req.body?.quantity,
-      req.body?.reason,
+      {
+        quantity: req.body?.quantity,
+        reason: req.body?.reason,
+        // Explicitly true only. Anything else — absent, "false", null — means
+        // do not charge, because the safe reading of an unclear request about
+        // money is the one that does not bill anybody.
+        chargeReturn: req.body?.chargeReturn === true,
+      },
       req.user.id,
-      // Explicitly true only. Anything else — absent, "false", null — means do
-      // not charge, because the safe reading of an unclear request about money
-      // is the one that does not bill anybody.
-      { chargeReturn: req.body?.chargeReturn === true },
     );
-    res.status(200).json(updated);
+    // The record carries its invoice lines; prices stay with admins, as on
+    // the Returns screen.
+    res.status(200).json(productReturnLogic.redactMoney(recorded, req.user?.role));
   } catch (error) {
-    const notFound = /not found/i.test(error.message);
-    res.status(notFound ? 404 : 400).json({ error: error.message });
+    const status = error.status || (/not found/i.test(error.message) ? 404 : 400);
+    res.status(status).json({ error: error.message });
   }
 };
 

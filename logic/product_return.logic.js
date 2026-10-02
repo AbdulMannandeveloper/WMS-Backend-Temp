@@ -32,6 +32,8 @@ const inventoryLedgerLogic = require('./inventory_ledger.logic');
 const auditLogLogic = require('./audit_log.logic');
 const { normaliseTrackingId } = require('./shipment.logic');
 const { parseUuid } = require('../utils/queryFilters');
+const { buildReport, assertDeletable } = require('../utils/dependents');
+const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require('./reversal');
 const {
   getReturnRateForClient,
   getRestockRateForClient,
@@ -148,6 +150,37 @@ const resolveLink = (candidates, product) => {
   return { shipment: own[0], item: null };
 };
 
+/**
+ * The shipment line an operator picked for a parcel whose label matched none,
+ * checked inside the caller's transaction: it has to be a dispatched line
+ * carrying this very product, on a shipment of the product's own client.
+ * Shaped like resolveLink's result.
+ */
+const resolveChosenLine = async (shipmentItemId, product, tx) => {
+  const item = await tx.shipmentItem.findUnique({
+    where: { id: shipmentItemId },
+    select: {
+      id: true,
+      productId: true,
+      quantity: true,
+      returnedQuantity: true,
+      sourceLocationId: true,
+      shipment: { select: { id: true, reference: true, clientId: true, status: true } },
+    },
+  });
+  if (!item) throw withStatus('That shipment line does not exist.', 404);
+  if (item.shipment.status !== 'DISPATCHED') {
+    throw new Error(`Shipment ${item.shipment.reference} has not been dispatched, so nothing on it can come back.`);
+  }
+  if (item.productId !== product.id || item.shipment.clientId !== product.clientId) {
+    throw withStatus(
+      `${product.skuCode} is not on shipment ${item.shipment.reference}. Choose a shipment that carried it.`,
+      409,
+    );
+  }
+  return { shipment: item.shipment, item };
+};
+
 // ─── Charging ─────────────────────────────────────────────────────────────────
 
 /**
@@ -157,7 +190,15 @@ const resolveLink = (candidates, product) => {
  * is zero. That is an arrangement, not an error: the goods are handled either
  * way, and an invoice is not opened just to hold no lines.
  */
-const raiseCharge = async ({ productReturn, rate, description, tx }) => {
+const raiseCharge = async ({
+  productReturn,
+  rate,
+  description,
+  // A charge the bench raises on its own. The line Return button passes
+  // MANUAL_CHARGE: there an admin chose to charge.
+  itemType = 'AUTOMATED_SERVICE',
+  tx,
+}) => {
   const unitPrice = rate ? Number(rate.unitPrice) : 0;
   if (!rate || !(unitPrice > 0)) return null;
 
@@ -174,9 +215,7 @@ const raiseCharge = async ({ productReturn, rate, description, tx }) => {
       totalPrice,
       description,
       dateOfService: new Date(),
-      // Raised by an operational trigger — the scan at the bench — rather than
-      // typed in by an admin.
-      itemType: 'AUTOMATED_SERVICE',
+      itemType,
     },
     tx,
   );
@@ -326,6 +365,40 @@ const identify = async ({ tracking, code } = {}) => {
   };
 };
 
+// ─── Linking by hand ──────────────────────────────────────────────────────────
+
+/** How many lines the link picker is offered at once. */
+const LINE_CHOICES = 20;
+
+/**
+ * The dispatched shipment lines a parcel of this product could have come back
+ * from, for when its label matched none: lines carrying the product with
+ * something still out, most recent first, narrowed by a shipment reference
+ * fragment when one is typed. Writes nothing; recording checks the choice again.
+ */
+const findLinesForProduct = async ({ productId: rawProductId, q } = {}) => {
+  const productId = parseUuid(rawProductId, 'Product');
+  if (!productId) throw new Error('Scan the returned product first.');
+  const search = String(q ?? '').trim();
+
+  const lines = await productReturnRepository.findDispatchedLinesForProduct(productId, {
+    q: search || undefined,
+  });
+  return lines
+    .filter((line) => outstandingOn(line) > 0)
+    .slice(0, LINE_CHOICES)
+    .map((line) => ({
+      shipmentItemId: line.id,
+      shipmentId: line.shipment.id,
+      reference: line.shipment.reference,
+      dispatchedAt: line.shipment.createdAt,
+      trackingId: line.trackingId ?? line.shipment.trackingId ?? null,
+      quantity: line.quantity,
+      outstanding: outstandingOn(line),
+      sourceLocationId: line.sourceLocationId,
+    }));
+};
+
 // ─── Record ───────────────────────────────────────────────────────────────────
 
 const parseQuantity = (raw) => {
@@ -458,7 +531,13 @@ const sumCharges = (...charges) => {
  * or restock, so abandoning the dialog half way leaves nothing behind. Without
  * one the return waits as RECORDED, for someone who may record but not decide.
  *
+ * `shipmentItemId` links the return to a shipment line the operator chose,
+ * for a parcel whose label matched none — a customer's own label, a
+ * marketplace return label. Without it the tracking number decides the link,
+ * and when that finds no line the return stands unlinked.
+ *
  * @param {{ trackingNumber: string, productId: string, quantity?: number, notes?: string,
+ *           shipmentItemId?: string,
  *           disposition?: { type: 'dispose'|'restock', locationId?: string, notes?: string } }} payload
  * @param {string} actorUserId whoever is signed in. Never taken from the body.
  */
@@ -472,6 +551,7 @@ const recordReturn = async (payload, actorUserId) => {
     productId: rawProductId,
     quantity,
     notes,
+    shipmentItemId: rawShipmentItemId,
     disposition: rawDisposition,
   } = payload || {};
 
@@ -488,6 +568,10 @@ const recordReturn = async (payload, actorUserId) => {
   }
   const amount = parseQuantity(quantity);
   const disposition = rawDisposition ? await parseDisposition(rawDisposition) : null;
+  const chosenItemId = rawShipmentItemId ? parseUuid(rawShipmentItemId, 'Shipment line') : null;
+  if (rawShipmentItemId && !chosenItemId) {
+    throw withStatus('That shipment line does not exist.', 404);
+  }
 
   // Validated before the transaction opens, as receiving does.
   const product = await prisma.product.findUnique({
@@ -508,7 +592,19 @@ const recordReturn = async (payload, actorUserId) => {
           tx,
         );
         assertTrackingAgrees(candidates, product, trackingNumber);
-        const link = resolveLink(candidates, product);
+        const matched = resolveLink(candidates, product);
+        let link = matched;
+        if (chosenItemId) {
+          // The label already names a line: a different choice is a stale
+          // screen or a mistake, and the label is the better evidence.
+          if (matched.item && matched.item.id !== chosenItemId) {
+            throw withStatus(
+              `Tracking ${trackingNumber} already links this parcel to shipment ${matched.shipment.reference}.`,
+              409,
+            );
+          }
+          link = await resolveChosenLine(chosenItemId, product, tx);
+        }
 
         if (link.item) {
           const moved = await productReturnRepository.addReturnedQuantity(
@@ -585,6 +681,157 @@ const recordReturn = async (payload, actorUserId) => {
   }
 };
 
+// ─── Record from a shipment line ──────────────────────────────────────────────
+
+/**
+ * Books a return from a dispatched shipment line — the line's Return button.
+ *
+ * The same record the Returns screen makes, so every return has a RET number,
+ * appears in one list and is deleted from one place. What differs is how much
+ * is already known: the line names the shipment, the product and the bin, so
+ * nothing is scanned and no tracking number is needed to link it. The goods go
+ * straight back into the bin they were picked from — RESTOCKED on booking.
+ *
+ * The charge keeps the line's own rule: only the client's ITEM_RETURN rate,
+ * and only when `chargeReturn` is true — an admin absorbing a return should
+ * not have to remove a charge afterwards. No restock charge. The shipment's
+ * own dispatch charge is never touched.
+ *
+ * @param {{ quantity: number, reason?: string, chargeReturn?: boolean }} options
+ * @returns the return, plus `returnCharge`: the amount charged, or null
+ */
+const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = false } = {}, actorUserId) => {
+  if (!actorUserId) {
+    throw new Error('An authenticated user is required to record a return.');
+  }
+  const itemId = parseUuid(rawItemId, 'Shipment item');
+  const item = itemId
+    ? await prisma.shipmentItem.findUnique({
+        where: { id: itemId },
+        include: {
+          shipment: {
+            select: { id: true, reference: true, status: true, clientId: true, trackingId: true },
+          },
+          product: { select: { skuCode: true } },
+        },
+      })
+    : null;
+  if (!item) throw withStatus('Shipment item not found.', 404);
+  const { shipment } = item;
+
+  if (shipment.status !== 'DISPATCHED') {
+    throw new Error(
+      `Only a dispatched shipment can have items returned — this one is ${shipment.status}. Use unpick or cancel instead.`,
+    );
+  }
+
+  const amount = Number(quantity);
+  if (!Number.isInteger(amount) || amount <= 0) {
+    throw new Error('Return quantity must be a whole number above zero.');
+  }
+  const already = item.returnedQuantity ?? 0;
+  const outstanding = item.quantity - already;
+  if (amount > outstanding) {
+    throw new Error(
+      already > 0
+        ? `Only ${outstanding} of this line is still out — ${already} of ${item.quantity} has already been returned.`
+        : `Cannot return ${amount}; the line was only ${item.quantity}.`,
+    );
+  }
+  const notes = reason ? String(reason).trim() || null : null;
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const { created, charge } = await prisma.$transaction(async (tx) => {
+        // Conditional, so a return booked against the same units a moment ago
+        // — here or on the Returns screen — cannot both fit.
+        const moved = await productReturnRepository.addReturnedQuantity(item.id, amount, tx);
+        if (moved === 0) {
+          throw withStatus(
+            'Some of this line was returned at the same moment. Refresh and try again.',
+            409,
+          );
+        }
+
+        const reference = await nextReturnReference(tx);
+        const now = new Date();
+        const created = await productReturnRepository.createReturn(
+          {
+            reference,
+            // The line's own consignment number, else the shipment's. Often
+            // neither: the line is the link, not the label.
+            trackingNumber: item.trackingId ?? shipment.trackingId ?? null,
+            clientId: shipment.clientId,
+            productId: item.productId,
+            quantity: amount,
+            status: 'RESTOCKED',
+            shipmentId: shipment.id,
+            shipmentItemId: item.id,
+            restockLocationId: item.sourceLocationId,
+            notes,
+            recordedByUserId: actorUserId,
+            resolvedByUserId: actorUserId,
+            resolvedAt: now,
+          },
+          tx,
+        );
+
+        // The ledger applies the stock change itself — adding it here as well
+        // would credit the shelf twice.
+        await inventoryLedgerLogic.createInventoryLedger(
+          {
+            productId: item.productId,
+            userId: actorUserId,
+            movementType: 'RETURN',
+            quantity: amount,
+            toLocationId: item.sourceLocationId,
+            referenceId: reference,
+            notes: notes || `Returned from shipment ${shipment.reference}`,
+          },
+          { tx },
+        );
+
+        const charge = chargeReturn
+          ? await raiseCharge({
+              productReturn: created,
+              rate: await getReturnRateForClient(shipment.clientId, tx),
+              description: `Return handling — ${amount} item(s) from shipment ${shipment.reference}, return ${reference}`,
+              itemType: 'MANUAL_CHARGE',
+              tx,
+            })
+          : null;
+
+        return { created, charge };
+      }, TRANSACTION_OPTIONS);
+
+      await audit(actorUserId, 'SHIPMENT_ITEM_RETURNED', {
+        returnId: created.id,
+        reference: created.reference,
+        shipmentItemId: item.id,
+        shipmentId: shipment.id,
+        productId: item.productId,
+        toLocationId: item.sourceLocationId,
+        quantity: amount,
+        returnedTotal: already + amount,
+        ofLineQuantity: item.quantity,
+        reason: notes,
+        // The dispatch charge is never rewritten. A return fee, when one
+        // applies, is its own line.
+        dispatchChargeChanged: false,
+        chargeRequested: chargeReturn,
+        returnCharge: charge?.amount ?? null,
+      });
+
+      return {
+        ...(await productReturnRepository.getReturnById(created.id)),
+        returnCharge: charge?.amount ?? null,
+      };
+    } catch (error) {
+      if (attempt >= REFERENCE_ATTEMPTS || !isReferenceClash(error)) throw error;
+    }
+  }
+};
+
 // ─── Resolve later: dispose or restock from the list ──────────────────────────
 
 const resolveReturn = async (id, rawDisposition, actorUserId) => {
@@ -626,6 +873,191 @@ const getReturns = async ({ status } = {}) => {
 };
 
 const getReturnById = async (id) => await withDispositionHints(await requireReturn(id));
+
+// ─── Edit ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Corrects what was written about a return. Only the notes: everything else
+ * was scanned, or decided and acted on — stock moved, a charge raised — and a
+ * wrong scan is corrected by deleting the return and recording it again, which
+ * undoes those as well.
+ *
+ * Disposition notes exist only once a decision has been made.
+ */
+const updateReturn = async (id, raw, actorUserId) => {
+  const existing = await requireReturn(id);
+  const tidy = (value) => (value === null || value === undefined ? null : String(value).trim() || null);
+
+  const data = {};
+  if (raw && 'notes' in raw) data.notes = tidy(raw.notes);
+  if (raw && 'dispositionNotes' in raw) {
+    if (existing.status === 'RECORDED') {
+      throw new Error('There is no decision on this return yet, so nothing to note about it.');
+    }
+    data.dispositionNotes = tidy(raw.dispositionNotes);
+  }
+  if (Object.keys(data).length === 0) return existing;
+
+  const updated = await productReturnRepository.updateReturn(existing.id, data);
+  await audit(actorUserId, 'RETURN_UPDATED', {
+    returnId: existing.id,
+    reference: existing.reference,
+    changed: Object.keys(data),
+  });
+  return updated;
+};
+
+// ─── Delete ───────────────────────────────────────────────────────────────────
+
+/** The bin as people know it, for a sentence. */
+const binName = (location) => location?.materializedPath || location?.locationName || 'its bin';
+
+/**
+ * What deleting a return would refuse on, and what it would undo. See
+ * utils/dependents.js for what blocking and removedWith mean.
+ *
+ * A return is deleted when it should never have been booked — the wrong
+ * parcel, the wrong product, booked twice. Deleting it undoes everything
+ * booking it did: the units come back off the shelf they were restocked to,
+ * its charges come off the invoice, and the shipment line it was counted
+ * against counts them as still out.
+ *
+ * Blocking:
+ *  - a charge on a PAID invoice, as with a shipment: money that has changed
+ *    hands is reversed with a credit note
+ *  - restocked units that are no longer free on that shelf — picked, reserved
+ *    or moved since. Taking them off anyway would push the count below what is
+ *    physically there.
+ */
+const getReturnDependents = async (id) => {
+  const productReturn = await requireReturn(id);
+  const restocked = productReturn.status === 'RESTOCKED' && productReturn.restockLocationId;
+
+  const [charges, free] = await Promise.all([
+    prisma.invoiceLineItem.findMany({
+      where: { returnId: productReturn.id },
+      select: { id: true, invoiceId: true, invoice: { select: { status: true } } },
+    }),
+    restocked
+      ? freeUnitsIn(productReturn.productId, productReturn.restockLocationId)
+      : Promise.resolve(0),
+  ]);
+  const paid = paidAmong(charges).length;
+  const shortfall = restocked ? Math.max(0, productReturn.quantity - free) : 0;
+
+  return {
+    productReturn,
+    charges,
+    report: buildReport({
+      blocking: [
+        {
+          key: 'paidInvoice',
+          label: 'Charges on a paid invoice',
+          count: paid,
+          where: '/invoices',
+          note: 'Money has changed hands. Raise a credit note on that invoice instead.',
+        },
+        {
+          key: 'stockGone',
+          label: 'Restocked units no longer free on the shelf',
+          count: shortfall,
+          where: '/inventory',
+          note:
+            `Only ${free} of the ${productReturn.quantity} units put back into ` +
+            `${binName(productReturn.restockLocation)} are still free there — the rest have been ` +
+            'reserved, picked or moved since.',
+        },
+      ],
+      removedWith: [
+        {
+          key: 'units',
+          label: `Units taken back off ${binName(productReturn.restockLocation)}`,
+          count: restocked ? productReturn.quantity : 0,
+        },
+        {
+          key: 'charges',
+          label: 'Charges taken off unpaid invoices',
+          count: charges.length - paid,
+          where: '/invoices',
+        },
+        {
+          key: 'lineCount',
+          label: `Units counted as returned on shipment ${productReturn.shipment?.reference ?? ''}`.trim(),
+          count: productReturn.shipmentItemId ? productReturn.quantity : 0,
+          note: 'They count as still with the customer again.',
+        },
+      ],
+    }),
+  };
+};
+
+const deleteReturn = async (id, actorUserId) => {
+  if (!actorUserId) {
+    throw new Error('An authenticated user is required to delete a return.');
+  }
+  const { productReturn, report } = await getReturnDependents(id);
+  assertDeletable(`Return ${productReturn.reference}`, report);
+
+  const restocked = productReturn.status === 'RESTOCKED' && productReturn.restockLocationId;
+
+  const removedCharges = await prisma.$transaction(async (tx) => {
+    // Re-read inside the transaction: the warning was a minute ago.
+    const charges = await tx.invoiceLineItem.findMany({
+      where: { returnId: productReturn.id },
+      include: { invoice: { select: { status: true } } },
+    });
+    if (paidAmong(charges).length > 0) {
+      throw withStatus(
+        `A charge for return ${productReturn.reference} is on a paid invoice — raise a credit note instead.`,
+        409,
+      );
+    }
+
+    if (productReturn.shipmentItemId) {
+      // The line can be short only if its count was edited by hand; the
+      // return is still deleted, the line just has nothing left to give back.
+      await productReturnRepository.takeBackReturnedQuantity(
+        productReturn.shipmentItemId,
+        productReturn.quantity,
+        tx,
+      );
+    }
+
+    if (restocked) {
+      await takeOffShelf(
+        {
+          productId: productReturn.productId,
+          locationId: productReturn.restockLocationId,
+          quantity: productReturn.quantity,
+          reference: productReturn.reference,
+          notes: `Return ${productReturn.reference} deleted — restock reversed`,
+          actorUserId,
+        },
+        tx,
+      );
+    }
+
+    await removeChargeLines(charges, tx);
+    await productReturnRepository.deleteReturn(productReturn.id, tx);
+    return charges.length;
+  }, TRANSACTION_OPTIONS);
+
+  await audit(actorUserId, 'RETURN_DELETED', {
+    returnId: productReturn.id,
+    reference: productReturn.reference,
+    status: productReturn.status,
+    clientId: productReturn.clientId,
+    productId: productReturn.productId,
+    quantity: productReturn.quantity,
+    shipmentId: productReturn.shipmentId,
+    shipmentItemId: productReturn.shipmentItemId,
+    unitsTakenOff: restocked ? productReturn.quantity : 0,
+    fromLocationId: restocked ? productReturn.restockLocationId : null,
+    chargesRemoved: removedCharges,
+  });
+
+  return { id: productReturn.id };
+};
 
 // ─── What a viewer is shown ───────────────────────────────────────────────────
 
@@ -671,11 +1103,16 @@ const redactMoney = (data, role) => {
 
 module.exports = {
   identify,
+  findLinesForProduct,
   recordReturn,
+  recordLineReturn,
   disposeReturn,
   restockReturn,
   getReturns,
   getReturnById,
+  updateReturn,
+  getReturnDependents,
+  deleteReturn,
   redactMoney,
   RETURN_STATUSES,
   // Exported for tests.

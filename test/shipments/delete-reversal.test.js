@@ -126,8 +126,9 @@ describe('deleting a dispatched shipment', () => {
     const res = await as(scenario.admin).delete(`/api/shipments/${shipment.id}`);
 
     expect(res.status).toBe(409);
+    // The line's Return button books a return record, so it blocks as one.
     expect(res.body.dependents.blocking).toEqual([
-      expect.objectContaining({ key: 'lineReturns', count: 3 }),
+      expect.objectContaining({ key: 'returns', count: 1 }),
     ]);
     expect(await onHand()).toBe(93);
     await expect(prisma.shipment.count({ where: { id: shipment.id } })).resolves.toBe(1);

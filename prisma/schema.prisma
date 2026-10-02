@@ -535,6 +535,9 @@ model InvoiceLineItem {
   // charge, rather than matching on the description string. onDelete SetNull is
   // only a backstop: deleteShipment removes the line before the row goes, so
   // this normally never fires.
+  // Also set on the MANUAL_CHARGE the line return button raises, so undoing a
+  // shipment's line returns can find it. Readers of shipment charges filter on
+  // itemType SHIPMENT_CHARGE.
   shipmentId String? @map("shipment_id") @db.Uuid
 
   // The same for a bulk shipment: its Bulk Shipment charge and the services
@@ -812,8 +815,9 @@ model ProductReturn {
   id               String       @id @default(uuid()) @db.Uuid
   // RET-<year>-<sequence>, issued the same way as Shipment.reference.
   reference        String       @unique(map: "uq_product_returns_reference") @db.VarChar(64)
-  // The courier number on the parcel that came back, as scanned.
-  trackingNumber   String       @map("tracking_number") @db.VarChar(64)
+  // The courier number on the parcel that came back, as scanned. Null when
+  // booked from a shipment line (the line is the link) and the shipment had none.
+  trackingNumber   String?      @map("tracking_number") @db.VarChar(64)
   // Whose goods these are. Taken from the product, never from the request.
   clientId         String       @map("client_id") @db.Uuid
   productId        String       @map("product_id") @db.Uuid
