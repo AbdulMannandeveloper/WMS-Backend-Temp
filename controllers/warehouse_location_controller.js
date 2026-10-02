@@ -1,6 +1,7 @@
 const warehhouseLocationLogic = require("../logic/warehouse_location.logic");
 const { paginatedResponse } = require("../utils/pagination");
 const { buildListQuery } = require("../utils/queryFilters");
+const { dependentsBody } = require("../utils/dependents");
 const { listError } = require("../utils/listResponse");
 
 const createWarehouseLocation = async (req, res) => {
@@ -94,15 +95,31 @@ const updateWarehouseLocation = async (req, res) => {
   }
 };
 
+// What would stop a delete, asked before the admin presses it.
+const getWarehouseLocationDependents = async (req, res) => {
+  try {
+    const { report } = await warehhouseLocationLogic.getWarehouseLocationDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : "An unexpected error occurred" });
+  }
+};
+
 const deleteWarehouseLocation = async (req, res) => {
   try {
     const { id } = req.params;
-    await warehhouseLocationLogic.deleteWarehouseLocation(id);
+    await warehhouseLocationLogic.deleteWarehouseLocation(id, req.user.id);
     res.status(204).send();
   } catch (error) {
+    if (error.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(error));
+    }
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     console.error("Error deleting warehouse location:", error);
 
-    // Handle database constraint errors (e.g., foreign key violations)
+    // A race past the dependents check still lands on a foreign key.
     if (error.code === "P2003") {
       res.status(400).json({
         error:
@@ -132,5 +149,6 @@ module.exports = {
   getWarehouseLocationByField,
   getWarehouseLocationTree,
   updateWarehouseLocation,
+  getWarehouseLocationDependents,
   deleteWarehouseLocation,
 };
