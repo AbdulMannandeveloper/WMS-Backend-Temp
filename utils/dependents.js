@@ -47,11 +47,13 @@ const buildReport = ({ blocking = [], removedWith = [] }) => {
 
 /** Refusal to delete while something still depends on the record. */
 class HasDependentsError extends Error {
-  constructor(subject, report) {
+  constructor(subject, report, { deactivatable = false } = {}) {
     const summary = report.blocking
       .map((row) => `${row.count} ${row.label.toLowerCase()}`)
       .join(', ');
-    super(`${subject} still has ${summary}. Remove those first, or deactivate it instead.`);
+    super(
+      `${subject} still has ${summary}. Remove those first${deactivatable ? ', or deactivate it instead' : ''}.`,
+    );
     this.status = 409;
     this.code = 'HAS_DEPENDENTS';
     this.dependents = report;
@@ -61,11 +63,13 @@ class HasDependentsError extends Error {
 /**
  * @param {string} subject  how to name the record in the message, e.g. "Acme Ltd"
  * @param {ReturnType<typeof buildReport>} report
+ * @param {{ deactivatable?: boolean }} [options]  whether to point at
+ *   deactivating as the alternative — only where the record has an off switch
  * @throws {HasDependentsError} when anything is still blocking
  */
-const assertDeletable = (subject, report) => {
+const assertDeletable = (subject, report, options) => {
   if (!report.canDelete) {
-    throw new HasDependentsError(subject, report);
+    throw new HasDependentsError(subject, report, options);
   }
 };
 

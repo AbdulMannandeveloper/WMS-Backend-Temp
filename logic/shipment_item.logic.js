@@ -97,74 +97,119 @@ const getShipmentItemsByField = async (field, value, tx) => {
   return await shipmentItemRepository.getShipmentItemsByField(field, value, tx);
 };
 
-const updateShipmentItem = async (id, data) => {
-  if (data.shipmentId) {
-    const shipment = await shipmentRepository.getShipmentByField(
-      "id",
-      data.shipmentId,
-    );
-    if (!shipment) {
-      throw new Error("Shipment not found");
-    }
-  }
+/**
+ * What may change on a line: how many, from which bin, and its own tracking id.
+ *
+ * The body used to go straight to the database, so a request could move a line
+ * onto another shipment, swap its product, or set returnedQuantity — and a
+ * quantity change left the reservation it was holding at the old figure. The
+ * route has said all along that the parent shipment's state was checked
+ * underneath; it was not.
+ */
+const ITEM_UPDATE_FIELDS = ["quantity", "sourceLocationId", "trackingId"];
 
-  const existingItems = await shipmentItemRepository.getShipmentItemsByField(
-    "id",
-    id,
-  );
-  const existingItem = Array.isArray(existingItems)
-    ? existingItems[0]
-    : existingItems;
-  if (!existingItem) {
-    throw new Error("Shipment item not found");
-  }
-
-  if (data.productId) {
-    const product = await productLogic.getProductById(data.productId);
-    if (!product) {
-      throw new Error("Product not found");
-    }
-
-    if (data.sourceLocationId) {
-      const sourceStock =
-        await stockLevelLogic.getStockLevelByProductAndLocation(
-          data.productId,
-          data.sourceLocationId,
-        );
-      if (!sourceStock) {
-        throw new Error("Source stock not found");
-      }
-    }
-
-    const sourceStock = await stockLevelLogic.getStockLevelByProductAndLocation(
-      data.productId,
-      existingItem.sourceLocationId,
-    );
-    if (!sourceStock) {
-      throw new Error("Source stock not found");
-    }
-  }
-
-  if (data.sourceLocationId) {
-    const sourceStock = await stockLevelLogic.getStockLevelByProductAndLocation(
-      existingItem.productId,
-      data.sourceLocationId,
-    );
-    if (!sourceStock) {
-      throw new Error("Source stock not found");
-    }
-  }
-
-  // Status moves through pickShipmentItem / unpickShipmentItem, which check the
-  // parent shipment is still open. Letting it through here would reopen exactly
-  // the hole this chunk closed on the shipment itself.
-  if (data.status !== undefined) {
+/**
+ * Edits a shipment line.
+ *
+ * - **tracking id** — any time but after cancellation, like the shipment's own
+ *   (see setShipmentTracking): couriers issue it at the moment of dispatch.
+ * - **quantity / source bin** — only while the shipment is PENDING and the line
+ *   is not yet picked, and the reservation moves with it: the old one is handed
+ *   back and the new one taken, in one transaction, refused if the bin cannot
+ *   cover it.
+ */
+const updateShipmentItem = async (id, rawData, actorUserId) => {
+  if (rawData.status !== undefined) {
     throw new Error(
       "Item status cannot be changed here. Use the pick or unpick actions.",
     );
   }
 
-  return await shipmentItemRepository.updateShipmentItem(id, data);
+  const data = {};
+  for (const field of ITEM_UPDATE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(rawData, field)) {
+      data[field] = rawData[field];
+    }
+  }
+
+  const existingItems = await shipmentItemRepository.getShipmentItemsByField("id", id);
+  const existingItem = Array.isArray(existingItems) ? existingItems[0] : existingItems;
+  if (!existingItem) {
+    throw new Error("Shipment item not found");
+  }
+  const shipment = await shipmentRepository.getShipmentByField("id", existingItem.shipmentId);
+  if (!shipment) {
+    throw new Error("Shipment not found");
+  }
+
+  if (Object.keys(data).length === 0) {
+    return existingItem;
+  }
+
+  if (data.trackingId !== undefined && shipment.status === "CANCELLED") {
+    throw new Error("A cancelled shipment's lines can no longer be changed.");
+  }
+
+  const nextQuantity = data.quantity !== undefined ? Number(data.quantity) : existingItem.quantity;
+  const nextSourceId = data.sourceLocationId ?? existingItem.sourceLocationId;
+  const movesStock =
+    nextQuantity !== existingItem.quantity || nextSourceId !== existingItem.sourceLocationId;
+
+  if (!movesStock) {
+    return await shipmentItemRepository.updateShipmentItem(id, data);
+  }
+
+  if (shipment.status !== "PENDING" || existingItem.status !== "PENDING") {
+    throw new Error(
+      "Quantity and bin can only be changed on an unpicked line of a PENDING shipment.",
+    );
+  }
+  if (!Number.isInteger(nextQuantity) || nextQuantity <= 0) {
+    throw new Error("Quantity must be a whole number greater than zero.");
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const oldStock = await stockLevelRepository.getStockLevelByProductAndLocation(
+      existingItem.productId,
+      existingItem.sourceLocationId,
+      tx,
+    );
+    if (oldStock) {
+      await stockLevelRepository.releaseReservedStockAtomically(oldStock.id, existingItem.quantity, tx);
+    }
+
+    const newStock = await stockLevelRepository.getStockLevelByProductAndLocation(
+      existingItem.productId,
+      nextSourceId,
+      tx,
+    );
+    if (!newStock) {
+      throw new Error("That product has no stock in the chosen bin.");
+    }
+    const reserved = await stockLevelRepository.reserveStockAtomically(newStock.id, nextQuantity, tx);
+    if (reserved === 0) {
+      throw new Error("Not enough free stock in that bin to cover this quantity.");
+    }
+
+    return await shipmentItemRepository.updateShipmentItem(
+      id,
+      { ...data, quantity: nextQuantity, sourceLocationId: nextSourceId },
+      tx,
+    );
+  });
+
+  if (actorUserId) {
+    await auditLogLogic
+      .createAuditLog(actorUserId, "SHIPMENT_ITEM_UPDATED", {
+        shipmentItemId: id,
+        shipmentId: existingItem.shipmentId,
+        from: { quantity: existingItem.quantity, sourceLocationId: existingItem.sourceLocationId },
+        to: { quantity: nextQuantity, sourceLocationId: nextSourceId },
+      })
+      .catch((err) => console.error("Audit log error:", err.message));
+  }
+
+  return updated;
 };
 
 /** Loads one shipment item plus its parent shipment, or throws. */

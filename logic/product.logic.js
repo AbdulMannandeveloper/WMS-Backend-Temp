@@ -356,7 +356,7 @@ const deleteProduct = async (id, actorUserId) => {
     return null;
   }
   const { product, report, stockLevels, unitsRemoved, movementsRemoved } = dependents;
-  assertDeletable(product.productName, report);
+  assertDeletable(product.productName, report, { deactivatable: true });
 
   // A transaction for a window the test suite cannot reach: both guards above
   // have passed, and a shipment item created between then and the delete below

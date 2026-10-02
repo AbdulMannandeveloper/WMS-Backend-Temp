@@ -27,10 +27,11 @@ const getShipmentItemsByField = async (req, res) => {
 const updateShipmentItem = async (req, res) => {
   try {
     const { id } = req.params;
-    const shipmentItemData = req.body;
+    // The logic allowlists what a line may change; see ITEM_UPDATE_FIELDS.
     const updatedShipmentItem = await shipmentItemLogic.updateShipmentItem(
       id,
-      shipmentItemData,
+      req.body || {},
+      req.user.id,
     );
     res.status(200).json(updatedShipmentItem);
   } catch (error) {

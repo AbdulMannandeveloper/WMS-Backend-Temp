@@ -309,7 +309,7 @@ const deleteUser = async (id, actorUserId) => {
     assertNotSelf(user, actorUserId, 'delete');
 
     const name = `${user.firstName} ${user.lastName}`.trim() || user.email;
-    assertDeletable(name, report);
+    assertDeletable(name, report, { deactivatable: true });
 
     if (user.role === 'client') {
         const client = await clientRepository.getClientByField('userId', id);

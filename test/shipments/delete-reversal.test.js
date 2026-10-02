@@ -107,7 +107,11 @@ describe('deleting a dispatched shipment', () => {
     expect(Number(invoice.totalAmount)).toBe(0);
   });
 
-  it('restores only what a partial return had not already put back', async () => {
+  it('refuses while part of it has come back, and changes nothing', async () => {
+    // A return is proof the parcel went out, and may carry charges of its own.
+    // Deleting the shipment under it used to take the dispatch charge off and
+    // put the remainder back, leaving the return behind and unlinked. Returns
+    // are dealt with first now.
     const shipment = await dispatch(10);
     const item = (
       await prisma.shipmentItem.findMany({ where: { shipmentId: shipment.id } })
@@ -119,22 +123,18 @@ describe('deleting a dispatched shipment', () => {
       .send({ quantity: 3 });
     expect(await onHand()).toBe(93);
 
-    await as(scenario.admin).delete(`/api/shipments/${shipment.id}`);
+    const res = await as(scenario.admin).delete(`/api/shipments/${shipment.id}`);
 
-    // Delete owes only the outstanding 7, landing back at the original 100.
-    expect(await onHand()).toBe(100);
-    const deleteReturn = await prisma.inventoryLedger.findMany({
-      where: {
-        referenceId: shipment.reference,
-        movementType: 'RETURN',
-        notes: { contains: 'Reversed on deletion' },
-      },
-    });
-    expect(deleteReturn).toHaveLength(1);
-    expect(deleteReturn[0].quantity).toBe(7);
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking).toEqual([
+      expect.objectContaining({ key: 'lineReturns', count: 3 }),
+    ]);
+    expect(await onHand()).toBe(93);
+    await expect(prisma.shipment.count({ where: { id: shipment.id } })).resolves.toBe(1);
+    await expect(chargeLineFor(shipment.id)).resolves.not.toBeNull();
   });
 
-  it('is a no-op on stock when the whole line was already returned', async () => {
+  it('refuses even when the whole line came back', async () => {
     const shipment = await dispatch(10);
     const item = (
       await prisma.shipmentItem.findMany({ where: { shipmentId: shipment.id } })
@@ -146,17 +146,8 @@ describe('deleting a dispatched shipment', () => {
 
     const res = await as(scenario.admin).delete(`/api/shipments/${shipment.id}`);
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
     expect(await onHand()).toBe(100);
-    // Nothing outstanding, so the delete adds no further RETURN.
-    const deleteReturns = await prisma.inventoryLedger.count({
-      where: {
-        referenceId: shipment.reference,
-        movementType: 'RETURN',
-        notes: { contains: 'Reversed on deletion' },
-      },
-    });
-    expect(deleteReturns).toBe(0);
   });
 });
 
@@ -172,8 +163,10 @@ describe('once the invoice has been paid', () => {
 
     const res = await as(scenario.admin).delete(`/api/shipments/${shipment.id}`);
 
-    expect(res.status).toBe(400);
+    // A refusal with the reason attached, which the delete dialog lists.
+    expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/paid/i);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['paidInvoice']);
     // Everything intact: the row, the stock, the charge.
     await expect(
       prisma.shipment.count({ where: { id: shipment.id } }),

@@ -333,7 +333,7 @@ const deleteClient = async (clientId, actorUserId) => {
   }
 
   const { client, report } = await getClientDependents(clientId);
-  assertDeletable(client.companyName, report);
+  assertDeletable(client.companyName, report, { deactivatable: true });
 
   await prisma.$transaction(async (tx) => {
     // Their audit entries outlive the login (AuditLog.user is SetNull), so

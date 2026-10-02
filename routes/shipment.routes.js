@@ -65,6 +65,8 @@ router.delete('/:id/services/:mappingId', adminOnly, shipmentServiceController.r
 
 // Commercial / identity details, and removal
 router.put('/:id', staffWith('update'), shipmentController.updateShipment);
+// What a delete would refuse on and undo — open to exactly who may delete.
+router.get('/:id/dependents', staffWith('delete'), shipmentController.getShipmentDependents);
 router.delete('/:id', staffWith('delete'), shipmentController.deleteShipment);
 
 module.exports = router;

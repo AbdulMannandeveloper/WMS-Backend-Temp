@@ -16,6 +16,7 @@ const {
   resolveOpenInvoiceFor,
 } = require("./billing_services");
 const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
+const { buildReport, assertDeletable } = require("../utils/dependents");
 
 /**
  * The shipment lifecycle, enforced here rather than in the browser.
@@ -646,12 +647,118 @@ const updateShipment = async (id, data, actorUserId) => {
  * money that has changed hands is reversed with a credit note, not by deleting
  * the record of what it was for.
  */
+/**
+ * What a delete would refuse on, and what it would undo, for the warning shown
+ * before it. See utils/dependents.js for what blocking and removedWith mean.
+ *
+ * Blocking:
+ *  - a charge on a PAID invoice — the same refusal deleteShipment has always
+ *    made, now said before the button rather than after
+ *  - any return against it, of either kind. A return is physical proof the
+ *    parcel went out, and it carries charges of its own. Deleting the shipment
+ *    under it took the dispatch charge off the invoice while leaving the
+ *    return charges on, unlinked — billing a client for goods coming back
+ *    from a shipment that, on the record, never left. Returns are deleted
+ *    first, then the shipment.
+ *
+ * Removed with it: the lines and attached services, the stock that goes back
+ * on the shelf (or the reservation handed back, before dispatch), and the
+ * charge lines on unpaid invoices, which are recomputed.
+ */
+const getShipmentDependents = async (id) => {
+  const shipment = await requireShipment(id);
+  const dispatched = shipment.status === "DISPATCHED";
+
+  const [items, services, returns, chargeLines] = await Promise.all([
+    prisma.shipmentItem.findMany({
+      where: { shipmentId: id },
+      select: { quantity: true, returnedQuantity: true },
+    }),
+    prisma.shipmentServiceMapping.count({ where: { shipmentId: id } }),
+    prisma.productReturn.findMany({
+      where: { shipmentId: id },
+      select: { quantity: true, shipmentItemId: true },
+    }),
+    dispatched
+      ? prisma.invoiceLineItem.findMany({
+          where: { shipmentId: id, itemType: "SHIPMENT_CHARGE" },
+          select: { invoice: { select: { status: true } } },
+        })
+      : [],
+  ]);
+
+  const paidCharges = chargeLines.filter((line) => line.invoice?.status === "PAID").length;
+
+  // Both kinds of return add to a line's returnedQuantity; only the Returns
+  // screen leaves a record behind. What the line counts beyond its return
+  // records came back through the line's own return button
+  // (shipment_item.logic returnShipmentItem), which has no record of its own.
+  const returnedOnLines = items.reduce((sum, item) => sum + (item.returnedQuantity ?? 0), 0);
+  const returnedViaRecords = returns
+    .filter((r) => r.shipmentItemId)
+    .reduce((sum, r) => sum + r.quantity, 0);
+  const returnedViaLines = Math.max(0, returnedOnLines - returnedViaRecords);
+  // A cancelled shipment already handed its reservation back.
+  const unitsBack =
+    shipment.status === "CANCELLED"
+      ? 0
+      : items.reduce(
+          (sum, item) =>
+            sum + (dispatched ? item.quantity - (item.returnedQuantity ?? 0) : item.quantity),
+          0,
+        );
+
+  return {
+    shipment,
+    report: buildReport({
+      blocking: [
+        {
+          key: "paidInvoice",
+          label: "Charges on a paid invoice",
+          count: paidCharges,
+          where: "/invoices",
+          note: "Money has changed hands. Raise a credit note on that invoice instead.",
+        },
+        {
+          key: "returns",
+          label: "Returns recorded against it",
+          count: returns.length,
+          where: "/returns",
+          note: "Delete those returns first.",
+        },
+        {
+          key: "lineReturns",
+          label: "Units returned from its lines",
+          count: returnedViaLines,
+          note: "Returned with the shipment line's return button. These cannot be undone yet.",
+        },
+      ],
+      removedWith: [
+        { key: "items", label: "Shipment lines", count: items.length },
+        {
+          key: "units",
+          label: dispatched ? "Units put back on their shelves" : "Reserved units released",
+          count: unitsBack,
+        },
+        {
+          key: "charges",
+          label: "Charges taken off unpaid invoices",
+          count: chargeLines.length - paidCharges,
+          where: "/invoices",
+        },
+        { key: "services", label: "Billable services attached", count: services },
+      ],
+    }),
+  };
+};
+
 const deleteShipment = async (id, actorUserId) => {
   if (!actorUserId) {
     throw new Error("An authenticated user is required to delete a shipment.");
   }
 
-  const shipment = await requireShipment(id);
+  const { shipment, report } = await getShipmentDependents(id);
+  assertDeletable(`Shipment ${shipment.reference}`, report);
 
   const reversal = await prisma.$transaction(
     async (tx) => {
@@ -732,8 +839,10 @@ const reverseDispatchedShipment = async (shipment, shipmentItems, actorUserId, t
   }
 
   // Put the outstanding quantity of each line back on its source shelf. A
-  // partial return may already have restored some, so only the part still out
-  // (quantity - returnedQuantity) is owed. The ledger applies the stock change;
+  // shipment with any return is refused before this point (see
+  // getShipmentDependents), so returnedQuantity is zero here in practice; the
+  // subtraction stays so a return slipping in between the check and this
+  // transaction cannot be put back twice. The ledger applies the stock change;
   // RETURN adds to current_quantity the same way CHECKOUT took it away.
   const restored = [];
   for (const item of shipmentItems) {
@@ -786,6 +895,7 @@ module.exports = {
   getShipmentsByClientId,
   updateShipment,
   setShipmentTracking,
+  getShipmentDependents,
   deleteShipment,
   // Exported for tests and for the item logic's own guards.
   SHIPMENT_TRANSITIONS,
