@@ -67,7 +67,9 @@ router.post('/:id/receive', staffWith('update'), freightController.receiveFreigh
 // delete rather than update — the same call made for cancelling a shipment.
 router.post('/:id/cancel', staffWith('delete'), freightController.cancelFreightShipment);
 
-// Removing the record entirely, for a mis-key. Refused once received.
+// Removing the record entirely, for a mis-key. Refused once received. The
+// warning shown first reads the same gate as the delete it describes.
+router.get('/:id/dependents', staffWith('delete'), freightController.getFreightShipmentDependents);
 router.delete('/:id', staffWith('delete'), freightController.deleteFreightShipment);
 
 module.exports = router;

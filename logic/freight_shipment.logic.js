@@ -3,6 +3,7 @@
 const { prisma } = require('../lib/prisma');
 const freightRepository = require('../repositories/freight_shipment.repository');
 const auditLogLogic = require('./audit_log.logic');
+const { buildReport, assertDeletable } = require('../utils/dependents');
 const {
   dateRangeFilter,
   parseEnum,
@@ -728,21 +729,41 @@ const cancelFreightShipment = async (id, actorUserId) => {
 };
 
 /**
- * Removes the record entirely, for a mis-key.
+ * What deleting a freight shipment would refuse on, and what goes with it. See
+ * utils/dependents.js for what blocking and removedWith mean.
  *
- * Refused once the parcel has been received: that arrival is a historical fact
- * the business answers questions about, and the row carrying it is the only place
- * it is written down. The message names cancel, because the person asking almost
- * always wants that instead.
+ * Blocking: the receiving record. That arrival is a historical fact the
+ * business answers questions about, and the row carrying it is the only place
+ * it is written down — so a received shipment is kept for good. It cannot be
+ * cancelled either: RECEIVED is final.
+ *
+ * Removed with it: the documents attached to it.
  */
-const deleteFreightShipment = async (id, actorUserId) => {
+const getFreightShipmentDependents = async (id) => {
   const shipment = await requireShipment(id);
+  const received = shipment.status === 'RECEIVED' || Boolean(shipment.receiving);
+  return {
+    shipment,
+    report: buildReport({
+      blocking: [
+        {
+          key: 'receiving',
+          label: 'Receiving record at the UK warehouse',
+          count: received ? 1 : 0,
+          note: 'Its arrival stays on record, so a received shipment is kept for good.',
+        },
+      ],
+      removedWith: [
+        { key: 'documents', label: 'Attached documents', count: (shipment.documents ?? []).length },
+      ],
+    }),
+  };
+};
 
-  if (shipment.status === 'RECEIVED' || shipment.receiving) {
-    throw new Error(
-      'This shipment has been received at the UK warehouse, so its record cannot be deleted. Cancel it instead if it was raised in error.',
-    );
-  }
+/** Removes the record entirely, for a mis-key. */
+const deleteFreightShipment = async (id, actorUserId) => {
+  const { shipment, report } = await getFreightShipmentDependents(id);
+  assertDeletable(`Freight shipment ${shipment.reference}`, report);
 
   await freightRepository.deleteFreightShipment(id);
 
@@ -838,6 +859,7 @@ module.exports = {
   removeDocument,
   documentForStorageKey,
   // Exported for tests and for the receiving flow's own guards.
+  getFreightShipmentDependents,
   FREIGHT_TRANSITIONS,
   FROZEN_AFTER_RECEIVING,
   assertTransition,

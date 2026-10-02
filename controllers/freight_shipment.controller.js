@@ -3,6 +3,7 @@
 const path = require('path');
 
 const freightLogic = require('../logic/freight_shipment.logic');
+const { dependentsBody } = require('../utils/dependents');
 const { pick } = require('../utils/pick');
 const { paginatedResponse } = require('../utils/pagination');
 const { buildListQuery } = require('../utils/queryFilters');
@@ -52,6 +53,8 @@ const actor = (req) => req.user && req.user.id;
  * asked for something the rules do not allow.
  */
 const fail = (res, error) => {
+  // Something still depends on it: the 409 carries what, for the warning.
+  if (error.code === 'HAS_DEPENDENTS') return res.status(409).json(dependentsBody(error));
   const status = error.status || (/not found/i.test(error.message) ? 404 : 400);
   const body = { error: error.message };
   // The already-received refusal carries the shipment so the screen can name who
@@ -189,6 +192,16 @@ const cancelFreightShipment = async (req, res) => {
   }
 };
 
+// What a delete would refuse on and what goes with it, asked before pressing it.
+const getFreightShipmentDependents = async (req, res) => {
+  try {
+    const { report } = await freightLogic.getFreightShipmentDependents(req.params.id);
+    return res.status(200).json(report);
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
 const deleteFreightShipment = async (req, res) => {
   try {
     const result = await freightLogic.deleteFreightShipment(req.params.id, actor(req));
@@ -317,6 +330,7 @@ module.exports = {
   receiveFreightShipment,
   cancelFreightShipment,
   deleteFreightShipment,
+  getFreightShipmentDependents,
   uploadFreightDocument,
   getFreightDocument,
   removeFreightDocument,
