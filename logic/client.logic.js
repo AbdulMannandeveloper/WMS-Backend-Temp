@@ -335,7 +335,15 @@ const deleteClient = async (clientId, actorUserId) => {
   const { client, report } = await getClientDependents(clientId);
   assertDeletable(client.companyName, report);
 
-  await userRepository.deleteUser(client.userId);
+  await prisma.$transaction(async (tx) => {
+    // Their audit entries outlive the login (AuditLog.user is SetNull), so
+    // they are named before the link is cleared.
+    await tx.auditLog.updateMany({
+      where: { userId: client.userId },
+      data: { actorName: `${client.contactName} (${client.companyName}, deleted)`.slice(0, 120) },
+    });
+    await tx.user.delete({ where: { id: client.userId } });
+  });
   await invalidateCachedUser(client.userId);
 
   if (actorUserId) {

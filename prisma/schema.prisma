@@ -901,12 +901,16 @@ model EmployeeBonus {
 
 model AuditLog {
   id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
+  /// Null once the person who acted has been deleted; actorName says who it was.
+  userId    String?  @map("user_id") @db.Uuid
+  /// Written only when the actor's login is deleted, so the entry still names
+  /// them. Cascading here used to erase a deleted person's whole audit trail.
+  actorName String?  @map("actor_name") @db.VarChar(120)
   action    String // "EDIT_PRODUCT", "DELETE_PRODUCT", "ADJUST_STOCK"
   details   String   @db.Text
   timestamp DateTime @default(now()) @map("timestamp") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([timestamp(sort: Desc), id], map: "idx_audit_logs_timestamp")
   @@index([userId, timestamp(sort: Desc)], map: "idx_audit_logs_user_timestamp")
