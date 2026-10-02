@@ -1,6 +1,7 @@
 const productLogic = require("../logic/product.logic");
 const { pick } = require("../utils/pick");
 const { resolveOwnClientId } = require("../utils/clientScope");
+const { dependentsBody } = require("../utils/dependents");
 
 const PRODUCT_FIELDS = [
   "clientId",
@@ -130,9 +131,24 @@ const deleteProduct = async (req, res) => {
       movementsRemoved: product.movementsRemoved,
     });
   } catch (error) {
-    // A refusal is not a fault. The logic sets 409 on "this product is in use",
-    // which the UI shows to the operator verbatim; anything else is ours.
+    // A refusal is not a fault: 409 with what is in the way, which the UI lists.
+    if (error.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(error));
+    }
     res.status(error.status || 500).json({ error: error.message });
+  }
+};
+
+// What would stop a delete, asked before the admin presses it.
+const getProductDependents = async (req, res) => {
+  try {
+    const dependents = await productLogic.getProductDependents(req.params.id);
+    if (!dependents) {
+      return res.status(404).json({ error: "Product not found." });
+    }
+    res.status(200).json(dependents.report);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 };
 
@@ -193,6 +209,7 @@ module.exports = {
   getProductByField,
   updateProduct,
   deactivateProduct,
+  getProductDependents,
   deleteProduct,
   lookupProductByBarcode,
   getProductandStockLevelById

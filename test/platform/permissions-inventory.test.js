@@ -184,6 +184,18 @@ describe('delete, which no employee could do before', () => {
     expect(res.status).not.toBe(403);
   });
 
+  it('opens the warning shown before removing a product, to the same people', async () => {
+    await grant('inventory:delete');
+    expect(
+      (await as(employeeUser).get(`/api/products/${product.id}/dependents`)).status,
+    ).toBe(200);
+
+    await grant('inventory:update');
+    expect(
+      (await as(employeeUser).get(`/api/products/${product.id}/dependents`)).status,
+    ).toBe(403);
+  });
+
   it('opens removing a stock row', async () => {
     const stock = await makeStockLevel(product.id, location.id);
     await grant('inventory:delete');
