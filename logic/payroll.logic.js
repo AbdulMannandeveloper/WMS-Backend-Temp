@@ -253,6 +253,8 @@ const toggleCancelFine = async (fineId, adminUserId) => {
   if (!fine) {
     throw new Error('Fine record not found.');
   }
+  // Cancelling changes what the month's pay works out to, like editing does.
+  await assertMonthOpen(fine.userId, fine.date);
 
   const updated = await employeeFineRepository.updateFine(fineId, {
     cancelled: !fine.cancelled,

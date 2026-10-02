@@ -45,6 +45,12 @@ const createFine = async (req, res) => {
   }
 };
 
+/** 404 for a missing row, the logic's own status (409: month finalised), else 400. */
+const failWith = (res, err) =>
+  res
+    .status(err.status || (/not found/i.test(err.message) ? 404 : 400))
+    .json({ error: err.message });
+
 const toggleCancelFine = async (req, res) => {
   try {
     const { id } = req.params; // fineId
@@ -52,15 +58,9 @@ const toggleCancelFine = async (req, res) => {
     const result = await payrollLogic.toggleCancelFine(id, adminUserId);
     res.status(200).json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    failWith(res, err);
   }
 };
-
-/** 404 for a missing row, the logic's own status (409: month finalised), else 400. */
-const failWith = (res, err) =>
-  res
-    .status(err.status || (/not found/i.test(err.message) ? 404 : 400))
-    .json({ error: err.message });
 
 const deleteFineRule = async (req, res) => {
   try {

@@ -4,8 +4,9 @@
  * What must hold:
  *   - A fine or bonus can be edited (reason, amount, date) or deleted while its
  *     month is open for that employee.
- *   - Once that month's payroll is finalised for them, both are refused, and a
- *     date change cannot move one into a finalised month either.
+ *   - Once that month's payroll is finalised for them, both are refused — and
+ *     so is cancelling or reinstating a fine — and a date change cannot move
+ *     one into a finalised month either.
  *   - Removing the fine rule in force puts the previous one back in force.
  *   - The summary says which employees' months are finalised.
  *   - All of it is admin-only, like the rest of payroll.
@@ -69,6 +70,22 @@ describe('fines', () => {
     expect(edit.body.error).toMatch(/finalised/i);
     expect((await as(admin).delete(`/api/payroll/fines/${fine.id}`)).status).toBe(409);
     expect(await prisma.employeeFine.count({ where: { id: fine.id } })).toBe(1);
+  });
+
+  it('cannot be cancelled or reinstated once the month is finalised', async () => {
+    const { admin, user, fine } = await scenario();
+    await finalise(user, fine);
+
+    const res = await as(admin).patch(`/api/payroll/fines/${fine.id}/cancel`);
+
+    expect(res.status).toBe(409);
+    expect((await prisma.employeeFine.findUnique({ where: { id: fine.id } })).cancelled).toBe(false);
+  });
+
+  it('can still be cancelled while the month is open', async () => {
+    const { admin, fine } = await scenario();
+
+    expect((await as(admin).patch(`/api/payroll/fines/${fine.id}/cancel`)).status).toBe(200);
   });
 
   it('cannot be moved into a finalised month', async () => {
