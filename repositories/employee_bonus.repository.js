@@ -22,6 +22,14 @@ const getBonusById = async (id) => {
   });
 };
 
+const updateBonus = async (id, data) => {
+  return await prismaBonus.update({ where: { id }, data });
+};
+
+const deleteBonus = async (id) => {
+  return await prismaBonus.delete({ where: { id } });
+};
+
 const getBonusesByUserAndMonth = async (userId, startOfMonth, endOfMonth) => {
   return await prismaBonus.findMany({
     where: {
@@ -49,6 +57,8 @@ const getAllBonusesForMonth = async (startOfMonth, endOfMonth) => {
 };
 
 module.exports = {
+  updateBonus,
+  deleteBonus,
   createBonus,
   getBonusById,
   getBonusesByUserAndMonth,

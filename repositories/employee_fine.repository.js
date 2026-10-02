@@ -32,6 +32,10 @@ const updateFine = async (id, data) => {
   });
 };
 
+const deleteFine = async (id) => {
+  return await prismaFine.delete({ where: { id } });
+};
+
 const getFinesByUserAndMonth = async (userId, startOfMonth, endOfMonth) => {
   return await prismaFine.findMany({
     where: {
@@ -59,6 +63,7 @@ const getAllFinesForMonth = async (startOfMonth, endOfMonth) => {
 };
 
 module.exports = {
+  deleteFine,
   createFine,
   getFineById,
   updateFine,
