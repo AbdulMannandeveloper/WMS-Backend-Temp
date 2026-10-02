@@ -111,11 +111,33 @@ describe('categories', () => {
     expect(list.body.some((c) => c.name === 'Pallet')).toBe(true);
   });
 
-  it('cannot be deleted while a bulk shipment uses them', async () => {
+  it('cannot be deleted while a bulk shipment uses them, and the warning says so first', async () => {
     await createShell();
+
+    const warning = await as(ctx.admin).get(
+      `/api/fba-shipments/categories/${ctx.category.id}/dependents`,
+    );
+    expect(warning.body.canDelete).toBe(false);
+    expect(warning.body.blocking).toEqual([
+      expect.objectContaining({ key: 'bulkShipments', count: 1 }),
+    ]);
+
     const res = await as(ctx.admin).delete(`/api/fba-shipments/categories/${ctx.category.id}`);
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/cannot be deleted/i);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('HAS_DEPENDENTS');
+    expect(await prisma.fbaCategory.count({ where: { id: ctx.category.id } })).toBe(1);
+  });
+
+  it('can be deleted once nothing is filed under it', async () => {
+    const res = await as(ctx.admin).delete(`/api/fba-shipments/categories/${ctx.category.id}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('keeps its warning to admins, as its delete is', async () => {
+    expect(
+      (await as(ctx.employeeUser).get(`/api/fba-shipments/categories/${ctx.category.id}/dependents`))
+        .status,
+    ).toBe(403);
   });
 });
 
@@ -470,8 +492,10 @@ describe('cancel and delete', () => {
 
     // Deleting would lose track of them, so it waits.
     const deleted = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
-    expect(deleted.status).toBe(400);
-    expect(deleted.body.error).toMatch(/put them back first/i);
+    expect(deleted.status).toBe(409);
+    expect(deleted.body.dependents.blocking).toEqual([
+      expect.objectContaining({ key: 'picked', count: 4 }),
+    ]);
 
     // A voided shipment takes put-backs only.
     expect((await pick(voided.body, [5])).status).toBe(400);
@@ -517,24 +541,50 @@ describe('cancel and delete', () => {
     });
 
     const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/already been paid/i);
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['paidInvoice']);
     expect(await prisma.fbaShipment.findUnique({ where: { id: created.id } })).not.toBeNull();
     expect(await stockNow()).toEqual({ current: 90, reserved: 0 });
     expect(await prisma.invoiceLineItem.count({ where: { itemType: 'FBA_CHARGE' } })).toBe(1);
   });
 
-  it('deleting after a partial return puts back only what is still out', async () => {
+  it('deleting waits for its returns, then puts back what is still out', async () => {
     const created = await prepared(10);
     await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
-    await as(ctx.employeeUser)
+    const returned = await as(ctx.employeeUser)
       .post(`/api/fba-shipments/${created.id}/items/${created.items[0].id}/return`)
       .send({ quantity: 4 });
     expect(await stockNow()).toEqual({ current: 94, reserved: 0 });
 
+    // The return is a record with charges of its own, so it goes first.
+    const refused = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.dependents.blocking.map((r) => r.key)).toEqual(['returns']);
+    expect(await stockNow()).toEqual({ current: 94, reserved: 0 });
+
+    const undone = await as(ctx.admin).delete(`/api/returns/${returned.body.productReturn.id}`);
+    expect(undone.status).toBe(200);
+    expect(await stockNow()).toEqual({ current: 90, reserved: 0 });
+
     const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
     expect(res.status).toBe(200);
     expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
+  });
+
+  it('warns before deleting, with what the delete undoes', async () => {
+    await giveFbaRate(ctx.client.id, '2.00');
+    const created = await prepared(10);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+
+    const warning = await as(ctx.admin).get(`/api/fba-shipments/${created.id}/dependents`);
+    expect(warning.status).toBe(200);
+    expect(warning.body.canDelete).toBe(true);
+    expect(Object.fromEntries(warning.body.removedWith.map((r) => [r.key, r.count]))).toMatchObject(
+      { items: 1, units: 10, charges: 1 },
+    );
+    expect((await as(ctx.employeeUser).get(`/api/fba-shipments/${created.id}/dependents`)).status).toBe(
+      403,
+    );
   });
 });
 
@@ -565,8 +615,21 @@ describe('returning goods after dispatch', () => {
     expect(res.body.shipment.items[0].returnedQuantity).toBe(3);
     expect(await stockNow()).toEqual({ current: 93, reserved: 0 });
 
+    // Booked as a return record, restocked into the line's bin.
+    const record = await prisma.productReturn.findUnique({
+      where: { id: res.body.productReturn.id },
+    });
+    expect(record).toMatchObject({
+      status: 'RESTOCKED',
+      quantity: 3,
+      fbaShipmentId: created.id,
+      fbaShipmentItemId: created.items[0].id,
+      shipmentId: null,
+      notes: 'Damaged',
+    });
+
     const movement = await prisma.inventoryLedger.findFirst({
-      where: { movementType: 'RETURN', referenceId: created.reference },
+      where: { movementType: 'RETURN', referenceId: record.reference },
     });
     expect(movement.quantity).toBe(3);
     expect(movement.notes).toBe('Damaged');
@@ -607,14 +670,14 @@ describe('returning goods after dispatch', () => {
     expect(res.body.returnCharge).toBe(3);
     const fee = await prisma.invoiceLineItem.findFirst({ where: { itemType: 'MANUAL_CHARGE' } });
     expect(Number(fee.totalPrice)).toBe(3);
-    expect(fee.fbaShipmentId).toBe(created.id);
+    // The fee belongs to the return, and goes when the return is deleted.
+    expect(fee.returnId).toBe(res.body.productReturn.id);
     const charge = await prisma.invoiceLineItem.findFirst({ where: { itemType: 'FBA_CHARGE' } });
     expect(Number(charge.totalPrice)).toBe(20);
 
-    // Deleting the shipment later takes its dispatch charge off but keeps the fee.
-    await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
-    expect(await prisma.invoiceLineItem.count({ where: { itemType: 'FBA_CHARGE' } })).toBe(0);
-    expect(await prisma.invoiceLineItem.count({ where: { itemType: 'MANUAL_CHARGE' } })).toBe(1);
+    // The shipment cannot be deleted while its returns stand.
+    expect((await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`)).status).toBe(409);
+    expect(await prisma.invoiceLineItem.count({ where: { itemType: 'FBA_CHARGE' } })).toBe(1);
   });
 
   it('needs fba:update — a client cannot return goods', async () => {
@@ -1116,5 +1179,136 @@ describe('finding products to plan or pick', () => {
   it('stays closed to an employee who can only read bulk shipments', async () => {
     const { user } = await makeEmployee({ user: { permissions: ['fba:read'] } });
     expect((await lookup(user)).status).toBe(403);
+  });
+});
+
+// ─── Undoing returns ─────────────────────────────────────────────────────────
+
+describe('undoing a return booked from a line', () => {
+  it('is a return record, deleted from the Returns screen like any other', async () => {
+    const created = await prepared(10);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+    const returned = await as(ctx.admin)
+      .post(`/api/fba-shipments/${created.id}/items/${created.items[0].id}/return`)
+      .send({ quantity: 3 });
+    const returnId = returned.body.productReturn.id;
+
+    const warning = await as(ctx.admin).get(`/api/returns/${returnId}/dependents`);
+    expect(warning.body.removedWith).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'lineCount', count: 3, label: expect.stringMatching(/bulk shipment/) }),
+      ]),
+    );
+
+    expect((await as(ctx.admin).delete(`/api/returns/${returnId}`)).status).toBe(200);
+    const item = await prisma.fbaShipmentItem.findUnique({ where: { id: created.items[0].id } });
+    expect(item.returnedQuantity).toBe(0);
+    expect(await stockNow()).toEqual({ current: 90, reserved: 0 });
+  });
+});
+
+describe("undoing a bulk shipment's old line returns", () => {
+  /**
+   * 3 back the way the line Return button booked them before it made records:
+   * the line's count, the stock, and a fee linked to the shipment. No record.
+   */
+  const legacyLineReturn = async (created, { fee = true } = {}) => {
+    await prisma.fbaShipmentItem.update({
+      where: { id: created.items[0].id },
+      data: { returnedQuantity: { increment: 3 } },
+    });
+    await prisma.stockLevel.update({
+      where: { id: ctx.stock.id },
+      data: { currentQuantity: { increment: 3 } },
+    });
+    if (!fee) return null;
+    const invoice = await prisma.monthlyInvoice.findFirst({ where: { clientId: ctx.client.id } });
+    return prisma.invoiceLineItem.create({
+      data: {
+        invoiceId: invoice.id,
+        itemType: 'MANUAL_CHARGE',
+        fbaShipmentId: created.id,
+        description: `Return handling — 3 item(s) from bulk shipment ${created.reference}`,
+        quantity: 3,
+        unitPrice: 1,
+        totalPrice: 3,
+        dateOfService: new Date(),
+      },
+    });
+  };
+
+  const dispatchedWithCharge = async () => {
+    await giveFbaRate(ctx.client.id, '2.00');
+    const created = await prepared(10);
+    await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
+    return created;
+  };
+
+  it('blocks the delete until undone, then lets it go', async () => {
+    const created = await dispatchedWithCharge();
+    await legacyLineReturn(created);
+    expect(await stockNow()).toEqual({ current: 93, reserved: 0 });
+
+    const refused = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.dependents.blocking).toEqual([
+      expect.objectContaining({ key: 'lineReturns', count: 3 }),
+    ]);
+
+    const warning = await as(ctx.admin).get(`/api/fba-shipments/${created.id}/line-returns/dependents`);
+    expect(Object.fromEntries(warning.body.removedWith.map((r) => [r.key, r.count]))).toMatchObject(
+      { units: 3, charges: 1 },
+    );
+
+    const undone = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}/line-returns`);
+    expect(undone.status).toBe(200);
+    expect(await stockNow()).toEqual({ current: 90, reserved: 0 });
+    expect(await prisma.invoiceLineItem.count({ where: { itemType: 'MANUAL_CHARGE' } })).toBe(0);
+    expect(
+      (await prisma.fbaShipmentItem.findUnique({ where: { id: created.items[0].id } }))
+        .returnedQuantity,
+    ).toBe(0);
+
+    expect((await as(ctx.admin).delete(`/api/fba-shipments/${created.id}`)).status).toBe(200);
+    expect(await stockNow()).toEqual({ current: 100, reserved: 0 });
+  });
+
+  it('leaves return records alone', async () => {
+    const created = await dispatchedWithCharge();
+    const returned = await as(ctx.admin)
+      .post(`/api/fba-shipments/${created.id}/items/${created.items[0].id}/return`)
+      .send({ quantity: 2 });
+    await legacyLineReturn(created, { fee: false });
+
+    expect((await as(ctx.admin).delete(`/api/fba-shipments/${created.id}/line-returns`)).status).toBe(
+      200,
+    );
+    const item = await prisma.fbaShipmentItem.findUnique({ where: { id: created.items[0].id } });
+    expect(item.returnedQuantity).toBe(2);
+    expect(
+      await prisma.productReturn.count({ where: { id: returned.body.productReturn.id } }),
+    ).toBe(1);
+  });
+
+  it('is refused while the fee is on a paid invoice', async () => {
+    const created = await dispatchedWithCharge();
+    const fee = await legacyLineReturn(created);
+    await prisma.monthlyInvoice.update({ where: { id: fee.invoiceId }, data: { status: 'PAID' } });
+
+    const res = await as(ctx.admin).delete(`/api/fba-shipments/${created.id}/line-returns`);
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['paidInvoice']);
+    expect(await stockNow()).toEqual({ current: 93, reserved: 0 });
+  });
+
+  it('says so when there is nothing to undo, and is admin-only like the delete', async () => {
+    const created = await dispatchedWithCharge();
+    expect((await as(ctx.admin).delete(`/api/fba-shipments/${created.id}/line-returns`)).status).toBe(
+      400,
+    );
+    await legacyLineReturn(created, { fee: false });
+    expect(
+      (await as(ctx.employeeUser).delete(`/api/fba-shipments/${created.id}/line-returns`)).status,
+    ).toBe(403);
   });
 });

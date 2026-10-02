@@ -716,6 +716,7 @@ model FbaShipment {
   // The charges its dispatch raised, so deleting it can take exactly those off
   // the invoice.
   invoiceLines InvoiceLineItem[]
+  productReturns ProductReturn[]
 
   @@index([clientId, status], map: "idx_fba_shipments_client_status")
   @@index([barcode], map: "idx_fba_shipments_barcode")
@@ -758,6 +759,7 @@ model FbaShipmentItem {
   fbaShipment    FbaShipment       @relation(fields: [fbaShipmentId], references: [id], onDelete: Cascade)
   product        Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
   sourceLocation WarehouseLocation @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  productReturns ProductReturn[]
 
   @@index([fbaShipmentId], map: "idx_fba_shipment_items_shipment")
   @@index([productId], map: "idx_fba_shipment_items_product")
@@ -828,6 +830,10 @@ model ProductReturn {
   // label this system never issued.
   shipmentId       String?      @map("shipment_id") @db.Uuid
   shipmentItemId   String?      @map("shipment_item_id") @db.Uuid
+  // The same for a bulk shipment, when booked from its line's Return button.
+  // A return names one or the other, never both.
+  fbaShipmentId     String?     @map("fba_shipment_id") @db.Uuid
+  fbaShipmentItemId String?     @map("fba_shipment_item_id") @db.Uuid
   // Where it went back on the shelf. Set only when RESTOCKED.
   restockLocationId String?     @map("restock_location_id") @db.Uuid
   notes            String?      @db.Text
@@ -842,6 +848,8 @@ model ProductReturn {
   product         Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
   shipment        Shipment?          @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
   shipmentItem    ShipmentItem?      @relation(fields: [shipmentItemId], references: [id], onDelete: SetNull)
+  fbaShipment     FbaShipment?       @relation(fields: [fbaShipmentId], references: [id], onDelete: SetNull)
+  fbaShipmentItem FbaShipmentItem?   @relation(fields: [fbaShipmentItemId], references: [id], onDelete: SetNull)
   restockLocation WarehouseLocation? @relation(fields: [restockLocationId], references: [id], onDelete: Restrict)
   invoiceLines    InvoiceLineItem[]
 
@@ -851,6 +859,8 @@ model ProductReturn {
   @@index([trackingNumber], map: "idx_product_returns_tracking_number")
   @@index([productId], map: "idx_product_returns_product_id")
   @@index([shipmentItemId], map: "idx_product_returns_shipment_item_id")
+  @@index([fbaShipmentId], map: "idx_product_returns_fba_shipment_id")
+  @@index([fbaShipmentItemId], map: "idx_product_returns_fba_shipment_item_id")
   @@map("product_returns")
 }
 

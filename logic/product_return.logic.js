@@ -684,7 +684,8 @@ const recordReturn = async (payload, actorUserId) => {
 // ─── Record from a shipment line ──────────────────────────────────────────────
 
 /**
- * Books a return from a dispatched shipment line — the line's Return button.
+ * Books a return from a dispatched line — the Return button on an outbound
+ * shipment's line, or on a bulk shipment's.
  *
  * The same record the Returns screen makes, so every return has a RET number,
  * appears in one list and is deleted from one place. What differs is how much
@@ -697,31 +698,25 @@ const recordReturn = async (payload, actorUserId) => {
  * not have to remove a charge afterwards. No restock charge. The shipment's
  * own dispatch charge is never touched.
  *
- * @param {{ quantity: number, reason?: string, chargeReturn?: boolean }} options
- * @returns the return, plus `returnCharge`: the amount charged, or null
+ * `source` is what the two entry points below know about the line:
+ *   line      { id, productId, quantity, returnedQuantity, sourceLocationId, trackingId? }
+ *   shipment  { id, reference, status, clientId, trackingId }
+ *   kind      'shipment' | 'bulk shipment', for sentences
+ *   links     the record's shipment and line columns
+ *   addReturned(tx)  counts `amount` against the line, conditionally; 0 = no room
+ *   auditAction, auditIds
  */
-const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = false } = {}, actorUserId) => {
+const bookFromLine = async (source, { quantity, reason, chargeReturn = false }, actorUserId) => {
   if (!actorUserId) {
     throw new Error('An authenticated user is required to record a return.');
   }
-  const itemId = parseUuid(rawItemId, 'Shipment item');
-  const item = itemId
-    ? await prisma.shipmentItem.findUnique({
-        where: { id: itemId },
-        include: {
-          shipment: {
-            select: { id: true, reference: true, status: true, clientId: true, trackingId: true },
-          },
-          product: { select: { skuCode: true } },
-        },
-      })
-    : null;
-  if (!item) throw withStatus('Shipment item not found.', 404);
-  const { shipment } = item;
+  const { line, shipment, kind } = source;
 
   if (shipment.status !== 'DISPATCHED') {
     throw new Error(
-      `Only a dispatched shipment can have items returned — this one is ${shipment.status}. Use unpick or cancel instead.`,
+      kind === 'bulk shipment'
+        ? `Only a dispatched bulk shipment can have goods returned — this one is ${shipment.status}.`
+        : `Only a dispatched shipment can have items returned — this one is ${shipment.status}. Use unpick or cancel instead.`,
     );
   }
 
@@ -729,13 +724,13 @@ const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = fa
   if (!Number.isInteger(amount) || amount <= 0) {
     throw new Error('Return quantity must be a whole number above zero.');
   }
-  const already = item.returnedQuantity ?? 0;
-  const outstanding = item.quantity - already;
+  const already = line.returnedQuantity ?? 0;
+  const outstanding = line.quantity - already;
   if (amount > outstanding) {
     throw new Error(
       already > 0
-        ? `Only ${outstanding} of this line is still out — ${already} of ${item.quantity} has already been returned.`
-        : `Cannot return ${amount}; the line was only ${item.quantity}.`,
+        ? `Only ${outstanding} of this line is still out — ${already} of ${line.quantity} has already been returned.`
+        : `Cannot return ${amount}; the line was only ${line.quantity}.`,
     );
   }
   const notes = reason ? String(reason).trim() || null : null;
@@ -744,9 +739,8 @@ const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = fa
     try {
       const { created, charge } = await prisma.$transaction(async (tx) => {
         // Conditional, so a return booked against the same units a moment ago
-        // — here or on the Returns screen — cannot both fit.
-        const moved = await productReturnRepository.addReturnedQuantity(item.id, amount, tx);
-        if (moved === 0) {
+        // cannot also fit.
+        if ((await source.addReturned(amount, tx)) === 0) {
           throw withStatus(
             'Some of this line was returned at the same moment. Refresh and try again.',
             409,
@@ -760,14 +754,13 @@ const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = fa
             reference,
             // The line's own consignment number, else the shipment's. Often
             // neither: the line is the link, not the label.
-            trackingNumber: item.trackingId ?? shipment.trackingId ?? null,
+            trackingNumber: line.trackingId ?? shipment.trackingId ?? null,
             clientId: shipment.clientId,
-            productId: item.productId,
+            productId: line.productId,
             quantity: amount,
             status: 'RESTOCKED',
-            shipmentId: shipment.id,
-            shipmentItemId: item.id,
-            restockLocationId: item.sourceLocationId,
+            ...source.links,
+            restockLocationId: line.sourceLocationId,
             notes,
             recordedByUserId: actorUserId,
             resolvedByUserId: actorUserId,
@@ -780,13 +773,13 @@ const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = fa
         // would credit the shelf twice.
         await inventoryLedgerLogic.createInventoryLedger(
           {
-            productId: item.productId,
+            productId: line.productId,
             userId: actorUserId,
             movementType: 'RETURN',
             quantity: amount,
-            toLocationId: item.sourceLocationId,
+            toLocationId: line.sourceLocationId,
             referenceId: reference,
-            notes: notes || `Returned from shipment ${shipment.reference}`,
+            notes: notes || `Returned from ${kind} ${shipment.reference}`,
           },
           { tx },
         );
@@ -795,7 +788,7 @@ const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = fa
           ? await raiseCharge({
               productReturn: created,
               rate: await getReturnRateForClient(shipment.clientId, tx),
-              description: `Return handling — ${amount} item(s) from shipment ${shipment.reference}, return ${reference}`,
+              description: `Return handling — ${amount} item(s) from ${kind} ${shipment.reference}, return ${reference}`,
               itemType: 'MANUAL_CHARGE',
               tx,
             })
@@ -804,16 +797,16 @@ const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = fa
         return { created, charge };
       }, TRANSACTION_OPTIONS);
 
-      await audit(actorUserId, 'SHIPMENT_ITEM_RETURNED', {
+      await audit(actorUserId, source.auditAction, {
         returnId: created.id,
         reference: created.reference,
-        shipmentItemId: item.id,
-        shipmentId: shipment.id,
-        productId: item.productId,
-        toLocationId: item.sourceLocationId,
+        ...source.auditIds,
+        clientId: shipment.clientId,
+        productId: line.productId,
+        toLocationId: line.sourceLocationId,
         quantity: amount,
         returnedTotal: already + amount,
-        ofLineQuantity: item.quantity,
+        ofLineQuantity: line.quantity,
         reason: notes,
         // The dispatch charge is never rewritten. A return fee, when one
         // applies, is its own line.
@@ -830,6 +823,81 @@ const recordLineReturn = async (rawItemId, { quantity, reason, chargeReturn = fa
       if (attempt >= REFERENCE_ATTEMPTS || !isReferenceClash(error)) throw error;
     }
   }
+};
+
+/**
+ * The outbound shipment line's Return button. See bookFromLine.
+ *
+ * @param {{ quantity: number, reason?: string, chargeReturn?: boolean }} options
+ * @returns the return, plus `returnCharge`: the amount charged, or null
+ */
+const recordLineReturn = async (rawItemId, options = {}, actorUserId) => {
+  const itemId = parseUuid(rawItemId, 'Shipment item');
+  const item = itemId
+    ? await prisma.shipmentItem.findUnique({
+        where: { id: itemId },
+        include: {
+          shipment: {
+            select: { id: true, reference: true, status: true, clientId: true, trackingId: true },
+          },
+        },
+      })
+    : null;
+  if (!item) throw withStatus('Shipment item not found.', 404);
+
+  return await bookFromLine(
+    {
+      line: item,
+      shipment: item.shipment,
+      kind: 'shipment',
+      links: { shipmentId: item.shipment.id, shipmentItemId: item.id },
+      addReturned: (amount, tx) => productReturnRepository.addReturnedQuantity(item.id, amount, tx),
+      auditAction: 'SHIPMENT_ITEM_RETURNED',
+      auditIds: { shipmentId: item.shipment.id, shipmentItemId: item.id },
+    },
+    options,
+    actorUserId,
+  );
+};
+
+/**
+ * A bulk shipment line's Return button. See bookFromLine.
+ *
+ * @param {{ quantity: number, reason?: string, chargeReturn?: boolean }} options
+ * @returns the return, plus `returnCharge`: the amount charged, or null
+ */
+const recordBulkLineReturn = async (rawShipmentId, rawItemId, options = {}, actorUserId) => {
+  const shipmentId = parseUuid(rawShipmentId, 'Bulk shipment');
+  const itemId = parseUuid(rawItemId, 'Bulk shipment line');
+  const item =
+    shipmentId && itemId
+      ? await prisma.fbaShipmentItem.findUnique({
+          where: { id: itemId },
+          include: {
+            fbaShipment: {
+              select: { id: true, reference: true, status: true, clientId: true, trackingId: true },
+            },
+          },
+        })
+      : null;
+  if (!item || item.fbaShipmentId !== shipmentId) {
+    throw withStatus('That line was not found on this bulk shipment.', 404);
+  }
+
+  return await bookFromLine(
+    {
+      line: item,
+      shipment: item.fbaShipment,
+      kind: 'bulk shipment',
+      links: { fbaShipmentId: item.fbaShipment.id, fbaShipmentItemId: item.id },
+      addReturned: (amount, tx) =>
+        productReturnRepository.addBulkReturnedQuantity(item.id, amount, tx),
+      auditAction: 'FBA_SHIPMENT_ITEM_RETURNED',
+      auditIds: { fbaShipmentId: item.fbaShipment.id, fbaShipmentItemId: item.id },
+    },
+    options,
+    actorUserId,
+  );
 };
 
 // ─── Resolve later: dispose or restock from the list ──────────────────────────
@@ -982,8 +1050,11 @@ const getReturnDependents = async (id) => {
         },
         {
           key: 'lineCount',
-          label: `Units counted as returned on shipment ${productReturn.shipment?.reference ?? ''}`.trim(),
-          count: productReturn.shipmentItemId ? productReturn.quantity : 0,
+          label: productReturn.fbaShipmentItemId
+            ? `Units counted as returned on bulk shipment ${productReturn.fbaShipment?.reference ?? ''}`.trim()
+            : `Units counted as returned on shipment ${productReturn.shipment?.reference ?? ''}`.trim(),
+          count:
+            productReturn.shipmentItemId || productReturn.fbaShipmentItemId ? productReturn.quantity : 0,
           note: 'They count as still with the customer again.',
         },
       ],
@@ -1022,6 +1093,13 @@ const deleteReturn = async (id, actorUserId) => {
         tx,
       );
     }
+    if (productReturn.fbaShipmentItemId) {
+      await productReturnRepository.takeBackBulkReturnedQuantity(
+        productReturn.fbaShipmentItemId,
+        productReturn.quantity,
+        tx,
+      );
+    }
 
     if (restocked) {
       await takeOffShelf(
@@ -1051,6 +1129,8 @@ const deleteReturn = async (id, actorUserId) => {
     quantity: productReturn.quantity,
     shipmentId: productReturn.shipmentId,
     shipmentItemId: productReturn.shipmentItemId,
+    fbaShipmentId: productReturn.fbaShipmentId,
+    fbaShipmentItemId: productReturn.fbaShipmentItemId,
     unitsTakenOff: restocked ? productReturn.quantity : 0,
     fromLocationId: restocked ? productReturn.restockLocationId : null,
     chargesRemoved: removedCharges,
@@ -1106,6 +1186,7 @@ module.exports = {
   findLinesForProduct,
   recordReturn,
   recordLineReturn,
+  recordBulkLineReturn,
   disposeReturn,
   restockReturn,
   getReturns,

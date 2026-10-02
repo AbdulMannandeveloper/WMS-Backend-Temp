@@ -8,6 +8,7 @@ const includeRelations = {
   client: { select: { id: true, companyName: true } },
   product: { select: { id: true, skuCode: true, productName: true, barcode: true } },
   shipment: { select: { id: true, reference: true } },
+  fbaShipment: { select: { id: true, reference: true } },
   restockLocation: { select: { id: true, locationName: true, materializedPath: true } },
   // What this return has cost the client so far. Followed by the backlink, so a
   // line an admin later edits or removes on the invoice is reflected here too.
@@ -150,6 +151,24 @@ const findDispatchedLinesForProduct = async (productId, { q, take = 100 } = {}, 
     take,
   });
 
+/** addReturnedQuantity for a bulk shipment line. */
+const addBulkReturnedQuantity = async (fbaShipmentItemId, amount, tx) =>
+  await db(tx).$executeRaw`
+    UPDATE fba_shipment_items
+    SET returned_quantity = returned_quantity + ${amount}
+    WHERE id = ${fbaShipmentItemId}::uuid
+      AND returned_quantity + ${amount} <= quantity
+  `;
+
+/** takeBackReturnedQuantity for a bulk shipment line. */
+const takeBackBulkReturnedQuantity = async (fbaShipmentItemId, amount, tx) => {
+  const { count } = await db(tx).fbaShipmentItem.updateMany({
+    where: { id: fbaShipmentItemId, returnedQuantity: { gte: amount } },
+    data: { returnedQuantity: { decrement: amount } },
+  });
+  return count;
+};
+
 /**
  * The reverse of addReturnedQuantity, for a return being deleted: counts
  * `amount` units of the line as still out — only if at least that many are
@@ -174,6 +193,8 @@ module.exports = {
   updateReturn,
   deleteReturn,
   takeBackReturnedQuantity,
+  addBulkReturnedQuantity,
+  takeBackBulkReturnedQuantity,
   findDispatchedLinesForProduct,
   getReturnById,
   getReturns,
