@@ -2,6 +2,21 @@ const expenseCategoryRepository = require('../repositories/expense_category.repo
 const expenseRepository = require('../repositories/expense.repository');
 const auditLogLogic = require('./audit_log.logic');
 const { buildReport, assertDeletable } = require('../utils/dependents');
+const { removeStoredFile } = require('../lib/objectStorage');
+
+/** How the receipt upload names a stored receipt (expense.controller uploadReceipt). */
+const RECEIPT_URL_PREFIX = '/api/expenses/receipt/';
+
+/**
+ * Removes a receipt's stored file once no expense points at it any more.
+ * Called after the change that let go of it has been saved. A URL this system
+ * did not issue is left alone: there is no file of ours behind it.
+ */
+const releaseReceipt = async (receiptImageUrl) => {
+  if (!receiptImageUrl || !receiptImageUrl.startsWith(RECEIPT_URL_PREFIX)) return;
+  if ((await expenseRepository.countByReceipt(receiptImageUrl)) > 0) return;
+  await removeStoredFile(receiptImageUrl.slice(RECEIPT_URL_PREFIX.length));
+};
 const {
   dateRangeFilter,
   parseBoolean,
@@ -270,6 +285,10 @@ const updateExpense = async (id, raw, adminUserId) => {
   if (Object.keys(data).length === 0) return expense;
 
   const updated = await expenseRepository.updateExpense(id, data);
+  // Replaced or removed: the old file goes, unless another expense uses it.
+  if ('receiptImageUrl' in data && expense.receiptImageUrl !== data.receiptImageUrl) {
+    await releaseReceipt(expense.receiptImageUrl);
+  }
 
   if (adminUserId) {
     await auditLogLogic.createAuditLog(adminUserId, 'UPDATE_EXPENSE', {
@@ -296,6 +315,7 @@ const deleteExpense = async (id, adminUserId) => {
   }
 
   const result = await expenseRepository.deleteExpense(id);
+  await releaseReceipt(expense.receiptImageUrl);
 
   if (adminUserId) {
     await auditLogLogic.createAuditLog(adminUserId, 'DELETE_EXPENSE', {

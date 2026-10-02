@@ -4,6 +4,17 @@ const { prisma } = require('../lib/prisma');
 const freightRepository = require('../repositories/freight_shipment.repository');
 const auditLogLogic = require('./audit_log.logic');
 const { buildReport, assertDeletable } = require('../utils/dependents');
+const { removeStoredFile } = require('../lib/objectStorage');
+
+/**
+ * Removes a document's stored file once no document row points at it. Called
+ * after the row is gone, so a failure leaves at worst an unreferenced file.
+ */
+const releaseDocumentFile = async (storageKey) => {
+  if (!storageKey) return;
+  if (await freightRepository.getDocumentByStorageKey(storageKey)) return;
+  await removeStoredFile(storageKey);
+};
 const {
   dateRangeFilter,
   parseEnum,
@@ -766,6 +777,10 @@ const deleteFreightShipment = async (id, actorUserId) => {
   assertDeletable(`Freight shipment ${shipment.reference}`, report);
 
   await freightRepository.deleteFreightShipment(id);
+  // Its documents went with the row (cascade); their files go now.
+  for (const document of shipment.documents ?? []) {
+    await releaseDocumentFile(document.storageKey);
+  }
 
   await audit(actorUserId, 'FREIGHT_SHIPMENT_DELETED', {
     freightShipmentId: id,
@@ -825,6 +840,7 @@ const removeDocument = async (id, documentId, actorUserId) => {
   }
 
   await freightRepository.deleteDocument(documentId);
+  await releaseDocumentFile(document.storageKey);
 
   await audit(actorUserId, 'FREIGHT_SHIPMENT_DOCUMENT_REMOVED', {
     freightShipmentId: id,
