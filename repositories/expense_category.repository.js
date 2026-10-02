@@ -26,6 +26,17 @@ const getAllCategories = async () => {
   });
 };
 
+const updateCategory = async (id, data) => {
+  return await prismaCategory.update({
+    where: { id },
+    data,
+  });
+};
+
+const countExpensesInCategory = async (categoryId) => {
+  return await prisma.expense.count({ where: { categoryId } });
+};
+
 const deleteCategory = async (id) => {
   return await prismaCategory.delete({
     where: { id },
@@ -37,5 +48,7 @@ module.exports = {
   getCategoryById,
   getCategoryByName,
   getAllCategories,
+  updateCategory,
+  countExpensesInCategory,
   deleteCategory,
 };

@@ -13,6 +13,7 @@ const router = express.Router();
 router.get('/summary', authorizeRoles('admin'), expenseController.getExpenseSummary);
 router.get('/', authorizeRoles('admin'), expenseController.getAllExpenses);
 router.post('/', authorizeRoles('admin'), expenseController.createExpense);
+router.put('/:id', authorizeRoles('admin'), expenseController.updateExpense);
 router.delete('/:id', authorizeRoles('admin'), expenseController.deleteExpense);
 
 // Receipt Image Upload (Admin only)
@@ -24,5 +25,8 @@ router.get('/receipt/:filename', authorizeRoles('admin'), expenseController.getR
 // Expense Categories CRUD (Admin only)
 router.get('/categories', authorizeRoles('admin'), expenseController.getAllCategories);
 router.post('/categories', authorizeRoles('admin'), expenseController.createCategory);
+router.put('/categories/:id', authorizeRoles('admin'), expenseController.updateCategory);
+router.get('/categories/:id/dependents', authorizeRoles('admin'), expenseController.getCategoryDependents);
+router.delete('/categories/:id', authorizeRoles('admin'), expenseController.deleteCategory);
 
 module.exports = router;

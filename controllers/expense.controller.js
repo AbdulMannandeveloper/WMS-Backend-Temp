@@ -1,5 +1,6 @@
 const path = require("path");
 const expenseLogic = require("../logic/expense.logic");
+const { dependentsBody } = require("../utils/dependents");
 const { paginatedResponse } = require("../utils/pagination");
 const { buildListQuery } = require("../utils/queryFilters");
 const { listError } = require("../utils/listResponse");
@@ -79,6 +80,43 @@ const getExpenseSummary = async (req, res) => {
   }
 };
 
+const updateExpense = async (req, res) => {
+  try {
+    const expense = await expenseLogic.updateExpense(req.params.id, req.body, getAdminUserId(req));
+    res.status(200).json(expense);
+  } catch (err) {
+    res.status(/not found/i.test(err.message) ? 404 : 400).json({ error: err.message });
+  }
+};
+
+const updateCategory = async (req, res) => {
+  try {
+    const category = await expenseLogic.updateCategory(req.params.id, req.body, getAdminUserId(req));
+    res.status(200).json(category);
+  } catch (err) {
+    res.status(/not found/i.test(err.message) ? 404 : 400).json({ error: err.message });
+  }
+};
+
+// What deleting a category would refuse on, asked before pressing it.
+const getCategoryDependents = async (req, res) => {
+  try {
+    const { report } = await expenseLogic.getCategoryDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (err) {
+    res.status(/not found/i.test(err.message) ? 404 : 400).json({ error: err.message });
+  }
+};
+
+const deleteCategory = async (req, res) => {
+  try {
+    res.status(200).json(await expenseLogic.deleteCategory(req.params.id, getAdminUserId(req)));
+  } catch (err) {
+    if (err.code === "HAS_DEPENDENTS") return res.status(409).json(dependentsBody(err));
+    res.status(/not found/i.test(err.message) ? 404 : 400).json({ error: err.message });
+  }
+};
+
 const deleteExpense = async (req, res) => {
   try {
     const { id } = req.params;
@@ -142,7 +180,11 @@ module.exports = {
   getAllCategories,
   createExpense,
   getAllExpenses,
+  updateExpense,
   deleteExpense,
+  updateCategory,
+  getCategoryDependents,
+  deleteCategory,
   uploadReceipt,
   getReceipt,
 };
