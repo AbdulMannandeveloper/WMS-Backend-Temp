@@ -72,10 +72,28 @@ const equalsIgnoringCase = (value) => ({
   mode: 'insensitive',
 });
 
+/**
+ * Looks a unique code up exactly, and only on a miss ignoring case.
+ *
+ * For system references (SHP-, BULK-, RET-, FRT-) and freight barcodes. Every
+ * internal caller passes the code as stored, so it gets the indexed equality
+ * lookup it always had; the ILIKE scan is paid only by a code keyed in another
+ * case. The fallback cannot be replaced by uppercasing the input: references
+ * written by hand before the generators existed are in whatever case they
+ * were typed.
+ *
+ * @param {(match: string | object) => Promise<object|null>} find
+ *   runs the lookup with `match` as the field's filter value
+ * @param {string} value
+ */
+const findExactThenIgnoringCase = async (find, value) =>
+  (await find(value)) ?? (await find(equalsIgnoringCase(value)));
+
 module.exports = {
   normaliseEmail,
   normaliseUsername,
   normaliseNiNumber,
   normaliseCode,
   equalsIgnoringCase,
+  findExactThenIgnoringCase,
 };
