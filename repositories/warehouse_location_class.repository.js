@@ -1,5 +1,6 @@
 const { prisma } = require("../lib/prisma");
 const { assertAllowedField } = require("../utils/pick");
+const { fieldMatch } = require("../utils/identifiers");
 
 const prismaWarehouseLocationClass = prisma.warehouseLocationClass;
 
@@ -7,6 +8,10 @@ const prismaWarehouseLocationClass = prisma.warehouseLocationClass;
 // one is reachable from a request today — unlike its siblings, which are only
 // safe because their callers hardcode the column.
 const CLASS_QUERY_FIELDS = ["id", "name", "parentClassId"];
+
+// `Shelf` and `shelf` are one class; the database agrees (migration
+// 20261003140000), so the duplicate check and lookup by name ignore case too.
+const CASELESS_FIELDS = ["name"];
 
 const createWarehouseLocationClass = async (classData) => {
   return await prismaWarehouseLocationClass.create({
@@ -26,14 +31,14 @@ const getAllWarehouseLocationClasses = async () => {
 const getWarehouseLocationClassByField = async (field, value) => {
   assertAllowedField(field, CLASS_QUERY_FIELDS);
   return await prismaWarehouseLocationClass.findMany({
-    where: { [field]: value },
+    where: fieldMatch(field, value, CASELESS_FIELDS),
   });
 };
 
 const getWarehouseLocationClassFirstByField = async (field, value) => {
   assertAllowedField(field, CLASS_QUERY_FIELDS);
   return await prismaWarehouseLocationClass.findFirst({
-    where: { [field]: value },
+    where: fieldMatch(field, value, CASELESS_FIELDS),
     include: {
       parentClass: true,
       childClasses: true,

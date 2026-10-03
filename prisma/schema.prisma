@@ -273,7 +273,10 @@ model WarehouseLocation {
   ledgerOutflows InventoryLedger[] @relation("LedgerFromLocation")
   ledgerInflows  InventoryLedger[] @relation("LedgerToLocation")
 
-  // Guarantees you can't duplicate "Bin 1" inside the exact same Shelf
+  // Guarantees you can't duplicate "Bin 1" inside the exact same Shelf.
+  // Also unique ignoring case, through an expression index Prisma cannot
+  // declare: uq_warehouse_locations_parent_name_ci on (parent_location_id,
+  // lower(location_name)), migration 20261003140000. migrate diff ignores it.
   @@unique([parentLocationId, locationName], map: "uidx_parent_location_name")
   // Performance & Data Integrity
   @@index([locationClassId], map: "idx_warehouse_location_class_id")
@@ -285,6 +288,8 @@ model WarehouseLocation {
 
 model WarehouseLocationClass {
   id            String  @id @default(uuid()) @db.Uuid
+  // Also unique ignoring case: uq_warehouse_location_classes_name_ci on
+  // lower(name), migration 20261003140000 (an expression index; SQL only).
   name          String  @unique @map("name") @db.VarChar(80)
   description   String? @db.VarChar(255)
   parentClassId String? @map("parent_class_id") @db.Uuid

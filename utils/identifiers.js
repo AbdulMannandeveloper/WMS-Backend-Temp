@@ -73,6 +73,18 @@ const equalsIgnoringCase = (value) => ({
 });
 
 /**
+ * `{ [field]: value }` for a repository's by-field lookup, ignoring case when
+ * `field` is one of the names listed in `caseless`.
+ *
+ * For names people type — warehouse locations, classes, categories — where
+ * `Bin A1` and `bin a1` are one place to everyone standing in the warehouse.
+ */
+const fieldMatch = (field, value, caseless) =>
+  caseless.includes(field) && typeof value === 'string'
+    ? { [field]: equalsIgnoringCase(value) }
+    : { [field]: value };
+
+/**
  * Looks a unique code up exactly, and only on a miss ignoring case.
  *
  * For system references (SHP-, BULK-, RET-, FRT-) and freight barcodes. Every
@@ -95,5 +107,6 @@ module.exports = {
   normaliseNiNumber,
   normaliseCode,
   equalsIgnoringCase,
+  fieldMatch,
   findExactThenIgnoringCase,
 };
