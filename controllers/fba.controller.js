@@ -112,6 +112,7 @@ const listAttachableServices = async (req, res) => {
         serviceId: rate.serviceId,
         description: rate.service.description,
         unit: rate.unit || rate.service.unit,
+        isActive: rate.service.isActive,
         ...(showPrice ? { chargedPrice: rate.chargedPrice } : {}),
       })),
     );

@@ -410,7 +410,7 @@ const reserveLines = async (fbaShipmentId, lines, pickedByKey, tx, putBackByKey 
  * already, and attaching it by hand would bill it twice. Not priced here — the
  * charge is raised on dispatch, at the rate in force then.
  */
-const resolveServices = async (clientId, raw) => {
+const resolveServices = async (clientId, raw, alreadyAttached = new Set()) => {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new Error('Services must be a list.');
 
@@ -439,6 +439,13 @@ const resolveServices = async (clientId, raw) => {
     }
     if (rate.service.code) {
       throw new Error(`"${rate.service.description}" is charged automatically and cannot be added.`);
+    }
+    // A deactivated service already on the shipment may stay; it is not
+    // offered for anything new.
+    if (rate.service.isActive === false && !alreadyAttached.has(serviceId)) {
+      throw new Error(
+        `"${rate.service.description}" has been deactivated, so it can't be added. Reactivate it under Services first.`,
+      );
     }
     resolved.push({ serviceId, clientServiceId: rate.id, quantity });
   }
@@ -873,7 +880,11 @@ const setBulkServices = async (id, rawServices, actorUserId) => {
       `Services can only be changed before a bulk shipment is dispatched — this one is ${shipment.status}.`,
     );
   }
-  const services = await resolveServices(shipment.clientId, rawServices ?? []);
+  const services = await resolveServices(
+    shipment.clientId,
+    rawServices ?? [],
+    new Set((shipment.services ?? []).map((svc) => svc.serviceId)),
+  );
 
   const updated = await prisma.$transaction(async (tx) => {
     const fresh = await lockShipment(id, tx);
@@ -1499,7 +1510,7 @@ const getDeliveryNote = async (id) => {
 const getAttachableServices = async (clientId) =>
   await prisma.clientService.findMany({
     where: { clientId, service: { code: null } },
-    include: { service: { select: { id: true, description: true, unit: true } } },
+    include: { service: { select: { id: true, description: true, unit: true, isActive: true } } },
     orderBy: { service: { description: 'asc' } },
   });
 

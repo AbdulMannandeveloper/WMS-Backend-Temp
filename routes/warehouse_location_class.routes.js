@@ -42,5 +42,11 @@ router.delete(
   authorizeRoles("admin"),
   warehouseLocationClassController.deleteWarehouseLocationClass,
 );
+// Instead of deleting a class locations still have. Admin-only, as delete is.
+router.patch(
+  "/:id/active",
+  authorizeRoles("admin"),
+  warehouseLocationClassController.setWarehouseLocationClassActive,
+);
 
 module.exports = router;

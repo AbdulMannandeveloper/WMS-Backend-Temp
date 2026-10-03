@@ -448,6 +448,9 @@ const parseDisposition = async (raw) => {
   }
   const location = await prisma.warehouseLocation.findUnique({ where: { id: locationId } });
   if (!location) throw withStatus('That location does not exist.', 404);
+  if (location.isActive === false) {
+    throw withStatus(`${location.locationName} has been deactivated. Choose another location.`, 409);
+  }
   return { type, notes, locationId };
 };
 

@@ -128,7 +128,7 @@ const getServiceDependents = async (id) => {
  */
 const deleteService = async (id, actorUserId) => {
   const { service, report } = await getServiceDependents(id);
-  assertDeletable(service.description, report);
+  assertDeletable(service.description, report, { deactivatable: !service.code });
 
   await serviceRepository.deleteService(id);
 
@@ -145,6 +145,51 @@ const deleteService = async (id, actorUserId) => {
   return service;
 };
 
+const withStatus = (message, status) => {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+};
+
+/**
+ * Switches a service off or back on. Off, it stays on every shipment, agreed
+ * rate and invoice that already carries it, but cannot be agreed, attached or
+ * charged for anything new — the way out for a service in use that can no
+ * longer be deleted. Built-in services stay on: billing raises them itself.
+ */
+const setServiceActive = async (id, isActive, actorUserId) => {
+  if (typeof isActive !== "boolean") {
+    throw new Error("isActive must be true or false.");
+  }
+  const service = await serviceRepository.getServiceById(id);
+  if (!service) throw withStatus("Service not found.", 404);
+  if (!isActive && service.code) {
+    throw withStatus(
+      `"${service.description}" is built in: billing raises it by itself, so it stays active.`,
+      409,
+    );
+  }
+  if (service.isActive === isActive) return service;
+
+  const updated = await serviceRepository.updateService(id, { isActive });
+  await auditLogLogic.auditQuietly(
+    actorUserId,
+    isActive ? "REACTIVATE_SERVICE" : "DEACTIVATE_SERVICE",
+    { serviceId: id, description: service.description },
+  );
+  return updated;
+};
+
+/** Refuses a deactivated service for anything new. */
+const assertServiceActive = (service) => {
+  if (service && service.isActive === false) {
+    throw withStatus(
+      `"${service.description}" has been deactivated, so it can't be added to anything new. Reactivate it under Services first.`,
+      409,
+    );
+  }
+};
+
 module.exports = {
   addNewService,
   getAllServices,
@@ -152,4 +197,6 @@ module.exports = {
   updateService,
   getServiceDependents,
   deleteService,
+  setServiceActive,
+  assertServiceActive,
 };

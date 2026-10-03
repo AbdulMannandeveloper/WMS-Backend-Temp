@@ -7,6 +7,10 @@ const createWarehouseLocationClass = async (req, res) => {
       await warehouseLocationClassLogic.createWarehouseLocationClass(req.body);
     res.status(201).json(createdClass);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     if (
       error.message.includes("required") ||
       error.message.includes("Invalid") ||
@@ -54,6 +58,10 @@ const updateWarehouseLocationClass = async (req, res) => {
     );
     res.status(200).json(updatedClass);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     if (
       error.message.includes("required") ||
       error.message.includes("Invalid") ||
@@ -94,7 +102,22 @@ const deleteWarehouseLocationClass = async (req, res) => {
   }
 };
 
+// Deactivating keeps the class on its locations; no new location takes it.
+const setWarehouseLocationClassActive = async (req, res) => {
+  try {
+    const locationClass = await warehouseLocationClassLogic.setWarehouseLocationClassActive(
+      req.params.id,
+      req.body?.isActive,
+      req.user.id,
+    );
+    res.status(200).json(locationClass);
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
+};
+
 module.exports = {
+  setWarehouseLocationClassActive,
   createWarehouseLocationClass,
   getAllWarehouseLocationClasses,
   getWarehouseLocationClassByField,

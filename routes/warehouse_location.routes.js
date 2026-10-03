@@ -28,5 +28,8 @@ router.post("/", authorizeRoles('admin', 'employee'), warehouseLocationControlle
 router.get("/", authorizeRoles('admin', 'employee'), warehouseLocationController.getAllWarehouseLocations);
 router.put("/:id", authorizeRoles('admin', 'employee'), warehouseLocationController.updateWarehouseLocation);
 router.delete("/:id", authorizeRoles('admin'), warehouseLocationController.deleteWarehouseLocation);
+// The way out for a location that has held stock, which cannot be deleted.
+// Admin-only, as delete is.
+router.patch("/:id/active", authorizeRoles('admin'), warehouseLocationController.setWarehouseLocationActive);
 
 module.exports = router;

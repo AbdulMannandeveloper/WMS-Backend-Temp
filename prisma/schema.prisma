@@ -106,6 +106,9 @@ model Service {
   // find one without matching on a description an admin may rename.
   // Today: SHIPMENT_DISPATCH. Null for ordinary catalogue entries.
   code             String?                  @unique @db.VarChar(40)
+  // Off: kept on the shipments, rates and invoices that carry it, but offered
+  // for nothing new. Built-in services (with a code) are never switched off.
+  isActive         Boolean                  @default(true) @map("is_active")
   clientServices   ClientService[]
   shipmentMappings ShipmentServiceMapping[]
   fbaServices      FbaShipmentService[]
@@ -251,6 +254,9 @@ model WarehouseLocation {
   locationClassId  String  @map("location_class_id") @db.Uuid
   materializedPath String? @map("materialized_path") @db.VarChar(500) // Example value: "zone-a/aisle-2/shelf-3"
   parentLocationId String? @map("parent_location_id") @db.Uuid
+  // Off: kept, with its stock history, but no stock can be put into it and
+  // nothing new can go inside it. Only an empty location can be switched off.
+  isActive         Boolean @default(true) @map("is_active")
 
   // Hierarchy Relations
   parentLocation WarehouseLocation?     @relation("WarehouseLocationHierarchy", fields: [parentLocationId], references: [id], onDelete: SetNull)
@@ -282,6 +288,8 @@ model WarehouseLocationClass {
   name          String  @unique @map("name") @db.VarChar(80)
   description   String? @db.VarChar(255)
   parentClassId String? @map("parent_class_id") @db.Uuid
+  // Off: kept for the locations that have it, but no new location takes it.
+  isActive      Boolean @default(true) @map("is_active")
 
   parentClass  WarehouseLocationClass?  @relation("WarehouseLocationClassHierarchy", fields: [parentClassId], references: [id], onDelete: SetNull)
   childClasses WarehouseLocationClass[] @relation("WarehouseLocationClassHierarchy")

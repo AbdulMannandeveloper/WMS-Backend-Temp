@@ -11,6 +11,10 @@ const createWarehouseLocation = async (req, res) => {
       await warehhouseLocationLogic.createWarehouseLocation(locationData);
     res.status(201).json(newLocation);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     // Handle validation errors and other exceptions
     if (
       error.message.includes("required") ||
@@ -82,6 +86,10 @@ const updateWarehouseLocation = async (req, res) => {
       await warehhouseLocationLogic.updateWarehouseLocation(id, updateData);
     res.status(200).json(updatedLocation);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     console.error("Error updating warehouse location:", error);
     if (
       error.message.includes("Invalid") ||
@@ -142,7 +150,22 @@ const getWarehouseLocationTree = async (req, res) => {
   }
 };
 
+// Deactivating keeps the location and its history; nothing new goes into it.
+const setWarehouseLocationActive = async (req, res) => {
+  try {
+    const location = await warehhouseLocationLogic.setWarehouseLocationActive(
+      req.params.id,
+      req.body?.isActive,
+      req.user.id,
+    );
+    res.status(200).json(location);
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
+};
+
 module.exports = {
+  setWarehouseLocationActive,
   getWarehouseLocationSummary,
   createWarehouseLocation,
   getAllWarehouseLocations,

@@ -139,6 +139,15 @@ const validateLedgerInput = async (newData, tx) => {
     if (!toLocation) {
       throw new Error(`Provided to location not found.`);
     }
+    // Deliveries and moves choose where stock goes, and a deactivated location
+    // takes nothing new. Units put back where they came from — a reversal, a
+    // line return — are not a choice and are let through.
+    if (
+      toLocation.isActive === false &&
+      (newData.movementType === "CHECKIN" || newData.movementType === "INTERNAL_MOVE")
+    ) {
+      throw new Error(`${toLocation.locationName} has been deactivated. Choose another location.`);
+    }
   }
 };
 

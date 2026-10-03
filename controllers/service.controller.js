@@ -71,7 +71,18 @@ const deleteService = async (req, res) => {
   }
 };
 
+// Deactivating keeps the service on what already carries it and offers it for
+// nothing new.
+const setServiceActive = async (req, res) => {
+  try {
+    res.status(200).json(await serviceLogic.setServiceActive(req.params.id, req.body?.isActive, req.user.id));
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+};
+
 module.exports = {
+  setServiceActive,
   createService,
   getAllServices,
   getServiceById,

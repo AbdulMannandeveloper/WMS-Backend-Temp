@@ -8,6 +8,7 @@ const {
 const clientRepository = require("../repositories/client.repository");
 const serviceRepository = require("../repositories/service.repository");
 const auditLogLogic = require("./audit_log.logic");
+const { assertServiceActive } = require("./service.logic");
 
 /** How an agreed rate is named in its audit entries. */
 const rateSubject = (rate, companyName, serviceDescription) => ({
@@ -37,6 +38,7 @@ const addClientService = async (clientServiceData, actorUserId) => {
       "Service not found. Cannot create client-service entry without a valid service.",
     );
   }
+  assertServiceActive(service);
 
   if (!clientServiceData.chargedPrice) {
     clientServiceData.chargedPrice = service.ideaPrice; // Default to service idea price if not provided
