@@ -120,6 +120,14 @@ const deleteStockLevel = async (id, tx) => {
   });
 };
 
+/** Deletes the row only while it holds nothing. Returns whether it did. */
+const deleteEmptyStockLevel = async (id, tx) => {
+  const { count } = await db(tx).stockLevel.deleteMany({
+    where: { id, currentQuantity: 0, reservedQuantity: 0 },
+  });
+  return count > 0;
+};
+
 /**
  * Atomically reserve quantity if available stock is sufficient.
  * Uses a single conditional UPDATE to prevent oversell under concurrency.
@@ -228,6 +236,7 @@ module.exports = {
   getStockLevelByProductAndLocation,
   updateStockLevel,
   deleteStockLevel,
+  deleteEmptyStockLevel,
   reserveStockAtomically,
   releaseReservedStockAtomically,
   checkoutStockAtomically,

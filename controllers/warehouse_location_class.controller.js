@@ -1,4 +1,5 @@
 const warehouseLocationClassLogic = require("../logic/warehouse_location.logic");
+const { dependentsBody } = require("../utils/dependents");
 
 const createWarehouseLocationClass = async (req, res) => {
   try {
@@ -6,6 +7,10 @@ const createWarehouseLocationClass = async (req, res) => {
       await warehouseLocationClassLogic.createWarehouseLocationClass(req.body);
     res.status(201).json(createdClass);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     if (
       error.message.includes("required") ||
       error.message.includes("Invalid") ||
@@ -53,6 +58,10 @@ const updateWarehouseLocationClass = async (req, res) => {
     );
     res.status(200).json(updatedClass);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     if (
       error.message.includes("required") ||
       error.message.includes("Invalid") ||
@@ -67,24 +76,52 @@ const updateWarehouseLocationClass = async (req, res) => {
   }
 };
 
+// What would stop a delete, asked before the admin presses it.
+const getWarehouseLocationClassDependents = async (req, res) => {
+  try {
+    const { report } = await warehouseLocationClassLogic.getWarehouseLocationClassDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : "An unexpected error occurred" });
+  }
+};
+
 const deleteWarehouseLocationClass = async (req, res) => {
   try {
     const { id } = req.params;
-    await warehouseLocationClassLogic.deleteWarehouseLocationClass(id);
+    await warehouseLocationClassLogic.deleteWarehouseLocationClass(id, req.user.id);
     res.status(204).send();
   } catch (error) {
-    if (error.message.toLowerCase().includes("cannot delete")) {
-      res.status(400).json({ error: error.message });
-    } else {
-      res.status(500).json({ error: "An unexpected error occurred" });
+    if (error.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(error));
     }
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    res.status(500).json({ error: "An unexpected error occurred" });
+  }
+};
+
+// Deactivating keeps the class on its locations; no new location takes it.
+const setWarehouseLocationClassActive = async (req, res) => {
+  try {
+    const locationClass = await warehouseLocationClassLogic.setWarehouseLocationClassActive(
+      req.params.id,
+      req.body?.isActive,
+      req.user.id,
+    );
+    res.status(200).json(locationClass);
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 
 module.exports = {
+  setWarehouseLocationClassActive,
   createWarehouseLocationClass,
   getAllWarehouseLocationClasses,
   getWarehouseLocationClassByField,
   updateWarehouseLocationClass,
+  getWarehouseLocationClassDependents,
   deleteWarehouseLocationClass,
 };

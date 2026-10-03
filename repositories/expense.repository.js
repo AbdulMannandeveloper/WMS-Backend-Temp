@@ -106,6 +106,11 @@ const updateExpense = async (id, data) => {
   });
 };
 
+/** How many expenses point at this receipt — a file is removed only at zero. */
+const countByReceipt = async (receiptImageUrl) => {
+  return await prismaExpense.count({ where: { receiptImageUrl } });
+};
+
 const deleteExpense = async (id) => {
   return await prismaExpense.delete({
     where: { id },
@@ -118,5 +123,6 @@ module.exports = {
   summariseExpenses,
   getExpenseById,
   updateExpense,
+  countByReceipt,
   deleteExpense,
 };

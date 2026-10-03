@@ -11,6 +11,10 @@ const includeRelations = {
     include: {
       product: { select: { id: true, skuCode: true, productName: true } },
       sourceLocation: { select: { id: true, locationName: true, materializedPath: true } },
+      // How much of returnedQuantity is return records. The rest came back
+      // through the line Return button before it booked records, and is
+      // undone from the shipment (fba.logic undoBulkLineReturns).
+      productReturns: { select: { quantity: true } },
     },
     orderBy: { createdAt: 'asc' },
   },

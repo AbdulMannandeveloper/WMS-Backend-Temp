@@ -12,7 +12,16 @@ import { describe, it, expect } from 'vitest';
 
 import { prisma } from '../helpers/db.js';
 import { as, anon } from '../helpers/auth.js';
-import { makeAdmin, makeUser, makeEmployee } from '../factories/index.js';
+import {
+  makeAdmin,
+  makeUser,
+  makeEmployee,
+  makeClient,
+  makeShipment,
+  makePayrollRecord,
+  makeAttendanceLog,
+  makeAuditLog,
+} from '../factories/index.js';
 
 /** A user who has completed setup — isActive is only togglable after that. */
 const makeSetUpUser = (overrides = {}) =>
@@ -170,6 +179,122 @@ describe('changing a user', () => {
       .send({ lastName: 'Nobody' });
 
     expect([400, 404]).toContain(res.status);
+  });
+});
+
+describe('keeping a way in', () => {
+  it('an admin cannot deactivate themselves', async () => {
+    const admin = await makeAdmin({ passwordHash: 'x'.repeat(60) });
+    await makeAdmin();
+
+    const res = await as(admin).put(`/api/users/${admin.id}`).send({ isActive: false });
+
+    expect(res.status).toBe(400);
+    expect((await prisma.user.findUnique({ where: { id: admin.id } })).isActive).toBe(true);
+  });
+
+  it('an admin cannot demote themselves', async () => {
+    const admin = await makeAdmin({ passwordHash: 'x'.repeat(60) });
+
+    const res = await as(admin).put(`/api/users/${admin.id}`).send({ role: 'employee' });
+
+    expect(res.status).toBe(400);
+    expect((await prisma.user.findUnique({ where: { id: admin.id } })).role).toBe('admin');
+  });
+
+  it('another admin still can', async () => {
+    const admin = await makeAdmin();
+    const other = await makeSetUpUser({ role: 'admin' });
+
+    const res = await as(admin).put(`/api/users/${other.id}`).send({ role: 'employee' });
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('deleting a staff login', () => {
+  it('deletes an employee with no history, employee record and attendance included', async () => {
+    const admin = await makeAdmin();
+    const { user, employee } = await makeEmployee();
+    await makeAttendanceLog(user.id);
+
+    const dependents = await as(admin).get(`/api/users/${user.id}/dependents`);
+    expect(dependents.body.canDelete).toBe(true);
+    expect(dependents.body.removedWith.map((r) => r.key)).toEqual(['attendance']);
+
+    const res = await as(admin).delete(`/api/users/${user.id}`);
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toMatch(/passwordHash/);
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+    expect(await prisma.employee.findUnique({ where: { id: employee.id } })).toBeNull();
+  });
+
+  it('keeps their audit trail, under their name', async () => {
+    const admin = await makeAdmin();
+    const { user } = await makeEmployee();
+    const entry = await makeAuditLog(user.id);
+
+    await as(admin).delete(`/api/users/${user.id}`);
+
+    const after = await prisma.auditLog.findUnique({ where: { id: entry.id } });
+    expect(after).not.toBeNull();
+    expect(after.userId).toBeNull();
+    expect(after.actorName).toMatch(/Eli Employee/);
+  });
+
+  it('refuses while shipments name them, and says so', async () => {
+    const admin = await makeAdmin();
+    const { user, employee } = await makeEmployee();
+    const { client } = await makeClient();
+    await makeShipment(employee.id, client.id);
+
+    const res = await as(admin).delete(`/api/users/${user.id}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['shipments']);
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).not.toBeNull();
+  });
+
+  it('refuses for anyone with finalised pay', async () => {
+    const admin = await makeAdmin();
+    const { user } = await makeEmployee();
+    await makePayrollRecord(user.id);
+
+    const res = await as(admin).delete(`/api/users/${user.id}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['payroll']);
+  });
+
+  it('an admin cannot delete themselves', async () => {
+    const admin = await makeAdmin();
+    await makeAdmin();
+
+    const res = await as(admin).delete(`/api/users/${admin.id}`);
+
+    expect(res.status).toBe(400);
+    expect(await prisma.user.findUnique({ where: { id: admin.id } })).not.toBeNull();
+  });
+
+  it('a client login is judged by the client rules', async () => {
+    const admin = await makeAdmin();
+    const { user, client } = await makeClient();
+    const { employee } = await makeEmployee();
+    await makeShipment(employee.id, client.id);
+
+    const res = await as(admin).get(`/api/users/${user.id}/dependents`);
+
+    expect(res.body.blocking.map((r) => r.key)).toEqual(['shipments']);
+    expect(res.body.blocking[0].label).toBe('Shipments');
+  });
+
+  it('is admin only', async () => {
+    const { user: employeeUser } = await makeEmployee();
+    const target = await makeSetUpUser();
+
+    expect((await as(employeeUser).delete(`/api/users/${target.id}`)).status).toBe(403);
+    expect((await as(employeeUser).get(`/api/users/${target.id}/dependents`)).status).toBe(403);
   });
 });
 

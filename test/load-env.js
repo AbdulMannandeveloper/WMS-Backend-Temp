@@ -48,6 +48,18 @@ if (!/test/i.test(databaseName)) {
 }
 
 /**
+ * Migrations go to the test database too.
+ *
+ * `prisma migrate deploy` connects through the schema's directUrl, which reads
+ * DIRECT_URL and does not fall back to DATABASE_URL. Left unset here, the real
+ * .env supplies it (prisma.config.ts imports dotenv/config, as described
+ * below) and the migrations run against the development database while the
+ * tests run against an empty test one. That happened once. Pinned, whatever
+ * .env.test or the shell says.
+ */
+process.env.DIRECT_URL = url;
+
+/**
  * Second guard rail: the suite must never send real email.
  *
  * The database guard above exists because the tests truncate every table. This

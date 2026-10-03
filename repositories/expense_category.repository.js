@@ -8,8 +8,8 @@ const createCategory = async (data) => {
   });
 };
 
-const getCategoryById = async (id) => {
-  return await prismaCategory.findUnique({
+const getCategoryById = async (id, tx) => {
+  return await (tx ? tx.expenseCategory : prismaCategory).findUnique({
     where: { id },
   });
 };
@@ -26,8 +26,19 @@ const getAllCategories = async () => {
   });
 };
 
-const deleteCategory = async (id) => {
-  return await prismaCategory.delete({
+const updateCategory = async (id, data) => {
+  return await prismaCategory.update({
+    where: { id },
+    data,
+  });
+};
+
+const countExpensesInCategory = async (categoryId, tx) => {
+  return await (tx ?? prisma).expense.count({ where: { categoryId } });
+};
+
+const deleteCategory = async (id, tx) => {
+  return await (tx ? tx.expenseCategory : prismaCategory).delete({
     where: { id },
   });
 };
@@ -37,5 +48,7 @@ module.exports = {
   getCategoryById,
   getCategoryByName,
   getAllCategories,
+  updateCategory,
+  countExpensesInCategory,
   deleteCategory,
 };

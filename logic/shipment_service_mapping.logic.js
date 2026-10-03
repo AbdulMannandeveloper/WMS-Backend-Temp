@@ -6,6 +6,8 @@ const shipmentServiceMappingRepositry = require("../repositories/shipment_servic
 // partially-initialised exports object and the reference never fills in.
 const shipmentRepository = require("../repositories/shipment.repository");
 const clientServiceRepository = require("../repositories/client_service.repository");
+const serviceRepository = require("../repositories/service.repository");
+const { assertServiceActive } = require("./service.logic");
 
 /**
  * Attaches a billable service to a shipment.
@@ -33,6 +35,7 @@ const createShipmentServiceMapping = async (data, tx) => {
   if (!shipment) {
     throw new Error("Shipment not found.");
   }
+  assertServiceActive(await serviceRepository.getServiceById(data.serviceId));
 
   // Read outside `tx` deliberately — an agreed rate is reference data set up long
   // before this transaction, not something it mutates.

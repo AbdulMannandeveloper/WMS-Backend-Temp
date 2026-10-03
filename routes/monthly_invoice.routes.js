@@ -41,6 +41,9 @@ router.put("/:id/edit", adminOnly, invoiceController.applyInvoiceEdits);
 
 router.post("/:id/approve", adminOnly, invoiceController.approveMonthlyInvoice);
 router.post("/:id/pay", adminOnly, invoiceController.markMonthlyInvoicePaid);
+// A draft carrying charges for shipments or returns is not deleted: nothing
+// would raise them again. The warning reads the same gate as the delete.
+router.get("/:id/dependents", adminOnly, invoiceController.getInvoiceDependents);
 router.delete("/:id", adminOnly, invoiceController.deleteMonthlyInvoice);
 
 // Line Items (nested under invoice, admin only)

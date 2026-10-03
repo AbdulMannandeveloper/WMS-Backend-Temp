@@ -22,10 +22,11 @@ router.put("/:id/unpick", staffWith("update"), shimpentItemController.unpickShip
 // state underneath: the line is only editable while it can still be changed.
 router.put("/:id", staffWith("update"), shimpentItemController.updateShipmentItem);
 
-// Returning goods that went out and came back. It puts stock on the shelf and
-// deliberately does not touch the invoice: the dispatch happened and was
-// charged for, and what follows is a commercial conversation elsewhere. Mapped
-// to update rather than delete — the line survives, its quantity changes.
+// Returning goods that went out and came back. Books a return record (RET-…),
+// restocked into the bin the line was picked from, exactly as the Returns
+// screen would — the line just saves the scanning. The shipment's own charge is
+// never touched; a return fee only when asked for. Mapped to update rather than
+// delete — the line survives, its returned count changes.
 router.post("/:id/return", staffWith("update"), shimpentItemController.returnShipmentItem);
 
 // -----------------------------NOT EXPOSED FOR NOW-----------------------------

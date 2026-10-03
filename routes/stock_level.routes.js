@@ -35,6 +35,9 @@ const anyoneWith = (action) => [
 router.get('/summary', anyoneWith('read'), stockLevelController.getStockLevelSummary);
 router.get('/', anyoneWith('read'), stockLevelController.getAllStockLevels);
 
+// Stock quantities move only through the ledger (inventory-ledgers). These
+// routes keep their grants but no longer bypass it: create opens an empty row,
+// edit is refused, and delete takes only a row that holds nothing.
 router.post('/', staffWith('create'), stockLevelController.createStockLevel);
 router.get('/product/:productId', staffWith('read'), stockLevelController.getStockLevelByProductId);
 router.get('/location/:locationId', staffWith('read'), stockLevelController.getStockLevelByLocationId);

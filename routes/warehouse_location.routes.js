@@ -18,10 +18,18 @@ router.get("/tree", authorizeRoles('admin', 'employee'), warehouseLocationContro
 // request for the summary is read as a lookup for the field named "summary".
 router.get("/summary", authorizeRoles('admin', 'employee'), warehouseLocationController.getWarehouseLocationSummary);
 
+// Deleting is refused while anything still refers to the location; this says
+// what. Above /:field/:value, which would otherwise read it as a lookup of the
+// field "<id>" for the value "dependents".
+router.get("/:id/dependents", authorizeRoles('admin'), warehouseLocationController.getWarehouseLocationDependents);
+
 router.get("/:field/:value", authorizeRoles('admin', 'employee'), warehouseLocationController.getWarehouseLocationByField);
 router.post("/", authorizeRoles('admin', 'employee'), warehouseLocationController.createWarehouseLocation);
 router.get("/", authorizeRoles('admin', 'employee'), warehouseLocationController.getAllWarehouseLocations);
 router.put("/:id", authorizeRoles('admin', 'employee'), warehouseLocationController.updateWarehouseLocation);
 router.delete("/:id", authorizeRoles('admin'), warehouseLocationController.deleteWarehouseLocation);
+// The way out for a location that has held stock, which cannot be deleted.
+// Admin-only, as delete is.
+router.patch("/:id/active", authorizeRoles('admin'), warehouseLocationController.setWarehouseLocationActive);
 
 module.exports = router;

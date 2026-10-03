@@ -7,10 +7,24 @@ const payrollRepository = require('../repositories/payroll.repository');
 const expenseCategoryRepository = require('../repositories/expense_category.repository');
 const expenseRepository = require('../repositories/expense.repository');
 const auditLogLogic = require('./audit_log.logic');
+const { buildReport } = require('../utils/dependents');
 const { firstOfMonthUtc, endOfMonthUtc, lastDayOfMonthUtc } = require('../utils/dates');
 
 // month_year is a @db.Date, so the boundary must be built in UTC — see utils/dates.js.
 const normalizeMonth = (dateInput) => firstOfMonthUtc(dateInput);
+
+/** "September 2026", for a month normalised by normalizeMonth. */
+const monthLabelOf = (month) =>
+  month.toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+/** A month named in a request ("2026-09" or "2026-09-01"), normalised. */
+const parseMonth = (raw) => {
+  const date = new Date(raw);
+  if (!raw || Number.isNaN(date.getTime())) {
+    throw new Error('A valid month is required, e.g. 2026-09-01.');
+  }
+  return normalizeMonth(date);
+};
 
 const setBaseSalary = async (employeeId, amount, adminUserId) => {
   if (amount === undefined || amount === null || amount < 0) {
@@ -67,6 +81,157 @@ const getActiveFineRule = async () => {
   return await fineRuleRepository.getActiveFineRule();
 };
 
+/**
+ * Removes a fine rule. The newest rule is the one in force, so removing it
+ * puts the one before back in force — or, with none left, stops automatic
+ * lateness fines. Fines already issued under it are their own rows and stay.
+ */
+const deleteFineRule = async (id, adminUserId) => {
+  const rule = await fineRuleRepository.getFineRuleById(id);
+  if (!rule) throw new Error('Fine rule not found.');
+
+  await fineRuleRepository.deleteFineRule(id);
+  const nowActive = await fineRuleRepository.getActiveFineRule();
+
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'DELETE_FINE_RULE', {
+      ruleId: id,
+      fineType: rule.fineType,
+      amount: Number(rule.amount),
+      lateMinutes: rule.lateMinutes,
+      nowActiveRuleId: nowActive?.id ?? null,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+
+  return { message: 'Fine rule removed.', activeRule: nowActive };
+};
+
+// ─── Correcting fines and bonuses ───────────────────────────────────────────────
+
+/**
+ * Refuses adding, changing or removing a fine or bonus in a month whose payroll
+ * has been finalised for that employee. The payroll record holds what they
+ * were paid; changing what it was worked out from would leave the two
+ * disagreeing. Reopening the month (reopenPayroll) is the way to correct one.
+ */
+const assertMonthOpen = async (userId, date) => {
+  const month = normalizeMonth(date);
+  const record = await payrollRepository.getPayrollRecordByUserAndMonth(userId, month);
+  if (!record) return;
+  const name = record.user ? `${record.user.firstName} ${record.user.lastName}` : 'this employee';
+  const error = new Error(
+    `Payroll for ${monthLabelOf(month)} has been finalised for ${name}, so its fines and bonuses stay as paid. Reopen the month to change them.`,
+  );
+  error.status = 409;
+  throw error;
+};
+
+/** The reason, amount and date of a fine or bonus edit, checked. */
+const parseAdjustment = (raw, kind) => {
+  const data = {};
+  if (raw && 'reason' in raw) {
+    const reason = String(raw.reason ?? '').trim();
+    if (!reason) throw new Error(`A ${kind} needs a reason.`);
+    data.reason = reason;
+  }
+  if (raw && 'amount' in raw) {
+    const amount = Number(raw.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error(`The ${kind} amount must be greater than zero.`);
+    }
+    data.amount = amount;
+  }
+  if (raw && 'date' in raw) {
+    const date = new Date(raw.date);
+    if (!raw.date || Number.isNaN(date.getTime())) throw new Error('A valid date is required.');
+    data.date = date;
+  }
+  return data;
+};
+
+/**
+ * Corrects a fine's reason, amount or date. Both the month it is in and the
+ * month it would move to must still be open. Cancelling stays its own action.
+ */
+const updateFine = async (id, raw, adminUserId) => {
+  const fine = await employeeFineRepository.getFineById(id);
+  if (!fine) throw new Error('Fine record not found.');
+  const data = parseAdjustment(raw, 'fine');
+  if (Object.keys(data).length === 0) return fine;
+
+  await assertMonthOpen(fine.userId, fine.date);
+  if (data.date) await assertMonthOpen(fine.userId, data.date);
+
+  const updated = await employeeFineRepository.updateFine(id, data);
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'UPDATE_FINE', {
+      fineId: id,
+      changed: Object.keys(data),
+      from: { reason: fine.reason, amount: Number(fine.amount), date: fine.date },
+      to: data,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+  return updated;
+};
+
+/** Removes a fine entered by mistake. Cancelling keeps it on record instead. */
+const deleteFine = async (id, adminUserId) => {
+  const fine = await employeeFineRepository.getFineById(id);
+  if (!fine) throw new Error('Fine record not found.');
+  await assertMonthOpen(fine.userId, fine.date);
+
+  await employeeFineRepository.deleteFine(id);
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'DELETE_FINE', {
+      fineId: id,
+      userId: fine.userId,
+      amount: Number(fine.amount),
+      reason: fine.reason,
+      date: fine.date,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+  return { message: 'Fine deleted.' };
+};
+
+const updateBonus = async (id, raw, adminUserId) => {
+  const bonus = await employeeBonusRepository.getBonusById(id);
+  if (!bonus) throw new Error('Bonus record not found.');
+  const data = parseAdjustment(raw, 'bonus');
+  if (Object.keys(data).length === 0) return bonus;
+
+  await assertMonthOpen(bonus.userId, bonus.date);
+  if (data.date) await assertMonthOpen(bonus.userId, data.date);
+
+  const updated = await employeeBonusRepository.updateBonus(id, data);
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'UPDATE_BONUS', {
+      bonusId: id,
+      changed: Object.keys(data),
+      from: { reason: bonus.reason, amount: Number(bonus.amount), date: bonus.date },
+      to: data,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+  return updated;
+};
+
+const deleteBonus = async (id, adminUserId) => {
+  const bonus = await employeeBonusRepository.getBonusById(id);
+  if (!bonus) throw new Error('Bonus record not found.');
+  await assertMonthOpen(bonus.userId, bonus.date);
+
+  await employeeBonusRepository.deleteBonus(id);
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'DELETE_BONUS', {
+      bonusId: id,
+      userId: bonus.userId,
+      amount: Number(bonus.amount),
+      reason: bonus.reason,
+      date: bonus.date,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+  return { message: 'Bonus deleted.' };
+};
+
 const createFine = async (data, adminUserId) => {
   if (!data.userId || !data.amount || !data.reason) {
     throw new Error('User ID, amount, and reason are required to create a fine.');
@@ -76,12 +241,14 @@ const createFine = async (data, adminUserId) => {
   if (!user) {
     throw new Error('User not found.');
   }
+  const date = data.date ? new Date(data.date) : new Date();
+  await assertMonthOpen(data.userId, date);
 
   const fine = await employeeFineRepository.createFine({
     userId: data.userId,
     amount: Number(data.amount),
     reason: data.reason,
-    date: data.date ? new Date(data.date) : new Date(),
+    date,
     cancelled: false,
   });
 
@@ -102,6 +269,8 @@ const toggleCancelFine = async (fineId, adminUserId) => {
   if (!fine) {
     throw new Error('Fine record not found.');
   }
+  // Cancelling changes what the month's pay works out to, like editing does.
+  await assertMonthOpen(fine.userId, fine.date);
 
   const updated = await employeeFineRepository.updateFine(fineId, {
     cancelled: !fine.cancelled,
@@ -127,12 +296,14 @@ const createBonus = async (data, adminUserId) => {
   if (!user) {
     throw new Error('User not found.');
   }
+  const date = data.date ? new Date(data.date) : new Date();
+  await assertMonthOpen(data.userId, date);
 
   const bonus = await employeeBonusRepository.createBonus({
     userId: data.userId,
     amount: Number(data.amount),
     reason: data.reason,
-    date: data.date ? new Date(data.date) : new Date(),
+    date,
   });
 
   if (adminUserId) {
@@ -185,6 +356,9 @@ const getSalaryBreakdownForEmployee = async (userId, monthDate) => {
   // Fetch fines and bonuses
   const fines = await employeeFineRepository.getFinesByUserAndMonth(userId, startOfMonth, endOfMonth);
   const bonuses = await employeeBonusRepository.getBonusesByUserAndMonth(userId, startOfMonth, endOfMonth);
+  // Finalised for this employee: their fines and bonuses for the month are
+  // fixed as paid (see assertMonthOpen), so the screen stops offering changes.
+  const payrollRecord = await payrollRepository.getPayrollRecordByUserAndMonth(userId, startOfMonth);
 
   const baseSalary = employee.baseSalary ? Number(employee.baseSalary) : 0;
   const totalFines = fines.filter((f) => !f.cancelled).reduce((acc, f) => acc + Number(f.amount), 0);
@@ -207,6 +381,11 @@ const getSalaryBreakdownForEmployee = async (userId, monthDate) => {
     daysPresent: attendanceSummary?.totalDaysPresent || 0,
     hoursWorked: attendanceSummary?.totalHoursWorked ? Number(attendanceSummary.totalHoursWorked) : 0,
     monthYear: startOfMonth,
+    finalised: Boolean(payrollRecord),
+    // What finalising recorded. It drifts from netPay when something changes
+    // afterwards that the lock does not cover: a late check-in's automatic
+    // fine, or a new base salary. The screen flags the difference.
+    finalisedNetPay: payrollRecord ? Number(payrollRecord.netPay) : null,
   };
 };
 
@@ -312,14 +491,105 @@ const finalizePayroll = async (monthYearStr, adminUserId) => {
   };
 };
 
+// ─── Reopening a finalised month ────────────────────────────────────────────────
+
+/** The Salaries expense finalising posted for the month, if there is one. */
+const findSalariesExpense = async (month) => {
+  const category = await expenseCategoryRepository.getCategoryByName('Salaries');
+  if (!category) return null;
+  const [expense] = await expenseRepository.getAllExpenses({
+    categoryId: category.id,
+    date: { gte: month, lte: lastDayOfMonthUtc(month) },
+  });
+  return expense ?? null;
+};
+
+/**
+ * What reopening a finalised month removes: every employee's pay record for
+ * it and the Salaries expense it posted. Nothing blocks it — Lock & Post
+ * writes both again from the corrected fines and bonuses.
+ *
+ * @throws 404 when the month has not been finalised
+ */
+const getReopenDependents = async (rawMonth) => {
+  const month = parseMonth(rawMonth);
+  const label = monthLabelOf(month);
+  const records = await payrollRepository.getPayrollRecordsByMonth(month);
+  if (records.length === 0) {
+    const error = new Error(`Payroll for ${label} has not been finalised.`);
+    error.status = 404;
+    throw error;
+  }
+  const salaries = await findSalariesExpense(month);
+
+  return {
+    month,
+    label,
+    records,
+    salaries,
+    report: buildReport({
+      removedWith: [
+        {
+          key: 'payrollRecords',
+          label: 'Finalised pay records',
+          count: records.length,
+          note: 'What each employee was paid for the month. Lock & Post writes them again.',
+        },
+        {
+          key: 'salariesExpense',
+          label: 'Salaries expense',
+          count: salaries ? 1 : 0,
+          where: '/expenses',
+          note: salaries
+            ? `£${Number(salaries.amount).toFixed(2)} for the month. Lock & Post posts it again.`
+            : undefined,
+        },
+      ],
+    }),
+  };
+};
+
+/**
+ * Reopens a finalised month so its fines and bonuses can be corrected. Pay
+ * records and the Salaries expense go together, so the month is never half
+ * finalised.
+ */
+const reopenPayroll = async (rawMonth, adminUserId) => {
+  const { month, label, records, salaries } = await getReopenDependents(rawMonth);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.payrollRecord.deleteMany({ where: { monthYear: month } });
+    if (salaries) await tx.expense.delete({ where: { id: salaries.id } });
+  });
+
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'REOPEN_PAYROLL', {
+      month: label,
+      employees: records.length,
+      netPayRemoved: records.reduce((sum, r) => sum + Number(r.netPay), 0),
+      salariesExpenseId: salaries?.id ?? null,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+
+  return { message: `Payroll for ${label} reopened.` };
+};
+
 module.exports = {
+  assertMonthOpen,
   setBaseSalary,
   createFineRule,
   getActiveFineRule,
   createFine,
   toggleCancelFine,
+  deleteFineRule,
+  updateFine,
+  deleteFine,
+  updateBonus,
+  deleteBonus,
   createBonus,
   getSalaryBreakdownForEmployee,
   getSalarySummaryForAll,
   finalizePayroll,
+  getReopenDependents,
+  reopenPayroll,
 };

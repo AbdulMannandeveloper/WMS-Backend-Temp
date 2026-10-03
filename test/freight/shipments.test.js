@@ -284,15 +284,20 @@ describe('cancelling and deleting', () => {
     ).toBeNull();
   });
 
-  it('refuses to delete a shipment that was received, and says to cancel instead', async () => {
+  it('refuses to delete a shipment that was received, warning first', async () => {
     const shipment = await makeFreightShipment({ status: 'RECEIVED' });
     await prisma.freightReceivingRecord.create({
       data: { freightShipmentId: shipment.id, barcode: shipment.barcode },
     });
 
+    const warning = await as(admin).get(`/api/freight-shipments/${shipment.id}/dependents`);
+    expect(warning.status).toBe(200);
+    expect(warning.body.canDelete).toBe(false);
+    expect(warning.body.blocking.map((r) => r.key)).toEqual(['receiving']);
+
     const res = await as(admin).delete(`/api/freight-shipments/${shipment.id}`);
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/cancel it instead/i);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('HAS_DEPENDENTS');
 
     expect(
       await prisma.freightShipment.findUnique({ where: { id: shipment.id } }),

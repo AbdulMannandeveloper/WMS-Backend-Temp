@@ -107,8 +107,8 @@ describe('deleting a product', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/Already Gone/);
-    expect(res.body.error).toMatch(/dispatched/i);
     expect(res.body.error).toMatch(/[Dd]eactivate/);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['dispatched']);
     expect(await prisma.product.findUnique({ where: { id: product.id } })).not.toBeNull();
   });
 
@@ -141,7 +141,7 @@ describe('deleting a product', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/On A Pallet/);
-    expect(res.body.error).toMatch(/shipment/i);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['shipments']);
     expect(await prisma.product.findUnique({ where: { id: product.id } })).not.toBeNull();
   });
 
@@ -170,6 +170,26 @@ describe('deleting a product', () => {
     expect(await prisma.product.findUnique({ where: { id: product.id } })).not.toBeNull();
     expect(await prisma.inventoryLedger.count({ where: { productId: product.id } })).toBe(1);
     expect(await prisma.stockLevel.count({ where: { productId: product.id } })).toBe(1);
+  });
+
+  it('says what would be refused, and what would go, before anything is pressed', async () => {
+    const admin = await makeAdmin();
+    const { employee } = await makeEmployee();
+    const { client } = await makeClient();
+    const product = await makeProduct(client.id);
+    const location = await makeLocation();
+    await makeStockLevel(product.id, location.id, { currentQuantity: 7 });
+    const shipment = await makeShipment(employee.id, client.id);
+    await makeShipmentItem(shipment.id, product.id, location.id);
+
+    const res = await as(admin).get(`/api/products/${product.id}/dependents`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.canDelete).toBe(false);
+    expect(res.body.blocking.map((r) => r.key)).toEqual(['shipments']);
+    expect(res.body.removedWith).toEqual([
+      expect.objectContaining({ key: 'units', count: 7 }),
+    ]);
   });
 
   it('answers 404 for a product that is not there', async () => {

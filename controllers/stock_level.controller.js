@@ -12,11 +12,6 @@ const STOCK_CREATE_FIELDS = [
   "reservedQuantity",
   "arrivedTodayQuantity",
 ];
-const STOCK_UPDATE_FIELDS = [
-  "currentQuantity",
-  "reservedQuantity",
-  "arrivedTodayQuantity",
-];
 
 const createStockLevel = async (req, res) => {
   try {
@@ -24,6 +19,10 @@ const createStockLevel = async (req, res) => {
     const stockLevel = await stockLevelLogic.createStockLevel(stockLevelData);
     res.status(201).json(stockLevel);
   } catch (error) {
+    // A refusal that carries its own status (409: quantities, deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     // Handle validation errors and other issues gracefully
     if (error.message.includes("not found")) {
       return res.status(404).json({ error: error.message });
@@ -134,57 +133,33 @@ const getStockLevelByLocationId = async (req, res) => {
   }
 };
 
+// Quantities are never edited directly; both edit routes answer 409 or 404.
+// See stockLevelLogic.refuseStockEdit.
 const updateStockLevel = async (req, res) => {
   try {
-    const { id } = req.params;
-    const updateData = pick(req.body, STOCK_UPDATE_FIELDS);
-    const stockLevel = await stockLevelLogic.updateStockLevel(id, updateData);
-    if (!stockLevel) {
-      return res.status(404).json({ error: "Stock level not found." });
-    }
-    res.status(200).json(stockLevel);
+    await stockLevelLogic.refuseStockEdit({ id: req.params.id });
   } catch (error) {
-    if (error.message.includes("not found")) {
-      return res.status(404).json({ error: error.message });
-    }
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 
 const updateStockLevelByProductAndLocation = async (req, res) => {
   try {
     const { productId, locationId } = req.params;
-    const updateData = pick(req.body, STOCK_UPDATE_FIELDS);
-    const stockLevel =
-      await stockLevelLogic.updateStockLevelByProductAndLocation(
-        productId,
-        locationId,
-        updateData,
-      );
-    if (!stockLevel) {
-      return res.status(404).json({ error: "Stock level not found." });
-    }
-    res.status(200).json(stockLevel);
+    await stockLevelLogic.refuseStockEdit({ productId, locationId });
   } catch (error) {
-    if (error.message.includes("not found")) {
-      return res.status(404).json({ error: error.message });
-    }
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 
 const deleteStockLevel = async (req, res) => {
   try {
-    const { id } = req.params;
-    const stockLevel = await stockLevelLogic.deleteStockLevel(id);
-    if (!stockLevel) {
-      return res.status(404).json({ error: "Stock level not found." });
-    }
+    const stockLevel = await stockLevelLogic.deleteStockLevel(req.params.id, req.user.id);
     res
       .status(200)
       .json({ message: "Stock level deleted successfully.", stockLevel });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 

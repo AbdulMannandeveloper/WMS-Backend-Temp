@@ -8,16 +8,16 @@ const createServiceEntry = async (data) => {
   return await prisma.service.create({ data });
 };
 
-const getServiceById = async (id) => {
-  return await prisma.service.findUnique({ where: { id } });
+const getServiceById = async (id, tx) => {
+  return await (tx ?? prisma).service.findUnique({ where: { id } });
 };
 
 const updateService = async (id, data) => {
   return await prisma.service.update({ where: { id }, data });
 };
 
-const deleteService = async (id) => {
-  return await prisma.service.delete({ where: { id } });
+const deleteService = async (id, tx) => {
+  return await (tx ?? prisma).service.delete({ where: { id } });
 };
 
 module.exports = {

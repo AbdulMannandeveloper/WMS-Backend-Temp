@@ -3,6 +3,10 @@ const crypto = require('crypto');
 const userRepository = require('../repositories/user.repository');
 const clientRepository = require('../repositories/client.repository');
 const invitationTokenRepository = require('../repositories/invitation-token.repository');
+const auditLogLogic = require('./audit_log.logic');
+const { prisma } = require('../lib/prisma');
+const { invalidateCachedUser } = require('../utils/authUserCache');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { enqueueMail } = require('../utils/mailQueue');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
 
@@ -126,7 +130,14 @@ const addClient = async ({ adminId, companyName, contactName, email, mobile, pho
  * Get all clients (with their linked user data).
  */
 const getAllClients = async () => {
-  return await clientRepository.getAllClients();
+  const clients = await clientRepository.getAllClientsWithAccount();
+  // The login's state rides along so the list can show who is switched off.
+  // passwordHash is read only to tell "never accepted the invite" apart from
+  // "deactivated" — it never leaves this function.
+  return clients.map(({ user, ...client }) => ({
+    ...client,
+    accountStatus: !user?.passwordHash ? 'pending' : user.isActive ? 'active' : 'inactive',
+  }));
 };
 
 /**
@@ -164,7 +175,7 @@ const getClientById = async (clientId) => {
 /**
  * Update client details.
  */
-const updateClient = async (clientId, updateData) => {
+const updateClient = async (clientId, updateData, actorUserId) => {
   if (!clientId) {
     throw new Error('clientId is required.');
   }
@@ -187,23 +198,175 @@ const updateClient = async (clientId, updateData) => {
     return client;
   }
 
-  return await clientRepository.updateClient(clientId, dataToUpdate);
+  // The contact email is also the login. Changing one without the other left
+  // the client signing in with an address the admin had already replaced.
+  const emailChanged =
+    typeof dataToUpdate.email === 'string' && dataToUpdate.email !== client.email;
+  if (emailChanged) {
+    if (!/\S+@\S+\.\S+/.test(dataToUpdate.email)) {
+      throw new Error('Invalid email format.');
+    }
+    const taken = await userRepository.getUserByField('email', dataToUpdate.email);
+    if (taken && taken.id !== client.userId) {
+      throw new Error('A user with this email already exists.');
+    }
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    if (emailChanged) {
+      await tx.user.update({ where: { id: client.userId }, data: { email: dataToUpdate.email } });
+    }
+    return tx.client.update({ where: { id: clientId }, data: dataToUpdate });
+  });
+  if (emailChanged) {
+    await invalidateCachedUser(client.userId);
+  }
+  await auditLogLogic.auditChange(
+    actorUserId,
+    'UPDATE_CLIENT',
+    { clientId, companyName: updated.companyName },
+    client,
+    updated,
+    Object.keys(dataToUpdate),
+  );
+  return updated;
 };
 
 /**
- * Delete client record.
+ * Everything that still refers to a client, for the warning shown before a
+ * delete. See utils/dependents.js for what blocking and removedWith mean.
+ *
+ * Products block rather than cascade. The FK would take them and their stock
+ * silently, but one with movement history cannot go at all (the ledger is
+ * Restrict), and one with stock on a shelf should not vanish without somebody
+ * deciding it should. Product delete already knows how to judge each one.
  */
-const deleteClient = async (clientId) => {
+const getClientDependents = async (clientId, tx) => {
+  const db = tx ?? prisma;
+  const client = await db.client.findUnique({ where: { id: clientId } });
+  if (!client) {
+    const err = new Error('Client not found.');
+    err.status = 404;
+    throw err;
+  }
+
+  const [products, shipments, fbaShipments, invoices, returns, ledgerRows, clientServices] =
+    await Promise.all([
+      db.product.count({ where: { clientId } }),
+      db.shipment.count({ where: { clientId } }),
+      db.fbaShipment.count({ where: { clientId } }),
+      db.monthlyInvoice.count({ where: { clientId } }),
+      db.productReturn.count({ where: { clientId } }),
+      db.inventoryLedger.count({ where: { userId: client.userId } }),
+      db.clientService.count({ where: { clientId } }),
+    ]);
+
+  return {
+    client,
+    report: buildReport({
+      blocking: [
+        { key: 'products', label: 'Products', count: products, where: '/inventory' },
+        { key: 'shipments', label: 'Shipments', count: shipments, where: '/shipments' },
+        { key: 'fbaShipments', label: 'Bulk shipments', count: fbaShipments, where: '/fba' },
+        { key: 'invoices', label: 'Invoices', count: invoices, where: '/invoices' },
+        { key: 'returns', label: 'Returns', count: returns, where: '/returns' },
+        {
+          key: 'ledger',
+          label: 'Stock movements recorded by this login',
+          count: ledgerRows,
+          note: 'Ledger history is permanent. Deactivate this client instead.',
+        },
+      ],
+      removedWith: [
+        { key: 'clientServices', label: 'Agreed service rates', count: clientServices },
+      ],
+    }),
+  };
+};
+
+/**
+ * Switches a client's login off or back on, keeping every record.
+ *
+ * The reversible alternative to deleting, and the only option once a client has
+ * history. Switching off ends the sessions they already hold.
+ */
+const setClientActive = async (clientId, isActive, actorUserId) => {
+  if (typeof isActive !== 'boolean') {
+    throw new Error('isActive must be true or false.');
+  }
+  const client = await clientRepository.getClientByField('id', clientId);
+  if (!client) {
+    const err = new Error('Client not found.');
+    err.status = 404;
+    throw err;
+  }
+  const user = await userRepository.getUserByField('id', client.userId);
+  if (!user?.passwordHash) {
+    throw new Error(
+      'This client has not set up their password yet, so there is no login to deactivate. Delete the client instead if they are not needed.',
+    );
+  }
+
+  if (user.isActive !== isActive) {
+    await userRepository.updateUser(user.id, {
+      isActive,
+      // Bumping the version is what ends live sessions; see User.tokenVersion.
+      ...(isActive ? {} : { tokenVersion: (user.tokenVersion ?? 0) + 1 }),
+    });
+    await invalidateCachedUser(user.id);
+
+    if (actorUserId) {
+      await auditLogLogic.createAuditLog(
+        actorUserId,
+        isActive ? 'REACTIVATE_CLIENT' : 'DEACTIVATE_CLIENT',
+        { clientId, companyName: client.companyName },
+      ).catch((err) => console.error('Audit log error:', err.message));
+    }
+  }
+
+  return { ...client, accountStatus: isActive ? 'active' : 'inactive' };
+};
+
+/**
+ * Deletes a client that has nothing left on record.
+ *
+ * Deleting the login is what deletes the client: Client.user cascades, and so
+ * do their agreed rates, invitation tokens and OTPs. Deleting only the Client
+ * row, as this used to, left a client-role login behind with no client on it.
+ *
+ * @throws {HasDependentsError} (409) while anything in getClientDependents blocks
+ */
+const deleteClient = async (clientId, actorUserId) => {
   if (!clientId) {
     throw new Error('clientId is required.');
   }
 
-  const client = await clientRepository.getClientByField('id', clientId);
-  if (!client) {
-    throw new Error('Client not found.');
+  const client = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, 'clients', clientId);
+    const { client, report } = await getClientDependents(clientId, tx);
+    assertDeletable(client.companyName, report, { deactivatable: true });
+
+    // Their audit entries outlive the login (AuditLog.user is SetNull), so
+    // they are named before the link is cleared.
+    await tx.auditLog.updateMany({
+      where: { userId: client.userId },
+      data: { actorName: `${client.contactName} (${client.companyName}, deleted)`.slice(0, 120) },
+    });
+    await tx.user.delete({ where: { id: client.userId } });
+    return client;
+  });
+  await invalidateCachedUser(client.userId);
+
+  if (actorUserId) {
+    await auditLogLogic.createAuditLog(actorUserId, 'DELETE_CLIENT', {
+      clientId,
+      clientUniqueNumber: client.clientUniqueNumber,
+      companyName: client.companyName,
+      email: client.email,
+    }).catch((err) => console.error('Audit log error:', err.message));
   }
 
-  return await clientRepository.deleteClient(clientId);
+  return client;
 };
 
 module.exports = {
@@ -213,5 +376,7 @@ module.exports = {
   getClientByUserId,
   getClientById,
   updateClient,
+  getClientDependents,
+  setClientActive,
   deleteClient,
 };

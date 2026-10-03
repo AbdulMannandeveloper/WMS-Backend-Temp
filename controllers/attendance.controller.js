@@ -95,10 +95,14 @@ const getAttendanceLogByField = async (req, res) => {
 
 const updateAttendanceLog = async (req, res) => {
   try {
-    const attendanceLog = await attendanceLogLogic.updateAttendanceLog(req.params.id, pick(req.body, ATTENDANCE_UPDATE_FIELDS));
+    const attendanceLog = await attendanceLogLogic.updateAttendanceLog(
+      req.params.id,
+      pick(req.body, ATTENDANCE_UPDATE_FIELDS),
+      req.user.id,
+    );
     res.status(200).json(attendanceLog);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 
@@ -121,10 +125,10 @@ const updateLogoutTimestamp = async (req, res) => {
 
 const deleteAttendanceLog = async (req, res) => {
   try {
-    const attendanceLog = await attendanceLogLogic.deleteAttendanceLog(req.params.id);
+    const attendanceLog = await attendanceLogLogic.deleteAttendanceLog(req.params.id, req.user.id);
     res.status(200).json(attendanceLog);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 

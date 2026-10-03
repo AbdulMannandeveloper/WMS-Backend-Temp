@@ -40,6 +40,10 @@ const includeRelations = {
     include: {
       product: true,
       sourceLocation: true,
+      // How much of returnedQuantity the Returns screen booked. The rest came
+      // back through the line return button, which is undone from the
+      // shipment itself (shipment.logic undoLineReturns).
+      productReturns: { select: { quantity: true } },
     },
   },
 };

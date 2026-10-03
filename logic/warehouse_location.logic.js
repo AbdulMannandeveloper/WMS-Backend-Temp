@@ -6,6 +6,9 @@ const {
   searchFilter,
 } = require("../utils/queryFilters");
 const warehouseLocationClassRepository = require("../repositories/warehouse_location_class.repository");
+const auditLogLogic = require("./audit_log.logic");
+const { prisma } = require("../lib/prisma");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 
 const createWarehouseLocation = async (locationData) => {
   const locationName = resolveLocationName(locationData);
@@ -17,6 +20,8 @@ const createWarehouseLocation = async (locationData) => {
   const parentLocationId = locationData.parentLocationId ?? null;
   const parentLocation = await resolveParentLocation(parentLocationId);
 
+  assertClassOpen(locationClass);
+  assertParentOpen(parentLocation);
   validateParentClass(locationClass, parentLocation);
 
   const existingLocation =
@@ -142,6 +147,10 @@ const updateWarehouseLocation = async (id, updateData) => {
     : currentLocation.parentLocationId;
   const parentLocation = await resolveParentLocation(nextParentLocationId);
 
+  // Only a change is checked: renaming a location of a deactivated class, or
+  // inside a deactivated parent, is still fine.
+  if (locationClass.id !== currentLocation.locationClassId) assertClassOpen(locationClass);
+  if (nextParentLocationId !== currentLocation.parentLocationId) assertParentOpen(parentLocation);
   validateParentClass(locationClass, parentLocation);
 
   if (
@@ -179,18 +188,259 @@ const updateWarehouseLocation = async (id, updateData) => {
   );
 };
 
-const deleteWarehouseLocation = async (id) => {
-  const childLocations =
-    await warehouseLocationRepository.getWarehouseLocationByField(
-      "parentLocationId",
-      id,
-    );
+const notFound = (what) => {
+  const err = new Error(`${what} not found`);
+  err.status = 404;
+  return err;
+};
 
-  if (childLocations && childLocations.length > 0) {
-    throw new Error("Cannot delete location with child locations");
+const refuse = (message) => {
+  const err = new Error(message);
+  err.status = 409;
+  return err;
+};
+
+/** Nothing new takes a deactivated class. */
+const assertClassOpen = (locationClass) => {
+  if (locationClass && locationClass.isActive === false) {
+    throw refuse(`The class ${locationClass.name} is deactivated, so no new location can take it.`);
+  }
+};
+
+/** Nothing new goes inside a deactivated location. */
+const assertParentOpen = (parentLocation) => {
+  if (parentLocation && parentLocation.isActive === false) {
+    throw refuse(`${parentLocation.locationName} is deactivated, so nothing new can go inside it.`);
+  }
+};
+
+const parseActive = (value) => {
+  if (typeof value !== "boolean") {
+    throw new Error("isActive must be true or false.");
+  }
+  return value;
+};
+
+/**
+ * Switches a location off or back on. Off, it keeps its stock history but no
+ * stock can be put into it and nothing new can go inside it — the way out
+ * for one that has held stock and so can never be deleted.
+ *
+ * Only an empty location with no active locations inside it can be switched
+ * off: stock on a shelf nobody can choose is stock nobody finds. Switching
+ * back on needs its parent and its class on, or it would be an open shelf in
+ * a closed aisle.
+ */
+const setWarehouseLocationActive = async (id, rawIsActive, actorUserId) => {
+  const isActive = parseActive(rawIsActive);
+  const location = await prisma.warehouseLocation.findUnique({
+    where: { id },
+    include: { parentLocation: true, locationClass: true },
+  });
+  if (!location) throw notFound("Location");
+  if (location.isActive === isActive) return location;
+
+  if (isActive) {
+    if (location.parentLocation && !location.parentLocation.isActive) {
+      throw refuse(
+        `${location.parentLocation.locationName}, which it sits in, is deactivated. Reactivate that first.`,
+      );
+    }
+    if (!location.locationClass.isActive) {
+      throw refuse(`Its class, ${location.locationClass.name}, is deactivated. Reactivate that first.`);
+    }
+  } else {
+    const [stocked, activeChildren] = await Promise.all([
+      prisma.stockLevel.count({
+        where: {
+          locationId: id,
+          OR: [{ currentQuantity: { gt: 0 } }, { reservedQuantity: { gt: 0 } }],
+        },
+      }),
+      prisma.warehouseLocation.count({ where: { parentLocationId: id, isActive: true } }),
+    ]);
+    if (stocked > 0) {
+      throw refuse(
+        `${location.locationName} still holds stock for ${stocked} product(s). Move it somewhere else first.`,
+      );
+    }
+    if (activeChildren > 0) {
+      throw refuse(
+        `${location.locationName} has ${activeChildren} active location(s) inside it. Deactivate those first.`,
+      );
+    }
   }
 
-  return await warehouseLocationRepository.deleteWarehouseLocation(id);
+  const updated = await prisma.warehouseLocation.update({ where: { id }, data: { isActive } });
+  await auditLogLogic.auditQuietly(actorUserId, isActive ? "REACTIVATE_LOCATION" : "DEACTIVATE_LOCATION", {
+    locationId: id,
+    locationName: location.locationName,
+    path: location.materializedPath,
+  });
+  return updated;
+};
+
+/**
+ * Switches a location class off or back on. Off, existing locations keep it
+ * but no new one can take it. Off needs no active location of this class and
+ * no active class inside it; on needs its parent class on.
+ */
+const setWarehouseLocationClassActive = async (id, rawIsActive, actorUserId) => {
+  const isActive = parseActive(rawIsActive);
+  const locationClass = await prisma.warehouseLocationClass.findUnique({
+    where: { id },
+    include: { parentClass: true },
+  });
+  if (!locationClass) throw notFound("Location class");
+  if (locationClass.isActive === isActive) return locationClass;
+
+  if (isActive) {
+    if (locationClass.parentClass && !locationClass.parentClass.isActive) {
+      throw refuse(`Its parent class, ${locationClass.parentClass.name}, is deactivated. Reactivate that first.`);
+    }
+  } else {
+    const [activeLocations, activeChildClasses] = await Promise.all([
+      prisma.warehouseLocation.count({ where: { locationClassId: id, isActive: true } }),
+      prisma.warehouseLocationClass.count({ where: { parentClassId: id, isActive: true } }),
+    ]);
+    if (activeLocations > 0) {
+      throw refuse(
+        `${activeLocations} active location(s) are of the class ${locationClass.name}. Deactivate them or change their class first.`,
+      );
+    }
+    if (activeChildClasses > 0) {
+      throw refuse(
+        `${activeChildClasses} active class(es) sit inside ${locationClass.name}. Deactivate them first.`,
+      );
+    }
+  }
+
+  const updated = await prisma.warehouseLocationClass.update({ where: { id }, data: { isActive } });
+  await auditLogLogic.auditQuietly(
+    actorUserId,
+    isActive ? "REACTIVATE_LOCATION_CLASS" : "DEACTIVATE_LOCATION_CLASS",
+    { locationClassId: id, name: locationClass.name },
+  );
+  return updated;
+};
+
+/**
+ * Everything that still refers to a location, for the warning shown before a
+ * delete. See utils/dependents.js for what blocking and removedWith mean.
+ *
+ * Before this only child locations were checked, and anything else surfaced as
+ * a foreign-key error — every relation below is Restrict.
+ *
+ * Stock movement history is permanent, so a location that has ever held stock
+ * stays: it can be renamed, not deleted. Empty stock rows (a product that was
+ * here and has all gone) are not history and go with the location.
+ */
+const getWarehouseLocationDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const location = await db.warehouseLocation.findUnique({ where: { id } });
+  if (!location) {
+    throw notFound("Location");
+  }
+
+  const occupied = {
+    locationId: id,
+    OR: [{ currentQuantity: { gt: 0 } }, { reservedQuantity: { gt: 0 } }],
+  };
+  const [children, stocked, emptySlots, shipmentLines, fbaLines, returns, movements] =
+    await Promise.all([
+      db.warehouseLocation.count({ where: { parentLocationId: id } }),
+      db.stockLevel.count({ where: occupied }),
+      db.stockLevel.count({ where: { locationId: id, NOT: occupied } }),
+      db.shipmentItem.count({ where: { sourceLocationId: id } }),
+      db.fbaShipmentItem.count({ where: { sourceLocationId: id } }),
+      db.productReturn.count({ where: { restockLocationId: id } }),
+      db.inventoryLedger.count({
+        where: { OR: [{ fromLocationId: id }, { toLocationId: id }] },
+      }),
+    ]);
+
+  return {
+    location,
+    report: buildReport({
+      blocking: [
+        {
+          key: "children",
+          label: "Locations inside it",
+          count: children,
+          where: "/warehouse-locations",
+          note: "Delete or move those first.",
+        },
+        {
+          key: "stock",
+          label: "Products with stock here",
+          count: stocked,
+          where: "/inventory",
+          note: "Move the stock somewhere else first.",
+        },
+        {
+          key: "shipments",
+          label: "Shipment lines picked from here",
+          count: shipmentLines,
+          where: "/shipments",
+        },
+        {
+          key: "fbaShipments",
+          label: "Bulk shipment lines picked from here",
+          count: fbaLines,
+          where: "/fba",
+        },
+        {
+          key: "returns",
+          label: "Returns restocked here",
+          count: returns,
+          where: "/returns",
+        },
+        {
+          key: "ledger",
+          label: "Stock movements in or out",
+          count: movements,
+          note: "Stock history is permanent. Deactivate this location instead of deleting it.",
+        },
+      ],
+      removedWith: [
+        { key: "emptySlots", label: "Empty stock slots", count: emptySlots },
+      ],
+    }),
+  };
+};
+
+/**
+ * @throws {HasDependentsError} (409) while anything in getWarehouseLocationDependents blocks
+ */
+const deleteWarehouseLocation = async (id, actorUserId) => {
+  // Locked first: a check-in or move writes its ledger line, which names this
+  // location, before it touches stock — so it waits here and cannot fill a row
+  // that is about to be deleted as empty.
+  const location = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "warehouse_locations", id);
+    const { location, report } = await getWarehouseLocationDependents(id, tx);
+    assertDeletable(location.locationName, report, { deactivatable: true });
+
+    // StockLevel.location is Restrict, so the empty rows have to go first.
+    // Only empty ones, whatever the check said: a full row stops the delete.
+    await tx.stockLevel.deleteMany({
+      where: { locationId: id, currentQuantity: 0, reservedQuantity: 0 },
+    });
+    await tx.warehouseLocation.delete({ where: { id } });
+    return location;
+  });
+
+  if (actorUserId) {
+    await auditLogLogic
+      .createAuditLog(actorUserId, "DELETE_LOCATION", {
+        locationId: id,
+        locationName: location.locationName,
+        path: location.materializedPath,
+      })
+      .catch((err) => console.error("Audit log error:", err.message));
+  }
+
+  return location;
 };
 
 const createWarehouseLocationClass = async (classData) => {
@@ -206,6 +456,9 @@ const createWarehouseLocationClass = async (classData) => {
 
   if (parentClassId && !parentClass) {
     throw new Error("Parent location class does not exist");
+  }
+  if (parentClass && parentClass.isActive === false) {
+    throw refuse(`${parentClass.name} is deactivated, so no new class can sit inside it.`);
   }
 
   const existingClass =
@@ -223,8 +476,8 @@ const createWarehouseLocationClass = async (classData) => {
   }
 
   return await warehouseLocationClassRepository.createWarehouseLocationClass({
-    ...classData,
     name: className,
+    description: classData.description,
     parentClassId,
   });
 };
@@ -286,37 +539,83 @@ const updateWarehouseLocationClass = async (id, updateData) => {
   if (nextParentClassId) {
     await assertNoClassCycle(id, nextParentClassId);
   }
+  if (nextParentClassId && nextParentClassId !== currentClass.parentClassId) {
+    const nextParent = await resolveLocationClassById(nextParentClassId);
+    if (nextParent && nextParent.isActive === false) {
+      throw refuse(`${nextParent.name} is deactivated, so no class can be moved inside it.`);
+    }
+  }
 
+  // Only the fields a class has: the body used to be spread in whole, which
+  // would have let an edit switch isActive past its admin-only route.
   return await warehouseLocationClassRepository.updateWarehouseLocationClass(
     id,
     {
-      ...updateData,
+      ...("description" in updateData ? { description: updateData.description } : {}),
       name: nextName,
       parentClassId: nextParentClassId ?? null,
     },
   );
 };
 
-const deleteWarehouseLocationClass = async (id) => {
-  const childClasses =
-    await warehouseLocationClassRepository.getWarehouseLocationClassByField(
-      "parentClassId",
-      id,
-    );
-  const locations = await warehouseLocationRepository.getWarehouseLocationByField(
-    "locationClassId",
-    id,
-  );
-
-  if (childClasses && childClasses.length > 0) {
-    throw new Error("Cannot delete a location class that has child classes");
+/** Child classes and the locations of this kind, for the warning before a delete. */
+const getWarehouseLocationClassDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const locationClass = await db.warehouseLocationClass.findUnique({ where: { id } });
+  if (!locationClass) {
+    throw notFound("Location class");
   }
 
-  if (locations && locations.length > 0) {
-    throw new Error("Cannot delete a location class that is assigned to locations");
+  const [childClasses, locations] = await Promise.all([
+    db.warehouseLocationClass.count({ where: { parentClassId: id } }),
+    db.warehouseLocation.count({ where: { locationClassId: id } }),
+  ]);
+
+  return {
+    locationClass,
+    report: buildReport({
+      blocking: [
+        {
+          key: "childClasses",
+          label: "Classes that sit inside it",
+          count: childClasses,
+          where: "/warehouse-locations",
+          note: "Delete them, or give them a different parent class.",
+        },
+        {
+          key: "locations",
+          label: "Locations of this class",
+          count: locations,
+          where: "/warehouse-locations",
+          note: "Delete them, or change their class.",
+        },
+      ],
+    }),
+  };
+};
+
+/**
+ * @throws {HasDependentsError} (409) while classes or locations still use it
+ */
+const deleteWarehouseLocationClass = async (id, actorUserId) => {
+  const locationClass = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "warehouse_location_classes", id);
+    const { locationClass, report } = await getWarehouseLocationClassDependents(id, tx);
+    assertDeletable(locationClass.name, report, { deactivatable: true });
+    await warehouseLocationClassRepository.deleteWarehouseLocationClass(id, tx);
+    return locationClass;
+  });
+
+  if (actorUserId) {
+    await auditLogLogic
+      .createAuditLog(actorUserId, "DELETE_LOCATION_CLASS", {
+        locationClassId: id,
+        name: locationClass.name,
+      })
+      .catch((err) => console.error("Audit log error:", err.message));
   }
 
-  return await warehouseLocationClassRepository.deleteWarehouseLocationClass(id);
+  return locationClass;
 };
 
 const resolveLocationName = (payload = {}, fallbackValue) => {
@@ -413,18 +712,11 @@ const createMaterializedPath = (locationName, parentLocationPath) => {
   return nameSlug;
 };
 
-const buildWarehouseLocationPayload = (sourceData, normalizedFields) => {
-  const payload = {
-    ...sourceData,
-    ...normalizedFields,
-  };
-
-  delete payload.class;
-  delete payload.classId;
-  delete payload.name;
-
-  return payload;
-};
+// Only the fields a location has. The request body used to be spread in whole,
+// which would have let an edit switch isActive past its admin-only route.
+const buildWarehouseLocationPayload = (_sourceData, normalizedFields) => ({
+  ...normalizedFields,
+});
 
 const normalizeText = (value) => {
   if (typeof value !== "string") {
@@ -489,10 +781,14 @@ module.exports = {
   getWarehouseLocationByField,
   getWarehouseLocationTree,
   updateWarehouseLocation,
+  getWarehouseLocationDependents,
   deleteWarehouseLocation,
+  setWarehouseLocationActive,
   createWarehouseLocationClass,
   getAllWarehouseLocationClasses,
   getWarehouseLocationClassByField,
   updateWarehouseLocationClass,
+  getWarehouseLocationClassDependents,
   deleteWarehouseLocationClass,
+  setWarehouseLocationClassActive,
 };

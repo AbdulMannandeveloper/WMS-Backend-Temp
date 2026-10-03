@@ -56,6 +56,9 @@ router.put('/:id', staffWith('update'), productController.updateProduct);
 // Deactivate is a soft delete in effect, but it is reversible and it is what
 // staff do to a discontinued SKU all day. It stays an update.
 router.patch('/:id', staffWith('update'), productController.deactivateProduct);
+// What would stop a delete, asked before pressing it — open to exactly who
+// may delete.
+router.get('/:id/dependents', staffWith('delete'), productController.getProductDependents);
 router.delete('/:id', staffWith('delete'), productController.deleteProduct);
 
 router.get('/:id/stock', [staffOrClient, requirePermission('inventory', 'read')], productController.getProductandStockLevelById);
