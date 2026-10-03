@@ -1,4 +1,5 @@
 const userLogic = require('../logic/user.logic');
+const { dependentsBody } = require('../utils/dependents');
 
 const addNewUser = async (req, res) => {
     try {
@@ -33,20 +34,34 @@ const getUserByEmail = async (req, res) => {
 
 const updateUser = async (req, res) => {
     try {
-        const result = await userLogic.updateUser(req.params.id, req.body);
+        const result = await userLogic.updateUser(req.params.id, req.body, req.user.id);
         res.status(200).json(result);
     } catch (err) {
         res.status(400).json({ error: err.message });
+    }
+};
+
+// What would stop a delete, asked before the admin presses it.
+const getUserDependents = async (req, res) => {
+    try {
+        const { report } = await userLogic.getUserDependents(req.params.id);
+        res.status(200).json(report);
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
     }
 };
 
 const deleteUser = async (req, res) => {
     try {
-        const result = await userLogic.deleteUser(req.params.id);
-        res.status(200).json(result);
+        // Was the deleted row itself, password hash included.
+        const { name } = await userLogic.deleteUser(req.params.id, req.user.id);
+        res.status(200).json({ message: `${name} was deleted.` });
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        if (err.code === 'HAS_DEPENDENTS') {
+            return res.status(409).json(dependentsBody(err));
+        }
+        res.status(err.status || 400).json({ error: err.message });
     }
 };
 
-module.exports = { addNewUser, getAllUsers, getUserByEmail, updateUser, deleteUser };
+module.exports = { addNewUser, getAllUsers, getUserByEmail, updateUser, getUserDependents, deleteUser };

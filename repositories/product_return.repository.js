@@ -8,6 +8,7 @@ const includeRelations = {
   client: { select: { id: true, companyName: true } },
   product: { select: { id: true, skuCode: true, productName: true, barcode: true } },
   shipment: { select: { id: true, reference: true } },
+  fbaShipment: { select: { id: true, reference: true } },
   restockLocation: { select: { id: true, locationName: true, materializedPath: true } },
   // What this return has cost the client so far. Followed by the backlink, so a
   // line an admin later edits or removes on the invoice is reflected here too.
@@ -119,8 +120,82 @@ const addReturnedQuantity = async (shipmentItemId, amount, tx) =>
       AND returned_quantity + ${amount} <= quantity
   `;
 
+/**
+ * Dispatched shipment lines carrying a product, most recent first, optionally
+ * narrowed to shipment references containing `q`. For linking a parcel whose
+ * label matched nothing to the shipment the operator recognises.
+ *
+ * Whether anything is still out on a line compares two columns, which Prisma
+ * cannot do in a where clause, so the caller filters; `take` is generous.
+ */
+const findDispatchedLinesForProduct = async (productId, { q, take = 100 } = {}, tx) =>
+  await db(tx).shipmentItem.findMany({
+    where: {
+      productId,
+      shipment: {
+        status: 'DISPATCHED',
+        ...(q ? { reference: { contains: q, mode: 'insensitive' } } : {}),
+      },
+    },
+    select: {
+      id: true,
+      quantity: true,
+      returnedQuantity: true,
+      sourceLocationId: true,
+      trackingId: true,
+      shipment: {
+        select: { id: true, reference: true, clientId: true, createdAt: true, trackingId: true },
+      },
+    },
+    orderBy: [{ shipment: { createdAt: 'desc' } }, { id: 'desc' }],
+    take,
+  });
+
+/** addReturnedQuantity for a bulk shipment line. */
+const addBulkReturnedQuantity = async (fbaShipmentItemId, amount, tx) =>
+  await db(tx).$executeRaw`
+    UPDATE fba_shipment_items
+    SET returned_quantity = returned_quantity + ${amount}
+    WHERE id = ${fbaShipmentItemId}::uuid
+      AND returned_quantity + ${amount} <= quantity
+  `;
+
+/** takeBackReturnedQuantity for a bulk shipment line. */
+const takeBackBulkReturnedQuantity = async (fbaShipmentItemId, amount, tx) => {
+  const { count } = await db(tx).fbaShipmentItem.updateMany({
+    where: { id: fbaShipmentItemId, returnedQuantity: { gte: amount } },
+    data: { returnedQuantity: { decrement: amount } },
+  });
+  return count;
+};
+
+/**
+ * The reverse of addReturnedQuantity, for a return being deleted: counts
+ * `amount` units of the line as still out — only if at least that many are
+ * counted as back. Returns the number of rows changed: 0 means the count has
+ * moved underneath.
+ */
+const takeBackReturnedQuantity = async (shipmentItemId, amount, tx) => {
+  const { count } = await db(tx).shipmentItem.updateMany({
+    where: { id: shipmentItemId, returnedQuantity: { gte: amount } },
+    data: { returnedQuantity: { decrement: amount } },
+  });
+  return count;
+};
+
+const updateReturn = async (id, data, tx) =>
+  await db(tx).productReturn.update({ where: { id }, data, include: includeRelations });
+
+const deleteReturn = async (id, tx) => await db(tx).productReturn.delete({ where: { id } });
+
 module.exports = {
   createReturn,
+  updateReturn,
+  deleteReturn,
+  takeBackReturnedQuantity,
+  addBulkReturnedQuantity,
+  takeBackBulkReturnedQuantity,
+  findDispatchedLinesForProduct,
   getReturnById,
   getReturns,
   getLatestReferencesInSeries,

@@ -21,6 +21,8 @@ router.get('/categories', staffWith('read'), fbaController.listCategories);
 router.post('/categories', adminOnly, fbaController.createCategory);
 router.put('/categories/:id', adminOnly, fbaController.updateCategory);
 router.delete('/categories/:id', adminOnly, fbaController.deleteCategory);
+// What a category delete would refuse on — the same gate as the delete.
+router.get('/categories/:id/dependents', adminOnly, fbaController.getCategoryDependents);
 
 // The services a client can have attached — for the create form (fba:create)
 // and for changing them afterwards (fba:update).
@@ -94,5 +96,12 @@ router.post('/:id/cancel', staffWith('delete'), fbaController.cancelShipment);
 // needs no ordering care against /categories/:id: that path is two segments
 // and /:id is one.)
 router.delete('/:id', adminOnly, fbaController.deleteShipment);
+// What that delete would refuse on and undo, asked first — the same gate.
+router.get('/:id/dependents', adminOnly, fbaController.getShipmentDependents);
+
+// Undoing what the line Return button booked before it made return records —
+// removing returns, so it sits with delete, as the outbound undo does.
+router.get('/:id/line-returns/dependents', adminOnly, fbaController.getLineReturnDependents);
+router.delete('/:id/line-returns', adminOnly, fbaController.undoLineReturns);
 
 module.exports = router;

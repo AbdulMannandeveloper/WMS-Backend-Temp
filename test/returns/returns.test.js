@@ -337,7 +337,7 @@ describe('inspecting and restocking a return', () => {
     expect(row.status).toBe('RECORDED');
   });
 
-  it('does not put a linked line back twice when its shipment is later deleted', async () => {
+  it('stops its shipment being deleted until the return is dealt with', async () => {
     const s = await makeWarehouseScenario({ quantity: 10 });
     const { shipment } = await dispatchWithTracking(s, { quantity: 5 });
     // 10 - 5 dispatched.
@@ -353,10 +353,13 @@ describe('inspecting and restocking a return', () => {
       .send({ locationId: s.location.id });
     expect(await onHandAt(s.product.id, s.location.id)).toBe(7);
 
-    await as(s.admin).delete(`/api/shipments/${shipment.id}`);
+    const res = await as(s.admin).delete(`/api/shipments/${shipment.id}`);
 
-    // The delete restores only the 3 still out, not all 5.
-    expect(await onHandAt(s.product.id, s.location.id)).toBe(10);
+    // Refused, and nothing moved: the return names the shipment and carries
+    // its own charges, so it goes first.
+    expect(res.status).toBe(409);
+    expect(res.body.dependents.blocking.map((r) => r.key)).toEqual(['returns']);
+    expect(await onHandAt(s.product.id, s.location.id)).toBe(7);
   });
 });
 

@@ -64,12 +64,12 @@ const getAttendanceLogFirstByField = async (field, value) => {
   return await prismaAttendanceLog.findFirst({ where: { [field]: value } });
 };
 
-const updateAttendanceLog = async (id, updateData) => {
-  return await prismaAttendanceLog.update({ where: { id }, data: updateData });
+const updateAttendanceLog = async (id, updateData, tx) => {
+  return await (tx ? tx.employeeAttendanceLog : prismaAttendanceLog).update({ where: { id }, data: updateData });
 };
 
-const deleteAttendanceLog = async (id) => {
-  return await prismaAttendanceLog.delete({ where: { id } });
+const deleteAttendanceLog = async (id, tx) => {
+  return await (tx ? tx.employeeAttendanceLog : prismaAttendanceLog).delete({ where: { id } });
 };
 
 module.exports = {

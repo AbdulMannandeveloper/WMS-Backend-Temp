@@ -1,6 +1,7 @@
 const warehhouseLocationLogic = require("../logic/warehouse_location.logic");
 const { paginatedResponse } = require("../utils/pagination");
 const { buildListQuery } = require("../utils/queryFilters");
+const { dependentsBody } = require("../utils/dependents");
 const { listError } = require("../utils/listResponse");
 
 const createWarehouseLocation = async (req, res) => {
@@ -10,6 +11,10 @@ const createWarehouseLocation = async (req, res) => {
       await warehhouseLocationLogic.createWarehouseLocation(locationData);
     res.status(201).json(newLocation);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     // Handle validation errors and other exceptions
     if (
       error.message.includes("required") ||
@@ -81,6 +86,10 @@ const updateWarehouseLocation = async (req, res) => {
       await warehhouseLocationLogic.updateWarehouseLocation(id, updateData);
     res.status(200).json(updatedLocation);
   } catch (error) {
+    // A refusal that carries its own status (409: deactivated) says so.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     console.error("Error updating warehouse location:", error);
     if (
       error.message.includes("Invalid") ||
@@ -94,15 +103,31 @@ const updateWarehouseLocation = async (req, res) => {
   }
 };
 
+// What would stop a delete, asked before the admin presses it.
+const getWarehouseLocationDependents = async (req, res) => {
+  try {
+    const { report } = await warehhouseLocationLogic.getWarehouseLocationDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : "An unexpected error occurred" });
+  }
+};
+
 const deleteWarehouseLocation = async (req, res) => {
   try {
     const { id } = req.params;
-    await warehhouseLocationLogic.deleteWarehouseLocation(id);
+    await warehhouseLocationLogic.deleteWarehouseLocation(id, req.user.id);
     res.status(204).send();
   } catch (error) {
+    if (error.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(error));
+    }
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     console.error("Error deleting warehouse location:", error);
 
-    // Handle database constraint errors (e.g., foreign key violations)
+    // A race past the dependents check still lands on a foreign key.
     if (error.code === "P2003") {
       res.status(400).json({
         error:
@@ -125,12 +150,28 @@ const getWarehouseLocationTree = async (req, res) => {
   }
 };
 
+// Deactivating keeps the location and its history; nothing new goes into it.
+const setWarehouseLocationActive = async (req, res) => {
+  try {
+    const location = await warehhouseLocationLogic.setWarehouseLocationActive(
+      req.params.id,
+      req.body?.isActive,
+      req.user.id,
+    );
+    res.status(200).json(location);
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
+  }
+};
+
 module.exports = {
+  setWarehouseLocationActive,
   getWarehouseLocationSummary,
   createWarehouseLocation,
   getAllWarehouseLocations,
   getWarehouseLocationByField,
   getWarehouseLocationTree,
   updateWarehouseLocation,
+  getWarehouseLocationDependents,
   deleteWarehouseLocation,
 };

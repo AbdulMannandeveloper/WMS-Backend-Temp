@@ -5,6 +5,7 @@ const stockLevelRepository = require("../repositories/stock_level.repository");
 const auditLogLogic = require("./audit_log.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const { assertAllowedField } = require("../utils/pick");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 
 const PRODUCT_QUERY_FIELDS = [
   "id",
@@ -252,6 +253,76 @@ const deactivateProduct = async (id, actorUserId) => {
 const OUTBOUND_MOVEMENTS = ["CHECKOUT", "RETURN"];
 
 /**
+ * Everything that still refers to a product, for the warning shown before a
+ * delete. See utils/dependents.js for what blocking and removedWith mean, and
+ * deleteProduct below for where the line is drawn.
+ *
+ * Bulk shipment lines were missing from the old refusals: FbaShipmentItem.product
+ * is Restrict, so a product on one failed on the foreign key instead.
+ *
+ * @returns {Promise<null | object>} null when there is no such product
+ */
+const getProductDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const product = await prodcutRepository.getProductById(id, tx);
+  if (!product) {
+    return null;
+  }
+
+  const [onShipments, onFbaShipments, returned, shipped, stockLevels, movementsRemoved] =
+    await Promise.all([
+      db.shipmentItem.count({ where: { productId: id } }),
+      db.fbaShipmentItem.count({ where: { productId: id } }),
+      // A return is a record of what a client was charged for handling these
+      // goods, and product_returns.product_id is Restrict.
+      db.productReturn.count({ where: { productId: id } }),
+      db.inventoryLedger.count({
+        where: { productId: id, movementType: { in: OUTBOUND_MOVEMENTS } },
+      }),
+      // Counted before the delete, because afterwards there is nothing to count.
+      stockLevelRepository.getStockLevelByField("productId", id, tx),
+      db.inventoryLedger.count({ where: { productId: id } }),
+    ]);
+
+  const unitsRemoved = stockLevels.reduce(
+    (sum, level) => sum + (level.currentQuantity || 0),
+    0,
+  );
+
+  return {
+    product,
+    stockLevels,
+    unitsRemoved,
+    movementsRemoved,
+    report: buildReport({
+      blocking: [
+        { key: "shipments", label: "Shipments it is on", count: onShipments, where: "/shipments" },
+        { key: "fbaShipments", label: "Bulk shipments it is on", count: onFbaShipments, where: "/fba" },
+        { key: "returns", label: "Returns on record", count: returned, where: "/returns" },
+        {
+          key: "dispatched",
+          label: "Dispatches and returns in its history",
+          count: shipped,
+          note: "It has left the building and been billed for. Deactivate it instead.",
+        },
+      ],
+      removedWith: [
+        {
+          key: "units",
+          label: "Units on the shelf, removed without a stock movement",
+          count: unitsRemoved,
+        },
+        {
+          key: "movements",
+          label: "Stock movements in its history (check-ins, moves, adjustments)",
+          count: movementsRemoved,
+        },
+      ],
+    }),
+  };
+};
+
+/**
  * Hard-deletes a product that never went anywhere.
  *
  * The line is **whether anything has left**, not whether anything has happened.
@@ -260,13 +331,16 @@ const OUTBOUND_MOVEMENTS = ["CHECKOUT", "RETURN"];
  * been dispatched is on a client's invoice, and its ledger rows are the only
  * record of what they were charged for.
  *
- * So two refusals, and a deletion that takes everything with it:
+ * So refusals, and a deletion that takes everything with it:
  *
- * - on a **shipment** — refused; that line references it and the FK is Restrict
+ * - on a **shipment or bulk shipment**, or with a **return** on record —
+ *   refused; those rows reference it and the FKs are Restrict
  * - a **CHECKOUT or RETURN** movement — refused; it has shipped at least once,
  *   even if the shipment row was later removed
  * - otherwise the product, its stock rows and its movement history go together,
  *   in one transaction, as though it had never been created
+ *
+ * getProductDependents counts all of it, for the warning shown beforehand.
  *
  * The stock rows go without a compensating movement — the only place in the
  * system where that is true — so the audit entry carries the counts. That is
@@ -275,74 +349,32 @@ const OUTBOUND_MOVEMENTS = ["CHECKOUT", "RETURN"];
  * `deactivateProduct` remains the reversible alternative and is what almost
  * every caller wants.
  *
- * @throws {Error} with `status = 409` when the product has been shipped
+ * @throws {HasDependentsError} (409) while anything in getProductDependents blocks
  */
 const deleteProduct = async (id, actorUserId) => {
-  const product = await prodcutRepository.getProductById(id);
-  if (!product) {
-    return null;
-  }
+  // Checked under the lock: a dispatch recorded between a check and the
+  // delete would otherwise go with the product's history below, as if it had
+  // never shipped.
+  const deleted = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "products", id);
+    const dependents = await getProductDependents(id, tx);
+    if (!dependents) {
+      return null;
+    }
+    const { product, report, stockLevels, unitsRemoved, movementsRemoved } = dependents;
+    assertDeletable(product.productName, report, { deactivatable: true });
 
-  const refuse = (message) => {
-    const err = new Error(message);
-    err.status = 409;
-    throw err;
-  };
-
-  const onShipments = await prisma.shipmentItem.count({
-    where: { productId: id },
-  });
-  if (onShipments > 0) {
-    refuse(
-      `${product.productName} is on ${onShipments} ${onShipments === 1 ? "shipment" : "shipments"} and cannot be deleted. Deactivate it instead.`,
-    );
-  }
-
-  // A return is a record of what a client was charged for handling these goods,
-  // and product_returns.product_id is Restrict — without this the delete would
-  // fail on the foreign key rather than saying why.
-  const returned = await prisma.productReturn.count({
-    where: { productId: id },
-  });
-  if (returned > 0) {
-    refuse(
-      `${product.productName} has ${returned} ${returned === 1 ? "return" : "returns"} on record and cannot be deleted. Deactivate it instead.`,
-    );
-  }
-
-  const shipped = await prisma.inventoryLedger.count({
-    where: { productId: id, movementType: { in: OUTBOUND_MOVEMENTS } },
-  });
-  if (shipped > 0) {
-    refuse(
-      `${product.productName} has been dispatched before. Deactivate it instead — deleting it would break the record of what left.`,
-    );
-  }
-
-  // Counted before the delete, because afterwards there is nothing to count.
-  const stockLevels = await stockLevelRepository.getStockLevelByField(
-    "productId",
-    id,
-  );
-  const unitsRemoved = stockLevels.reduce(
-    (sum, level) => sum + (level.currentQuantity || 0),
-    0,
-  );
-  const movementsRemoved = await prisma.inventoryLedger.count({
-    where: { productId: id },
-  });
-
-  // A transaction for a window the test suite cannot reach: both guards above
-  // have passed, and a shipment item created between then and the delete below
-  // would make product.delete throw with the ledger rows already gone. Rare,
-  // but the failure is silent and permanent, and one line prevents it.
-  const deletedProduct = await prisma.$transaction(async (tx) => {
     // Explicit, because InventoryLedger.product is Restrict — without this the
     // delete below fails with a foreign-key error rather than doing anything.
     // StockLevel cascades and needs no help.
     await tx.inventoryLedger.deleteMany({ where: { productId: id } });
-    return await tx.product.delete({ where: { id } });
+    const deletedProduct = await tx.product.delete({ where: { id } });
+    return { deletedProduct, stockLevels, unitsRemoved, movementsRemoved };
   });
+  if (!deleted) {
+    return null;
+  }
+  const { deletedProduct, stockLevels, unitsRemoved, movementsRemoved } = deleted;
 
   if (actorUserId) {
     await auditLogLogic.createAuditLog(actorUserId, "DELETE_PRODUCT", {
@@ -405,6 +437,7 @@ module.exports = {
   getProductByField,
   updateProduct,
   deactivateProduct,
+  getProductDependents,
   deleteProduct,
   getProductandStockLevelById
 };

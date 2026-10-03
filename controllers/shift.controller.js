@@ -1,4 +1,5 @@
 const shiftLogic = require('../logic/shift.logic');
+const { dependentsBody } = require('../utils/dependents');
 
 const createShift = async (req, res) => {
   try {
@@ -44,19 +45,30 @@ const getShiftById = async (req, res) => {
 
 const updateShift = async (req, res) => {
   try {
-    const shift = await shiftLogic.updateShift(req.params.id, req.body);
+    const shift = await shiftLogic.updateShift(req.params.id, req.body, req.user.id);
     res.status(200).json(shift);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.status || 400).json({ error: error.message });
+  }
+};
+
+// What a delete would refuse on, asked before pressing it.
+const getShiftDependents = async (req, res) => {
+  try {
+    const { report } = await shiftLogic.getShiftDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 
 const deleteShift = async (req, res) => {
   try {
-    const shift = await shiftLogic.deleteShift(req.params.id);
+    const shift = await shiftLogic.deleteShift(req.params.id, req.user.id);
     res.status(200).json(shift);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    if (error.code === "HAS_DEPENDENTS") return res.status(409).json(dependentsBody(error));
+    res.status(error.status || 400).json({ error: error.message });
   }
 };
 
@@ -66,5 +78,6 @@ module.exports = {
   getShiftByField,
   getShiftById,
   updateShift,
+  getShiftDependents,
   deleteShift
 };

@@ -24,6 +24,7 @@ const { firstOfMonthUtc, addMonthsUtc } = require('../utils/dates');
 const clientServiceRepository = require('../repositories/client_service.repository');
 const invoiceLineItemRepository = require('../repositories/invoice_line_item.repository');
 const { prisma } = require('../lib/prisma');
+const { assertServiceActive } = require('./service.logic');
 
 const db = (tx) => tx || prisma;
 
@@ -242,6 +243,7 @@ const chargeServiceToClient = async (
   if (rate.clientId !== clientId) {
     throw new Error('That rate belongs to a different client.');
   }
+  assertServiceActive(rate.service);
 
   const unitPrice = Number(rate.chargedPrice);
   const invoice = await resolveOpenInvoiceFor(clientId, tx);

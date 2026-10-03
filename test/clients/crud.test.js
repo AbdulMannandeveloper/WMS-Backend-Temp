@@ -14,7 +14,16 @@ import { describe, it, expect } from 'vitest';
 
 import { prisma } from '../helpers/db.js';
 import { as, anon } from '../helpers/auth.js';
-import { makeAdmin, makeClient, makeEmployee } from '../factories/index.js';
+import {
+  makeAdmin,
+  makeClient,
+  makeClientService,
+  makeEmployee,
+  makeInvoice,
+  makeProduct,
+  makeService,
+  makeShipment,
+} from '../factories/index.js';
 
 const body = (overrides = {}) => ({
   companyName: 'Acme Distribution',
@@ -180,6 +189,142 @@ describe('editing a client', () => {
     const after = await prisma.client.findUnique({ where: { id: client.id } });
     expect(after.companyName).toBe('Fine');
     expect(after.clientUniqueNumber).not.toBe('CLT-HACKED');
+  });
+});
+
+describe('editing a client email', () => {
+  it('moves the login with it', async () => {
+    const admin = await makeAdmin();
+    const { client, user } = await makeClient();
+    const email = `moved-${Math.random().toString(36).slice(2, 8)}@example.test`;
+
+    const res = await as(admin).put(`/api/clients/${client.id}`).send({ email });
+
+    expect(res.status).toBe(200);
+    expect((await prisma.user.findUnique({ where: { id: user.id } })).email).toBe(email);
+  });
+
+  it('refuses an address another login already uses', async () => {
+    const admin = await makeAdmin();
+    const { client } = await makeClient();
+    const { user: other } = await makeClient();
+
+    const res = await as(admin).put(`/api/clients/${client.id}`).send({ email: other.email });
+
+    expect(res.status).toBe(400);
+    expect((await prisma.client.findUnique({ where: { id: client.id } })).email).toBe(client.email);
+  });
+});
+
+describe('deleting a client', () => {
+  it('deletes one with nothing on record, login and rates included', async () => {
+    const admin = await makeAdmin();
+    const { client, user } = await makeClient();
+    const service = await makeService();
+    await makeClientService(client.id, service.id);
+
+    const res = await as(admin).delete(`/api/clients/${client.id}`);
+
+    expect(res.status).toBe(200);
+    expect(await prisma.client.findUnique({ where: { id: client.id } })).toBeNull();
+    // Deleting only the Client row used to leave this login behind.
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+    expect(await prisma.clientService.count({ where: { clientId: client.id } })).toBe(0);
+  });
+
+  it('lists what is in the way before anything is pressed', async () => {
+    const admin = await makeAdmin();
+    const { employee } = await makeEmployee();
+    const { client } = await makeClient();
+    await makeProduct(client.id);
+    await makeShipment(employee.id, client.id);
+    await makeInvoice(client.id);
+    const service = await makeService();
+    await makeClientService(client.id, service.id);
+
+    const res = await as(admin).get(`/api/clients/${client.id}/dependents`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.canDelete).toBe(false);
+    const counts = Object.fromEntries(res.body.blocking.map((r) => [r.key, r.count]));
+    expect(counts).toEqual({ products: 1, shipments: 1, invoices: 1 });
+    expect(res.body.removedWith.map((r) => r.key)).toEqual(['clientServices']);
+  });
+
+  it('refuses while records remain, says why, and deletes nothing', async () => {
+    const admin = await makeAdmin();
+    const { employee } = await makeEmployee();
+    const { client, user } = await makeClient();
+    await makeShipment(employee.id, client.id);
+
+    const res = await as(admin).delete(`/api/clients/${client.id}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('HAS_DEPENDENTS');
+    expect(res.body.dependents.blocking[0].key).toBe('shipments');
+    expect(await prisma.client.findUnique({ where: { id: client.id } })).not.toBeNull();
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).not.toBeNull();
+  });
+
+  it('goes through once the records are cleared', async () => {
+    const admin = await makeAdmin();
+    const { employee } = await makeEmployee();
+    const { client } = await makeClient();
+    const shipment = await makeShipment(employee.id, client.id);
+
+    expect((await as(admin).delete(`/api/clients/${client.id}`)).status).toBe(409);
+    await prisma.shipment.delete({ where: { id: shipment.id } });
+
+    expect((await as(admin).delete(`/api/clients/${client.id}`)).status).toBe(200);
+  });
+
+  it('is admin only', async () => {
+    const { user: employeeUser } = await makeEmployee();
+    const { client } = await makeClient();
+
+    expect((await as(employeeUser).delete(`/api/clients/${client.id}`)).status).toBe(403);
+    expect((await as(employeeUser).get(`/api/clients/${client.id}/dependents`)).status).toBe(403);
+  });
+});
+
+describe('deactivating a client', () => {
+  it('switches the login off and back on, keeping the records', async () => {
+    const admin = await makeAdmin();
+    const { employee } = await makeEmployee();
+    const { client, user } = await makeClient({ user: { passwordHash: 'set' } });
+    await makeShipment(employee.id, client.id);
+
+    const off = await as(admin).patch(`/api/clients/${client.id}/active`).send({ isActive: false });
+    expect(off.status).toBe(200);
+    const after = await prisma.user.findUnique({ where: { id: user.id } });
+    expect(after.isActive).toBe(false);
+    // Ends sessions already issued.
+    expect(after.tokenVersion).toBe(user.tokenVersion + 1);
+
+    const list = await as(admin).get('/api/clients');
+    expect(list.body.find((c) => c.id === client.id).accountStatus).toBe('inactive');
+
+    const on = await as(admin).patch(`/api/clients/${client.id}/active`).send({ isActive: true });
+    expect(on.status).toBe(200);
+    expect((await prisma.user.findUnique({ where: { id: user.id } })).isActive).toBe(true);
+  });
+
+  it('refuses a client who never set a password — there is no login yet', async () => {
+    const admin = await makeAdmin();
+    const { client } = await makeClient();
+
+    const res = await as(admin).patch(`/api/clients/${client.id}/active`).send({ isActive: false });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('never sends the password hash to the list', async () => {
+    const admin = await makeAdmin();
+    await makeClient({ user: { passwordHash: 'secret-hash' } });
+
+    const res = await as(admin).get('/api/clients');
+
+    expect(JSON.stringify(res.body)).not.toContain('secret-hash');
   });
 });
 

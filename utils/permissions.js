@@ -9,7 +9,7 @@
  * deletes were admin-only. An admin needs to say that this person receives
  * goods but does not adjust stock.
  *
- * Four modules, four actions, sixteen strings. Deliberately a closed list
+ * Five modules, four actions, twenty strings. Deliberately a closed list
  * rather than a free-form string: the write endpoint checks every entry against
  * it, so a typo is refused rather than stored and silently granting nothing.
  *

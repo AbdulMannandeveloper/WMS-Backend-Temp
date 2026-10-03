@@ -85,9 +85,55 @@ const getAllAuditLogs = async (where, options) =>
 const summariseAuditLogs = async (where) =>
   await auditLogRepository.summariseAuditLogs(where);
 
+/** A stored value as an audit entry should show it: Decimals and Dates made plain. */
+const plainValue = (value) => {
+  if (value === undefined || value === null) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object' && typeof value.toNumber === 'function') return value.toNumber();
+  return value;
+};
+
+/**
+ * Writes an entry for something already done. A logging failure is reported
+ * but never undoes the change, and with no actor there is no one to name.
+ */
+const auditQuietly = async (userId, action, details) => {
+  if (!userId) return;
+  try {
+    await createAuditLog(userId, action, details);
+  } catch (err) {
+    console.error('Audit log error:', err.message);
+  }
+};
+
+/**
+ * Records an edit as the fields it changed, before and after, compared as
+ * stored so a value re-sent unchanged is left out. Nothing is written when
+ * nothing changed.
+ *
+ * @param {object} subject  what was edited, e.g. { clientId, companyName }
+ * @param {object} before   the row as it was
+ * @param {object} after    the row as saved
+ * @param {string[]} keys   the fields the edit was allowed to touch
+ */
+const auditChange = async (userId, action, subject, before, after, keys) => {
+  const changed = keys.filter(
+    (key) => String(plainValue(before?.[key])) !== String(plainValue(after?.[key])),
+  );
+  if (changed.length === 0) return;
+  await auditQuietly(userId, action, {
+    ...subject,
+    changed,
+    from: Object.fromEntries(changed.map((key) => [key, plainValue(before?.[key])])),
+    to: Object.fromEntries(changed.map((key) => [key, plainValue(after?.[key])])),
+  });
+};
+
 module.exports = {
   AUDIT_LOG_LIST_SPEC,
   createAuditLog,
+  auditQuietly,
+  auditChange,
   getAllAuditLogs,
   summariseAuditLogs,
 };

@@ -67,8 +67,8 @@ const getProductByField = async (field, value, tx) => {
   });
 };
 
-const getProductById = async (id) => {
-  return await prismaProduct.findUnique({
+const getProductById = async (id, tx) => {
+  return await db(tx).findUnique({
     where: { id },
     include: {
       client: true,

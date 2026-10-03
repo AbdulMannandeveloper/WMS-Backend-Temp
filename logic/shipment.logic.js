@@ -16,6 +16,8 @@ const {
   resolveOpenInvoiceFor,
 } = require("./billing_services");
 const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
+const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require("./reversal");
 
 /**
  * The shipment lifecycle, enforced here rather than in the browser.
@@ -646,21 +648,134 @@ const updateShipment = async (id, data, actorUserId) => {
  * money that has changed hands is reversed with a credit note, not by deleting
  * the record of what it was for.
  */
+/**
+ * What a delete would refuse on, and what it would undo, for the warning shown
+ * before it. See utils/dependents.js for what blocking and removedWith mean.
+ *
+ * Blocking:
+ *  - a charge on a PAID invoice — the same refusal deleteShipment has always
+ *    made, now said before the button rather than after
+ *  - any return against it, of either kind. A return is physical proof the
+ *    parcel went out, and it carries charges of its own. Deleting the shipment
+ *    under it took the dispatch charge off the invoice while leaving the
+ *    return charges on, unlinked — billing a client for goods coming back
+ *    from a shipment that, on the record, never left. Returns are deleted
+ *    first, then the shipment.
+ *
+ * Removed with it: the lines and attached services, the stock that goes back
+ * on the shelf (or the reservation handed back, before dispatch), and the
+ * charge lines on unpaid invoices, which are recomputed.
+ */
+const getShipmentDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const shipment = await requireShipment(id, tx);
+  const dispatched = shipment.status === "DISPATCHED";
+
+  const [items, services, returns, chargeLines] = await Promise.all([
+    db.shipmentItem.findMany({
+      where: { shipmentId: id },
+      select: { quantity: true, returnedQuantity: true },
+    }),
+    db.shipmentServiceMapping.count({ where: { shipmentId: id } }),
+    db.productReturn.findMany({
+      where: { shipmentId: id },
+      select: { quantity: true, shipmentItemId: true },
+    }),
+    dispatched
+      ? db.invoiceLineItem.findMany({
+          where: { shipmentId: id, itemType: "SHIPMENT_CHARGE" },
+          select: { invoice: { select: { status: true } } },
+        })
+      : [],
+  ]);
+
+  const paidCharges = chargeLines.filter((line) => line.invoice?.status === "PAID").length;
+
+  // Every return adds to a line's returnedQuantity. What the line counts beyond
+  // its return records came back through the line's Return button before it
+  // booked records (see undoLineReturns), and has no record of its own.
+  const returnedOnLines = items.reduce((sum, item) => sum + (item.returnedQuantity ?? 0), 0);
+  const returnedViaRecords = returns
+    .filter((r) => r.shipmentItemId)
+    .reduce((sum, r) => sum + r.quantity, 0);
+  const returnedViaLines = Math.max(0, returnedOnLines - returnedViaRecords);
+  // A cancelled shipment already handed its reservation back.
+  const unitsBack =
+    shipment.status === "CANCELLED"
+      ? 0
+      : items.reduce(
+          (sum, item) =>
+            sum + (dispatched ? item.quantity - (item.returnedQuantity ?? 0) : item.quantity),
+          0,
+        );
+
+  return {
+    shipment,
+    report: buildReport({
+      blocking: [
+        {
+          key: "paidInvoice",
+          label: "Charges on a paid invoice",
+          count: paidCharges,
+          where: "/invoices",
+          note: "Money has changed hands. Raise a credit note on that invoice instead.",
+        },
+        {
+          key: "returns",
+          label: "Returns recorded against it",
+          count: returns.length,
+          where: "/returns",
+          note: "Delete those returns first.",
+        },
+        {
+          key: "lineReturns",
+          label: "Units returned from its lines",
+          count: returnedViaLines,
+          note: "Returned with the line return button before it recorded returns. Undo them from the shipment's details.",
+        },
+      ],
+      removedWith: [
+        { key: "items", label: "Shipment lines", count: items.length },
+        {
+          key: "units",
+          label: dispatched ? "Units put back on their shelves" : "Reserved units released",
+          count: unitsBack,
+        },
+        {
+          key: "charges",
+          label: "Charges taken off unpaid invoices",
+          count: chargeLines.length - paidCharges,
+          where: "/invoices",
+        },
+        { key: "services", label: "Billable services attached", count: services },
+      ],
+    }),
+  };
+};
+
 const deleteShipment = async (id, actorUserId) => {
   if (!actorUserId) {
     throw new Error("An authenticated user is required to delete a shipment.");
   }
 
-  const shipment = await requireShipment(id);
-
-  const reversal = await prisma.$transaction(
+  const { shipment, reversal } = await prisma.$transaction(
     async (tx) => {
+      // Locked, then checked: a dispatch landing between a check and this
+      // would otherwise be deleted as the undispatched shipment it was, with
+      // its goods never put back.
+      await lockForDelete(tx, "shipments", id);
+      const { shipment, report } = await getShipmentDependents(id, tx);
+      assertDeletable(`Shipment ${shipment.reference}`, report);
+
       const shipmentItems = await tx.shipmentItem.findMany({
         where: { shipmentId: id },
       });
 
       if (shipment.status === "DISPATCHED") {
-        return await reverseDispatchedShipment(shipment, shipmentItems, actorUserId, tx);
+        return {
+          shipment,
+          reversal: await reverseDispatchedShipment(shipment, shipmentItems, actorUserId, tx),
+        };
       }
 
       // Not dispatched: nothing left the shelf. A cancelled shipment already
@@ -684,7 +799,7 @@ const deleteShipment = async (id, actorUserId) => {
       }
 
       await shipmentRepositry.deleteShipment(id, tx);
-      return { restored: [], chargeRemoved: false };
+      return { shipment, reversal: { restored: [], chargeRemoved: false } };
     },
     {
       maxWait: 10_000,
@@ -732,8 +847,10 @@ const reverseDispatchedShipment = async (shipment, shipmentItems, actorUserId, t
   }
 
   // Put the outstanding quantity of each line back on its source shelf. A
-  // partial return may already have restored some, so only the part still out
-  // (quantity - returnedQuantity) is owed. The ledger applies the stock change;
+  // shipment with any return is refused before this point (see
+  // getShipmentDependents), so returnedQuantity is zero here in practice; the
+  // subtraction stays so a return slipping in between the check and this
+  // transaction cannot be put back twice. The ledger applies the stock change;
   // RETURN adds to current_quantity the same way CHECKOUT took it away.
   const restored = [];
   for (const item of shipmentItems) {
@@ -775,7 +892,198 @@ const reverseDispatchedShipment = async (shipment, shipmentItems, actorUserId, t
   return { restored, chargeRemoved: chargeLines.length > 0 };
 };
 
+// ─── Undoing the returns booked on a shipment's lines ────────────────────────
+//
+// Before every return was a record, the line's Return button only bumped the
+// line's returnedQuantity, moved the stock and optionally raised a charge. It
+// books a return record now (product_return.logic recordLineReturn), so what is
+// undone here is only what it booked before that change.
+
+/**
+ * What the old line return button booked on each line: its returnedQuantity,
+ * less what return records account for (those are deleted from the Returns
+ * screen). Only lines with something to undo.
+ */
+const lineReturnsOn = async (shipmentId, tx) => {
+  const client = tx || prisma;
+  const [items, records] = await Promise.all([
+    client.shipmentItem.findMany({
+      where: { shipmentId, returnedQuantity: { gt: 0 } },
+      select: {
+        id: true,
+        productId: true,
+        sourceLocationId: true,
+        returnedQuantity: true,
+        sourceLocation: { select: { locationName: true, materializedPath: true } },
+      },
+    }),
+    client.productReturn.groupBy({
+      by: ["shipmentItemId"],
+      where: { shipmentId, shipmentItemId: { not: null } },
+      _sum: { quantity: true },
+    }),
+  ]);
+  const viaRecords = new Map(records.map((r) => [r.shipmentItemId, r._sum.quantity ?? 0]));
+  return items
+    .map((item) => ({
+      ...item,
+      quantity: Math.max(0, item.returnedQuantity - (viaRecords.get(item.id) ?? 0)),
+    }))
+    .filter((item) => item.quantity > 0);
+};
+
+/**
+ * How the old line return button described its charge. Only MANUAL_CHARGE lines
+ * on the shipment starting with this are swept up, so manual charges attached
+ * some other way never are. Linked to the shipment by migration
+ * 20261002110000_link_line_return_charges.
+ */
+const LEGACY_LINE_RETURN_CHARGE_PREFIX = "Return handling — ";
+
+/** The return-handling charges the old line return button raised for this shipment. */
+const lineReturnCharges = (shipmentId, tx) =>
+  (tx || prisma).invoiceLineItem.findMany({
+    where: {
+      shipmentId,
+      itemType: "MANUAL_CHARGE",
+      description: { startsWith: LEGACY_LINE_RETURN_CHARGE_PREFIX },
+    },
+    include: { invoice: { select: { status: true } } },
+  });
+
+/**
+ * What undoing a shipment's line returns would refuse on, and what it undoes.
+ *
+ * The line return button leaves no record of its own — a count on the line, a
+ * RETURN movement, and optionally a charge — so these are undone together, per
+ * shipment, rather than one by one: there is nothing that tells two returns on
+ * the same line apart. A partial return that was right can be booked again.
+ *
+ * Blocking, as for a return record: a charge on a paid invoice, and units that
+ * are no longer free in the bin they went back to.
+ */
+const getLineReturnDependents = async (id, tx) => {
+  const shipment = await requireShipment(id, tx);
+  const [lines, charges] = await Promise.all([lineReturnsOn(id, tx), lineReturnCharges(id, tx)]);
+
+  // Two lines can share a product and a bin; the shelf has to cover both.
+  const wanted = new Map();
+  for (const line of lines) {
+    const key = `${line.productId}|${line.sourceLocationId}`;
+    wanted.set(key, (wanted.get(key) ?? 0) + line.quantity);
+  }
+  let shortfall = 0;
+  for (const [key, quantity] of wanted) {
+    const [productId, locationId] = key.split("|");
+    shortfall += Math.max(0, quantity - (await freeUnitsIn(productId, locationId, tx)));
+  }
+
+  const paid = paidAmong(charges).length;
+  const units = lines.reduce((sum, line) => sum + line.quantity, 0);
+
+  return {
+    shipment,
+    lines,
+    charges,
+    report: buildReport({
+      blocking: [
+        {
+          key: "paidInvoice",
+          label: "Return charges on a paid invoice",
+          count: paid,
+          where: "/invoices",
+          note: "Money has changed hands. Raise a credit note on that invoice instead.",
+        },
+        {
+          key: "stockGone",
+          label: "Returned units no longer free on the shelf",
+          count: shortfall,
+          where: "/inventory",
+          note: "They have been reserved, picked or moved since they came back.",
+        },
+      ],
+      removedWith: [
+        { key: "units", label: "Units taken back off their shelves", count: units },
+        {
+          key: "charges",
+          label: "Return charges taken off unpaid invoices",
+          count: charges.length - paid,
+          where: "/invoices",
+        },
+      ],
+    }),
+  };
+};
+
+/**
+ * Undoes every return booked with the line return button on a shipment: the
+ * units come back off the bins they were put into, each line counts them as
+ * out again, and the return charges come off unpaid invoices.
+ *
+ * Returns booked on the Returns screen are untouched — they are records, and
+ * are deleted there.
+ */
+const undoLineReturns = async (id, actorUserId) => {
+  if (!actorUserId) {
+    throw new Error("An authenticated user is required to undo returns.");
+  }
+  const { shipment, undone } = await prisma.$transaction(
+    async (tx) => {
+      // Checked under the lock, as deleteShipment is.
+      await lockForDelete(tx, "shipments", id);
+      const { shipment, lines, charges, report } = await getLineReturnDependents(id, tx);
+      if (lines.length === 0) {
+        throw new Error(`Nothing was returned with the line return button on ${shipment.reference}.`);
+      }
+      assertDeletable(`Shipment ${shipment.reference}`, report);
+
+      for (const line of lines) {
+        const { count } = await tx.shipmentItem.updateMany({
+          where: { id: line.id, returnedQuantity: { gte: line.quantity } },
+          data: { returnedQuantity: { decrement: line.quantity } },
+        });
+        if (count === 0) {
+          throw new Error("A line's returns changed while this was being undone. Try again.");
+        }
+        await takeOffShelf(
+          {
+            productId: line.productId,
+            locationId: line.sourceLocationId,
+            quantity: line.quantity,
+            // The shipment reference, as on the RETURN this reverses.
+            reference: shipment.reference,
+            notes: `Line return on ${shipment.reference} undone`,
+            actorUserId,
+          },
+          tx,
+        );
+      }
+
+      await removeChargeLines(charges, tx);
+      return {
+        shipment,
+        undone: {
+          lines: lines.map((line) => ({ shipmentItemId: line.id, quantity: line.quantity })),
+          chargesRemoved: charges.length,
+        },
+      };
+    },
+    { maxWait: 10_000, timeout: 30_000 },
+  );
+
+  await audit(actorUserId, "SHIPMENT_LINE_RETURNS_UNDONE", {
+    shipmentId: shipment.id,
+    reference: shipment.reference,
+    clientId: shipment.clientId,
+    ...undone,
+  });
+
+  return { id: shipment.id, ...undone };
+};
+
 module.exports = {
+  getLineReturnDependents,
+  undoLineReturns,
   createShipment,
   dispatchShipment,
   markShipmentReady,
@@ -786,6 +1094,7 @@ module.exports = {
   getShipmentsByClientId,
   updateShipment,
   setShipmentTracking,
+  getShipmentDependents,
   deleteShipment,
   // Exported for tests and for the item logic's own guards.
   SHIPMENT_TRANSITIONS,

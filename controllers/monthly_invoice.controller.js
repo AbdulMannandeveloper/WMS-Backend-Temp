@@ -8,6 +8,7 @@ const { chargeServiceToClient } = require("../logic/billing_services");
 const settingsLogic = require("../logic/settings.logic");
 const { pick } = require("../utils/pick");
 const { getObjectStream } = require("../lib/objectStorage");
+const { dependentsBody } = require("../utils/dependents");
 
 // totalAmount is deliberately absent: it is derived from the invoice's line
 // items. status is absent too — it moves through the approval workflow only.
@@ -150,12 +151,25 @@ const markMonthlyInvoicePaid = async (req, res) => {
   }
 };
 
+/** The charges a draft carries, and whether that stops it being deleted. */
+const getInvoiceDependents = async (req, res) => {
+  try {
+    const { report } = await monthlyInvoiceLogic.getInvoiceDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (err) {
+    res.status(/not found/i.test(err.message) ? 404 : 400).json({ error: err.message });
+  }
+};
+
 const deleteMonthlyInvoice = async (req, res) => {
   try {
     await monthlyInvoiceLogic.deleteMonthlyInvoice(req.params.id, req.user.id);
     res.status(200).json({ message: "Invoice deleted successfully." });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    if (err.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(err));
+    }
+    res.status(/not found/i.test(err.message) ? 404 : 400).json({ error: err.message });
   }
 };
 
@@ -314,6 +328,7 @@ module.exports = {
   approveMonthlyInvoice,
   markMonthlyInvoicePaid,
   getMonthlyInvoicePdf,
+  getInvoiceDependents,
   deleteMonthlyInvoice,
   getLineItemsForInvoice,
   createLineItem,

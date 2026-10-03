@@ -1,9 +1,13 @@
 const fbaLogic = require('../logic/fba.logic');
+const productReturnLogic = require('../logic/product_return.logic');
+const { dependentsBody } = require('../utils/dependents');
 const { resolveOwnClientId } = require('../utils/clientScope');
 
 const fail = (res, error) => {
-  const notFound = /not found/i.test(error.message);
-  res.status(notFound ? 404 : 400).json({ error: error.message });
+  // Something still depends on it: the 409 carries what, for the warning.
+  if (error.code === 'HAS_DEPENDENTS') return res.status(409).json(dependentsBody(error));
+  const status = error.status || (/not found/i.test(error.message) ? 404 : 400);
+  res.status(status).json({ error: error.message });
 };
 
 // ─── Categories ───────────────────────────────────────────────────────────────
@@ -27,6 +31,16 @@ const listCategories = async (req, res) => {
 const updateCategory = async (req, res) => {
   try {
     res.status(200).json(await fbaLogic.updateCategory(req.params.id, req.body, req.user.id));
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+// What deleting a category would refuse on, asked before pressing it.
+const getCategoryDependents = async (req, res) => {
+  try {
+    const { report } = await fbaLogic.getCategoryDependents(req.params.id);
+    res.status(200).json(report);
   } catch (err) {
     fail(res, err);
   }
@@ -98,6 +112,7 @@ const listAttachableServices = async (req, res) => {
         serviceId: rate.serviceId,
         description: rate.service.description,
         unit: rate.unit || rate.service.unit,
+        isActive: rate.service.isActive,
         ...(showPrice ? { chargedPrice: rate.chargedPrice } : {}),
       })),
     );
@@ -216,6 +231,34 @@ const cancelShipment = async (req, res) => {
   }
 };
 
+// What deleting a bulk shipment would refuse on and undo.
+const getShipmentDependents = async (req, res) => {
+  try {
+    const { report } = await fbaLogic.getBulkShipmentDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+// Undoing what the line Return button booked before it made return records.
+const getLineReturnDependents = async (req, res) => {
+  try {
+    const { report } = await fbaLogic.getBulkLineReturnDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+const undoLineReturns = async (req, res) => {
+  try {
+    res.status(200).json(await fbaLogic.undoBulkLineReturns(req.params.id, req.user.id));
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
 const deleteShipment = async (req, res) => {
   try {
     const { restored = [], chargesRemoved = 0 } = await fbaLogic.remove(req.params.id, req.user.id);
@@ -244,16 +287,19 @@ const setTracking = async (req, res) => {
 const returnItem = async (req, res) => {
   try {
     const chargeReturn = req.user.role === 'admin' && req.body?.chargeReturn === true;
-    res.status(200).json(
-      await fbaLogic.returnItem(
-        req.params.id,
-        req.params.itemId,
-        req.body?.quantity,
-        req.body?.reason,
-        req.user.id,
-        { chargeReturn },
-      ),
+    // Books a return record (RET-…), as an outbound line's Return button does.
+    const productReturn = await productReturnLogic.recordBulkLineReturn(
+      req.params.id,
+      req.params.itemId,
+      { quantity: req.body?.quantity, reason: req.body?.reason, chargeReturn },
+      req.user.id,
     );
+    res.status(200).json({
+      shipment: await fbaLogic.getShipmentById(req.params.id),
+      returnCharge: productReturn.returnCharge,
+      // Prices stay with admins, as on the Returns screen.
+      productReturn: productReturnLogic.redactMoney(productReturn, req.user.role),
+    });
   } catch (err) {
     fail(res, err);
   }
@@ -264,6 +310,10 @@ module.exports = {
   listCategories,
   updateCategory,
   deleteCategory,
+  getCategoryDependents,
+  getShipmentDependents,
+  getLineReturnDependents,
+  undoLineReturns,
   createShipment,
   setItems,
   setPicks,

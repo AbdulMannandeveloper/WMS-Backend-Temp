@@ -21,6 +21,7 @@ const {
   ensureReturnService,
   ensureRestockService,
 } = require("./logic/billing_services");
+const { scheduleUploadSweep } = require("./logic/upload_sweep.logic");
 
 const PORT = process.env.PORT || 5000;
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 15_000);
@@ -79,6 +80,7 @@ const startServer = async () => {
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
+    scheduleUploadSweep();
 
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));

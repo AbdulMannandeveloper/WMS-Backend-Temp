@@ -65,6 +65,14 @@ router.delete('/:id/services/:mappingId', adminOnly, shipmentServiceController.r
 
 // Commercial / identity details, and removal
 router.put('/:id', staffWith('update'), shipmentController.updateShipment);
+// What a delete would refuse on and undo — open to exactly who may delete.
+router.get('/:id/dependents', staffWith('delete'), shipmentController.getShipmentDependents);
 router.delete('/:id', staffWith('delete'), shipmentController.deleteShipment);
+
+// Undoing the returns booked with the line return button. Removal rather than
+// an update: it deletes what the returns did — their stock and their charges —
+// so it sits with delete, as the shipment delete those returns block does.
+router.get('/:id/line-returns/dependents', staffWith('delete'), shipmentController.getLineReturnDependents);
+router.delete('/:id/line-returns', staffWith('delete'), shipmentController.undoLineReturns);
 
 module.exports = router;

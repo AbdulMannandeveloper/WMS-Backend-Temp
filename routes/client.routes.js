@@ -7,6 +7,8 @@ const {
   getMyClient,
   getClientById,
   updateClient,
+  getClientDependents,
+  setClientActive,
   deleteClient,
 } = require('../controllers/client.controller');
 
@@ -34,6 +36,12 @@ router.get('/:id', authorizeRoles('admin'), getClientById);
 // all along with no route pointing at them, so a client's company name, contact
 // or address could never be corrected after creation.
 router.put('/:id', authorizeRoles('admin'), updateClient);
+
+// Deleting is refused while anything still refers to the client; /dependents
+// says what, so the admin sees it before pressing delete. Deactivating keeps
+// every record and only switches the login off.
+router.get('/:id/dependents', authorizeRoles('admin'), getClientDependents);
+router.patch('/:id/active', authorizeRoles('admin'), setClientActive);
 router.delete('/:id', authorizeRoles('admin'), deleteClient);
 
 module.exports = router;

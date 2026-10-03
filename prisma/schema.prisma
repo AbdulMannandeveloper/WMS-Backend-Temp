@@ -106,6 +106,9 @@ model Service {
   // find one without matching on a description an admin may rename.
   // Today: SHIPMENT_DISPATCH. Null for ordinary catalogue entries.
   code             String?                  @unique @db.VarChar(40)
+  // Off: kept on the shipments, rates and invoices that carry it, but offered
+  // for nothing new. Built-in services (with a code) are never switched off.
+  isActive         Boolean                  @default(true) @map("is_active")
   clientServices   ClientService[]
   shipmentMappings ShipmentServiceMapping[]
   fbaServices      FbaShipmentService[]
@@ -251,6 +254,9 @@ model WarehouseLocation {
   locationClassId  String  @map("location_class_id") @db.Uuid
   materializedPath String? @map("materialized_path") @db.VarChar(500) // Example value: "zone-a/aisle-2/shelf-3"
   parentLocationId String? @map("parent_location_id") @db.Uuid
+  // Off: kept, with its stock history, but no stock can be put into it and
+  // nothing new can go inside it. Only an empty location can be switched off.
+  isActive         Boolean @default(true) @map("is_active")
 
   // Hierarchy Relations
   parentLocation WarehouseLocation?     @relation("WarehouseLocationHierarchy", fields: [parentLocationId], references: [id], onDelete: SetNull)
@@ -282,6 +288,8 @@ model WarehouseLocationClass {
   name          String  @unique @map("name") @db.VarChar(80)
   description   String? @db.VarChar(255)
   parentClassId String? @map("parent_class_id") @db.Uuid
+  // Off: kept for the locations that have it, but no new location takes it.
+  isActive      Boolean @default(true) @map("is_active")
 
   parentClass  WarehouseLocationClass?  @relation("WarehouseLocationClassHierarchy", fields: [parentClassId], references: [id], onDelete: SetNull)
   childClasses WarehouseLocationClass[] @relation("WarehouseLocationClassHierarchy")
@@ -535,6 +543,9 @@ model InvoiceLineItem {
   // charge, rather than matching on the description string. onDelete SetNull is
   // only a backstop: deleteShipment removes the line before the row goes, so
   // this normally never fires.
+  // Also set on the MANUAL_CHARGE the line return button raises, so undoing a
+  // shipment's line returns can find it. Readers of shipment charges filter on
+  // itemType SHIPMENT_CHARGE.
   shipmentId String? @map("shipment_id") @db.Uuid
 
   // The same for a bulk shipment: its Bulk Shipment charge and the services
@@ -713,6 +724,7 @@ model FbaShipment {
   // The charges its dispatch raised, so deleting it can take exactly those off
   // the invoice.
   invoiceLines InvoiceLineItem[]
+  productReturns ProductReturn[]
 
   @@index([clientId, status], map: "idx_fba_shipments_client_status")
   @@index([barcode], map: "idx_fba_shipments_barcode")
@@ -755,6 +767,7 @@ model FbaShipmentItem {
   fbaShipment    FbaShipment       @relation(fields: [fbaShipmentId], references: [id], onDelete: Cascade)
   product        Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
   sourceLocation WarehouseLocation @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  productReturns ProductReturn[]
 
   @@index([fbaShipmentId], map: "idx_fba_shipment_items_shipment")
   @@index([productId], map: "idx_fba_shipment_items_product")
@@ -812,8 +825,9 @@ model ProductReturn {
   id               String       @id @default(uuid()) @db.Uuid
   // RET-<year>-<sequence>, issued the same way as Shipment.reference.
   reference        String       @unique(map: "uq_product_returns_reference") @db.VarChar(64)
-  // The courier number on the parcel that came back, as scanned.
-  trackingNumber   String       @map("tracking_number") @db.VarChar(64)
+  // The courier number on the parcel that came back, as scanned. Null when
+  // booked from a shipment line (the line is the link) and the shipment had none.
+  trackingNumber   String?      @map("tracking_number") @db.VarChar(64)
   // Whose goods these are. Taken from the product, never from the request.
   clientId         String       @map("client_id") @db.Uuid
   productId        String       @map("product_id") @db.Uuid
@@ -824,6 +838,10 @@ model ProductReturn {
   // label this system never issued.
   shipmentId       String?      @map("shipment_id") @db.Uuid
   shipmentItemId   String?      @map("shipment_item_id") @db.Uuid
+  // The same for a bulk shipment, when booked from its line's Return button.
+  // A return names one or the other, never both.
+  fbaShipmentId     String?     @map("fba_shipment_id") @db.Uuid
+  fbaShipmentItemId String?     @map("fba_shipment_item_id") @db.Uuid
   // Where it went back on the shelf. Set only when RESTOCKED.
   restockLocationId String?     @map("restock_location_id") @db.Uuid
   notes            String?      @db.Text
@@ -838,6 +856,8 @@ model ProductReturn {
   product         Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
   shipment        Shipment?          @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
   shipmentItem    ShipmentItem?      @relation(fields: [shipmentItemId], references: [id], onDelete: SetNull)
+  fbaShipment     FbaShipment?       @relation(fields: [fbaShipmentId], references: [id], onDelete: SetNull)
+  fbaShipmentItem FbaShipmentItem?   @relation(fields: [fbaShipmentItemId], references: [id], onDelete: SetNull)
   restockLocation WarehouseLocation? @relation(fields: [restockLocationId], references: [id], onDelete: Restrict)
   invoiceLines    InvoiceLineItem[]
 
@@ -847,6 +867,8 @@ model ProductReturn {
   @@index([trackingNumber], map: "idx_product_returns_tracking_number")
   @@index([productId], map: "idx_product_returns_product_id")
   @@index([shipmentItemId], map: "idx_product_returns_shipment_item_id")
+  @@index([fbaShipmentId], map: "idx_product_returns_fba_shipment_id")
+  @@index([fbaShipmentItemId], map: "idx_product_returns_fba_shipment_item_id")
   @@map("product_returns")
 }
 
@@ -901,12 +923,16 @@ model EmployeeBonus {
 
 model AuditLog {
   id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
+  /// Null once the person who acted has been deleted; actorName says who it was.
+  userId    String?  @map("user_id") @db.Uuid
+  /// Written only when the actor's login is deleted, so the entry still names
+  /// them. Cascading here used to erase a deleted person's whole audit trail.
+  actorName String?  @map("actor_name") @db.VarChar(120)
   action    String // "EDIT_PRODUCT", "DELETE_PRODUCT", "ADJUST_STOCK"
   details   String   @db.Text
   timestamp DateTime @default(now()) @map("timestamp") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([timestamp(sort: Desc), id], map: "idx_audit_logs_timestamp")
   @@index([userId, timestamp(sort: Desc)], map: "idx_audit_logs_user_timestamp")

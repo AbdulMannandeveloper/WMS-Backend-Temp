@@ -103,6 +103,16 @@ const getClientServiceByClientIdAndServiceId = async (clientId, serviceId) => {
   });
 };
 
+/** One agreed rate, with the client and service it is for. */
+const getClientServiceById = async (id) =>
+  await prismaClientService.findUnique({
+    where: { id },
+    include: {
+      client: { select: { companyName: true } },
+      service: { select: { description: true } },
+    },
+  });
+
 const updateClientService = async (id, updateData) => {
   return await prismaClientService.update({
     where: { id },
@@ -117,6 +127,7 @@ const deleteClientService = async (id) => {
 };
 
 module.exports = {
+  getClientServiceById,
   summariseClientServices,
   createClientServiceEntry,
   getAllClientServices,

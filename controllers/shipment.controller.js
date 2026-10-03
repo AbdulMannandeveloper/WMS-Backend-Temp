@@ -1,6 +1,7 @@
   const { canAccessClientId } = require("../utils/clientScope");
 const shipmentLogic = require("../logic/shipment.logic");
 const { pick } = require("../utils/pick");
+const { dependentsBody } = require("../utils/dependents");
 
 // Deliberately short. The reference is issued by the logic, clientId is derived
 // from the goods, the creator comes from the session, status is decided by the
@@ -170,7 +171,41 @@ const deleteShipment = async (req, res) => {
     await shipmentLogic.deleteShipment(id, req.user.id);
     res.status(200).json({ message: "Shipment deleted successfully." });
   } catch (error) {
+    if (error.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(error));
+    }
     res.status(400).json({ error: error.message });
+  }
+};
+
+// What a delete would refuse on and what it would undo, asked before pressing it.
+const getShipmentDependents = async (req, res) => {
+  try {
+    const { report } = await shipmentLogic.getShipmentDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (error) {
+    res.status(/not found/i.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+};
+
+// Undoing what the line return button booked — the warning first, then the undo.
+const getLineReturnDependents = async (req, res) => {
+  try {
+    const { report } = await shipmentLogic.getLineReturnDependents(req.params.id);
+    res.status(200).json(report);
+  } catch (error) {
+    res.status(/not found/i.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+};
+
+const undoLineReturns = async (req, res) => {
+  try {
+    res.status(200).json(await shipmentLogic.undoLineReturns(req.params.id, req.user.id));
+  } catch (error) {
+    if (error.code === "HAS_DEPENDENTS") {
+      return res.status(409).json(dependentsBody(error));
+    }
+    res.status(/not found/i.test(error.message) ? 404 : 400).json({ error: error.message });
   }
 };
 
@@ -194,5 +229,8 @@ module.exports = {
   cancelShipment,
   updateShipment,
   setShipmentTracking,
+  getShipmentDependents,
   deleteShipment,
+  getLineReturnDependents,
+  undoLineReturns,
 };

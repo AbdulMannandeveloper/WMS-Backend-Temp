@@ -14,6 +14,12 @@ const {
 const shiftRepository = require("../repositories/shift.repository");
 const holidayRepository = require("../repositories/holiday.repository");
 const { prisma } = require("../lib/prisma");
+const auditLogLogic = require("./audit_log.logic");
+const payrollLogic = require("./payroll.logic");
+
+// The reason check-in writes on its automatic fine, which is also how that fine
+// is found again when the log is corrected: the fine does not point at the log.
+const LATE_FINE_PREFIX = "Late check-in — ";
 /** A date that must parse, because the roster is always about one day. */
 const toDateOrThrow = (value) => {
   const parsed = new Date(String(value).trim());
@@ -96,6 +102,9 @@ const createAttendanceLog = async (logData) => {
   const createdLog = await attendanceLogRepository.createAttendanceLog(logData);
 
   // Working on a holiday is allowed, but late fines are skipped that day.
+  // The fine is issued even in a month already finalised: the lateness
+  // happened either way. The payroll screen flags that month as changed since
+  // finalising, and Lock & Post again takes it in.
   const holidayDay = await isDateHoliday(logData.date || logData.loginTimestamp);
 
   if (logData.status === "late" && !holidayDay) {
@@ -117,7 +126,7 @@ const createAttendanceLog = async (logData) => {
           await prisma.employeeFine.create({
             data: {
               userId: logData.userId,
-              reason: `Late check-in — ${new Date(logData.loginTimestamp).toLocaleDateString("en-GB")}`,
+              reason: `${LATE_FINE_PREFIX}${new Date(logData.loginTimestamp).toLocaleDateString("en-GB")}`,
               amount: fineAmount,
               date: new Date(logData.loginTimestamp),
               cancelled: false,
@@ -392,12 +401,97 @@ const getAttendanceLogByField = async (field, value) => {
   return await attendanceLogRepository.getAttendanceLogByField(field, value);
 };
 
-const updateAttendanceLog = async (id, updateData) => {
+const attendanceLogNotFound = () => {
+  const error = new Error("Attendance log not found.");
+  error.status = 404;
+  return error;
+};
+
+/** How an admin's correction to someone's attendance is named in the log. */
+const attendanceSubject = async (log) => {
+  const person = await prisma.user.findUnique({
+    where: { id: log.userId },
+    select: { firstName: true, lastName: true },
+  });
+  return {
+    attendanceLogId: log.id,
+    userId: log.userId,
+    employeeName: person ? `${person.firstName} ${person.lastName}` : null,
+    date: log.date,
+  };
+};
+
+/**
+ * The automatic fine a log's late check-in raised — standing, or already
+ * cancelled when `cancelled` is true. Matched on person, day and the reason
+ * check-in writes.
+ */
+const findLateFine = async (log, cancelled) => {
+  if (!log.loginTimestamp) return null;
+  return await prisma.employeeFine.findFirst({
+    where: {
+      userId: log.userId,
+      date: toUtcDateOnly(log.loginTimestamp),
+      reason: { startsWith: LATE_FINE_PREFIX },
+      cancelled,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+};
+
+/**
+ * What a correction does to the log's automatic late fine. A log that stops
+ * being late — or is deleted — has it cancelled (kept, as any cancelled fine
+ * is); one put back to late has it restored. Worked out before anything is
+ * written, so a fine in a finalised month refuses the whole correction, as
+ * changing any fine there does: reopen the month first.
+ */
+const lateFineChange = async (before, afterStatus) => {
+  const wasLate = before.status === "late";
+  if (wasLate === (afterStatus === "late")) return null;
+  const fine = await findLateFine(before, !wasLate);
+  if (!fine) return null;
+  await payrollLogic.assertMonthOpen(fine.userId, fine.date);
+  return { fine, cancelled: wasLate };
+};
+
+const applyLateFineChange = (change, tx) =>
+  tx.employeeFine.update({ where: { id: change.fine.id }, data: { cancelled: change.cancelled } });
+
+/** Recorded as the payroll screen records cancelling a fine by hand. */
+const auditLateFineChange = (change, log, actorUserId) =>
+  auditLogLogic.auditQuietly(actorUserId, "TOGGLE_CANCEL_FINE", {
+    fineId: change.fine.id,
+    cancelled: change.cancelled,
+    reason: change.fine.reason,
+    attendanceLogId: log.id,
+  });
+
+const updateAttendanceLog = async (id, updateData, actorUserId) => {
+  const existing = await attendanceLogRepository.getAttendanceLogFirstByField("id", id);
+  if (!existing) throw attendanceLogNotFound();
+
   if (updateData.status === "leave") {
     updateData.loginTimestamp = null;
     updateData.logoutTimestamp = null;
   }
-  return await attendanceLogRepository.updateAttendanceLog(id, updateData);
+  const fineChange =
+    updateData.status === undefined ? null : await lateFineChange(existing, updateData.status);
+  const updated = await prisma.$transaction(async (tx) => {
+    const updated = await attendanceLogRepository.updateAttendanceLog(id, updateData, tx);
+    if (fineChange) await applyLateFineChange(fineChange, tx);
+    return updated;
+  });
+  if (fineChange) await auditLateFineChange(fineChange, existing, actorUserId);
+  await auditLogLogic.auditChange(
+    actorUserId,
+    "UPDATE_ATTENDANCE_LOG",
+    await attendanceSubject(existing),
+    existing,
+    updated,
+    Object.keys(updateData),
+  );
+  return updated;
 };
 
 const updateLogoutTimestamp = async (id, logoutTimestamp) => {
@@ -423,8 +517,25 @@ const updateLogoutTimestamp = async (id, logoutTimestamp) => {
   });
 };
 
-const deleteAttendanceLog = async (id) => {
-  return await attendanceLogRepository.deleteAttendanceLog(id);
+const deleteAttendanceLog = async (id, actorUserId) => {
+  const existing = await attendanceLogRepository.getAttendanceLogFirstByField("id", id);
+  if (!existing) throw attendanceLogNotFound();
+
+  // A late day that is struck off takes its fine with it.
+  const fineChange = await lateFineChange(existing, null);
+  const deleted = await prisma.$transaction(async (tx) => {
+    const deleted = await attendanceLogRepository.deleteAttendanceLog(id, tx);
+    if (fineChange) await applyLateFineChange(fineChange, tx);
+    return deleted;
+  });
+  if (fineChange) await auditLateFineChange(fineChange, existing, actorUserId);
+  await auditLogLogic.auditQuietly(actorUserId, "DELETE_ATTENDANCE_LOG", {
+    ...(await attendanceSubject(existing)),
+    status: existing.status,
+    loginTimestamp: existing.loginTimestamp,
+    logoutTimestamp: existing.logoutTimestamp,
+  });
+  return deleted;
 };
 
 // US-069: Compute and persist a MonthlyAttendanceSummary for a given user + month

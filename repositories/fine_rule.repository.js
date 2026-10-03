@@ -15,6 +15,14 @@ const createFineRule = async (data) => {
   });
 };
 
+const getFineRuleById = async (id) => {
+  return await prismaFineRule.findUnique({ where: { id } });
+};
+
+const deleteFineRule = async (id) => {
+  return await prismaFineRule.delete({ where: { id } });
+};
+
 const getAllFineRules = async () => {
   return await prismaFineRule.findMany({
     orderBy: { createdAt: 'desc' },
@@ -25,4 +33,6 @@ module.exports = {
   getActiveFineRule,
   createFineRule,
   getAllFineRules,
+  getFineRuleById,
+  deleteFineRule,
 };

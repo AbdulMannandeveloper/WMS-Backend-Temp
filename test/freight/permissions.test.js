@@ -90,6 +90,10 @@ const routes = () => [
     call: (a) => as(a).post(`/api/freight-shipments/${shipment.id}/cancel`),
   },
   { action: 'delete', call: (a) => as(a).delete(`/api/freight-shipments/${shipment.id}`) },
+  {
+    action: 'delete',
+    call: (a) => as(a).get(`/api/freight-shipments/${shipment.id}/dependents`),
+  },
 ];
 
 const anonymousCalls = () => [
@@ -104,6 +108,7 @@ const anonymousCalls = () => [
   () => anon().post(`/api/freight-shipments/${shipment.id}/receive`).send({}),
   () => anon().post(`/api/freight-shipments/${shipment.id}/cancel`),
   () => anon().delete(`/api/freight-shipments/${shipment.id}`),
+  () => anon().get(`/api/freight-shipments/${shipment.id}/dependents`),
 ];
 
 describe('freight permissions', () => {

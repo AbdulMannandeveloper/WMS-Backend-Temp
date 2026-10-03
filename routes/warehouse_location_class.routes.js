@@ -10,6 +10,13 @@ const router = express.Router();
 // building. Full access, same as an admin — except deleting a class, which
 // every location of that kind depends on.
 
+// What would stop a delete. Above /:field/:value, which would otherwise read
+// it as a lookup of the field "<id>" for the value "dependents".
+router.get(
+  "/:id/dependents",
+  authorizeRoles("admin"),
+  warehouseLocationClassController.getWarehouseLocationClassDependents,
+);
 router.get(
   "/:field/:value",
   authorizeRoles("admin", "employee"),
@@ -34,6 +41,12 @@ router.delete(
   "/:id",
   authorizeRoles("admin"),
   warehouseLocationClassController.deleteWarehouseLocationClass,
+);
+// Instead of deleting a class locations still have. Admin-only, as delete is.
+router.patch(
+  "/:id/active",
+  authorizeRoles("admin"),
+  warehouseLocationClassController.setWarehouseLocationClassActive,
 );
 
 module.exports = router;

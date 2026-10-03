@@ -16,6 +16,7 @@ const invoiceLineItemRepository = require("../repositories/invoice_line_item.rep
 
 const clientLogic = require("./client.logic");
 const { firstOfMonthUtc } = require("../utils/dates");
+const { buildReport, assertDeletable } = require("../utils/dependents");
 const { enqueueMail } = require("../utils/mailQueue");
 const {
   invoiceApprovedEmailTemplate,
@@ -513,18 +514,104 @@ const applyInvoiceEdits = async (
  * to the client, and the line items reference real dispatched work. The same
  * reasoning as refusing to delete a dispatched shipment.
  */
+/**
+ * What a draft invoice carries, and whether it can be deleted.
+ *
+ * Charges land on the client's open draft as the work happens: a shipment or
+ * bulk shipment dispatched, a return booked in. Nothing raises them again, so
+ * deleting the draft would leave that work unbilled without a word. While it
+ * holds any such charge the delete is refused. The admin removes the line on
+ * the invoice's Edit screen if it really should not be billed, or deletes the
+ * shipment or return itself, which takes its charge with it. Other lines
+ * (manual charges) go with the invoice.
+ *
+ * A return's charge can also name its shipment; it counts once, as a return.
+ */
+const reportForLines = (lines) => {
+  const count = { returns: 0, bulkShipments: 0, shipments: 0, other: 0 };
+  for (const line of lines) {
+    if (line.returnId) count.returns += 1;
+    else if (line.fbaShipmentId) count.bulkShipments += 1;
+    else if (line.shipmentId) count.shipments += 1;
+    else count.other += 1;
+  }
+  const remedy = (what) =>
+    `Nothing raises them again. Remove them with Edit on this invoice if they should not be billed, or delete the ${what}, which takes its charge with it.`;
+
+  return buildReport({
+    blocking: [
+      {
+        key: "shipmentCharges",
+        label: "Shipment charges",
+        count: count.shipments,
+        where: "/shipments",
+        note: remedy("shipment"),
+      },
+      {
+        key: "bulkShipmentCharges",
+        label: "Bulk shipment charges",
+        count: count.bulkShipments,
+        where: "/fba",
+        note: remedy("bulk shipment"),
+      },
+      {
+        key: "returnCharges",
+        label: "Return charges",
+        count: count.returns,
+        where: "/returns",
+        note: remedy("return"),
+      },
+    ],
+    removedWith: [{ key: "otherCharges", label: "Other charges", count: count.other }],
+  });
+};
+
+/** The draft-delete warning for an invoice, read through `tx` when given. */
+const getInvoiceDependents = async (id, tx) => {
+  const invoice = await (tx || prisma).monthlyInvoice.findUnique({
+    where: { id },
+    include: {
+      client: { select: { companyName: true } },
+      lineItems: { select: { shipmentId: true, fbaShipmentId: true, returnId: true } },
+    },
+  });
+  if (!invoice) {
+    throw new Error("Monthly invoice not found.");
+  }
+  return { invoice, report: reportForLines(invoice.lineItems) };
+};
+
+const assertDraft = (invoice) => {
+  if (!isEditable(invoice.status)) {
+    throw new Error(
+      `A ${invoice.status} invoice cannot be deleted. Raise a credit against it instead.`,
+    );
+  }
+};
+
+/**
+ * Deletes a draft invoice that carries no charge for a shipment, bulk shipment
+ * or return.
+ *
+ * @throws {HasDependentsError} (409) while it carries one
+ */
 const deleteMonthlyInvoice = async (id, actorUserId) => {
   const existing = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
   if (!existing) {
     throw new Error("Monthly invoice not found.");
   }
-  if (!isEditable(existing.status)) {
-    throw new Error(
-      `A ${existing.status} invoice cannot be deleted. Raise a credit against it instead.`,
-    );
-  }
+  assertDraft(existing);
 
-  const deleted = await monthlyInvoiceRepository.deleteMonthlyInvoice(id);
+  const deleted = await prisma.$transaction(async (tx) => {
+    // Locked before the check: a dispatch charging this draft right now waits
+    // until the delete is done (and then opens a new draft), and one that got
+    // in first is counted below.
+    await tx.$queryRaw`SELECT id FROM monthly_invoices WHERE id = ${id}::uuid FOR UPDATE`;
+    const { invoice, report } = await getInvoiceDependents(id, tx);
+    assertDraft(invoice);
+    assertDeletable(`The draft invoice for ${invoice.client?.companyName ?? "this client"}`, report);
+    return await monthlyInvoiceRepository.deleteMonthlyInvoice(id, tx);
+  }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, "INVOICE_DELETED", {
     invoiceId: id,
@@ -600,6 +687,7 @@ module.exports = {
   applyInvoiceEdits,
   approveMonthlyInvoice,
   markMonthlyInvoicePaid,
+  getInvoiceDependents,
   deleteMonthlyInvoice,
   syncApprovedInvoicePdf,
   // Shared with the line-item logic, which enforces the same editability rule.

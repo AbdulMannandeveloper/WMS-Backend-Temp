@@ -3,6 +3,18 @@
 const { prisma } = require('../lib/prisma');
 const freightRepository = require('../repositories/freight_shipment.repository');
 const auditLogLogic = require('./audit_log.logic');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
+const { removeStoredFile } = require('../lib/objectStorage');
+
+/**
+ * Removes a document's stored file once no document row points at it. Called
+ * after the row is gone, so a failure leaves at worst an unreferenced file.
+ */
+const releaseDocumentFile = async (storageKey) => {
+  if (!storageKey) return;
+  if (await freightRepository.getDocumentByStorageKey(storageKey)) return;
+  await removeStoredFile(storageKey);
+};
 const {
   dateRangeFilter,
   parseEnum,
@@ -728,23 +740,52 @@ const cancelFreightShipment = async (id, actorUserId) => {
 };
 
 /**
- * Removes the record entirely, for a mis-key.
+ * What deleting a freight shipment would refuse on, and what goes with it. See
+ * utils/dependents.js for what blocking and removedWith mean.
  *
- * Refused once the parcel has been received: that arrival is a historical fact
- * the business answers questions about, and the row carrying it is the only place
- * it is written down. The message names cancel, because the person asking almost
- * always wants that instead.
+ * Blocking: the receiving record. That arrival is a historical fact the
+ * business answers questions about, and the row carrying it is the only place
+ * it is written down — so a received shipment is kept for good. It cannot be
+ * cancelled either: RECEIVED is final.
+ *
+ * Removed with it: the documents attached to it.
  */
+const getFreightShipmentDependents = async (id, tx) => {
+  const shipment = await requireShipment(id, tx);
+  const received = shipment.status === 'RECEIVED' || Boolean(shipment.receiving);
+  return {
+    shipment,
+    report: buildReport({
+      blocking: [
+        {
+          key: 'receiving',
+          label: 'Receiving record at the UK warehouse',
+          count: received ? 1 : 0,
+          note: 'Its arrival stays on record, so a received shipment is kept for good.',
+        },
+      ],
+      removedWith: [
+        { key: 'documents', label: 'Attached documents', count: (shipment.documents ?? []).length },
+      ],
+    }),
+  };
+};
+
+/** Removes the record entirely, for a mis-key. */
 const deleteFreightShipment = async (id, actorUserId) => {
-  const shipment = await requireShipment(id);
-
-  if (shipment.status === 'RECEIVED' || shipment.receiving) {
-    throw new Error(
-      'This shipment has been received at the UK warehouse, so its record cannot be deleted. Cancel it instead if it was raised in error.',
-    );
+  // Read under the lock, so a document attached meanwhile is on the list
+  // below rather than cascading away with its file left behind.
+  const shipment = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, 'freight_shipments', id);
+    const { shipment, report } = await getFreightShipmentDependents(id, tx);
+    assertDeletable(`Freight shipment ${shipment.reference}`, report);
+    await freightRepository.deleteFreightShipment(id, tx);
+    return shipment;
+  });
+  // Its documents went with the row (cascade); their files go now.
+  for (const document of shipment.documents ?? []) {
+    await releaseDocumentFile(document.storageKey);
   }
-
-  await freightRepository.deleteFreightShipment(id);
 
   await audit(actorUserId, 'FREIGHT_SHIPMENT_DELETED', {
     freightShipmentId: id,
@@ -804,6 +845,7 @@ const removeDocument = async (id, documentId, actorUserId) => {
   }
 
   await freightRepository.deleteDocument(documentId);
+  await releaseDocumentFile(document.storageKey);
 
   await audit(actorUserId, 'FREIGHT_SHIPMENT_DOCUMENT_REMOVED', {
     freightShipmentId: id,
@@ -838,6 +880,7 @@ module.exports = {
   removeDocument,
   documentForStorageKey,
   // Exported for tests and for the receiving flow's own guards.
+  getFreightShipmentDependents,
   FREIGHT_TRANSITIONS,
   FROZEN_AFTER_RECEIVING,
   assertTransition,

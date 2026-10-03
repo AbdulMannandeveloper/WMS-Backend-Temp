@@ -10,16 +10,16 @@ const getAllShifts = async () => {
   return await prismaShift.findMany();
 };
 
-const getShiftById = async (id) => {
-  return await prismaShift.findUnique({ where: { id } });
+const getShiftById = async (id, tx) => {
+  return await (tx ? tx.shift : prismaShift).findUnique({ where: { id } });
 };
 
 const updateShift = async (id, updateData) => {
   return await prismaShift.update({ where: { id }, data: updateData });
 };
 
-const deleteShift = async (id) => {
-  return await prismaShift.delete({ where: { id } });
+const deleteShift = async (id, tx) => {
+  return await (tx ? tx.shift : prismaShift).delete({ where: { id } });
 };
 
 const getShiftByField = async (field, value) => {
