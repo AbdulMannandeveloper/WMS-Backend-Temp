@@ -1,6 +1,7 @@
 'use strict';
 
 const { prisma } = require('../lib/prisma');
+const { equalsIgnoringCase } = require('../utils/identifiers');
 
 const db = (tx) => tx || prisma;
 
@@ -73,14 +74,18 @@ const resolveIfOpen = async (id, data, tx) => {
  *
  * Several can come back: couriers do recycle numbers eventually, and a line
  * sent separately carries its own. The caller decides what a match means.
+ *
+ * Case is ignored. Tracking numbers are stored as they were keyed in, and a
+ * returns label read out and typed as `ab123456789gb` is the same parcel as the
+ * `AB123456789GB` recorded at dispatch.
  */
 const findDispatchedShipmentsByTracking = async (trackingNumber, tx) =>
   await db(tx).shipment.findMany({
     where: {
       status: 'DISPATCHED',
       OR: [
-        { trackingId: trackingNumber },
-        { shipmentItems: { some: { trackingId: trackingNumber } } },
+        { trackingId: equalsIgnoringCase(trackingNumber) },
+        { shipmentItems: { some: { trackingId: equalsIgnoringCase(trackingNumber) } } },
       ],
     },
     select: {

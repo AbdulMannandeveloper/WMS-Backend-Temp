@@ -1,5 +1,6 @@
 const { prisma } = require("../lib/prisma");
 const { assertAllowedField } = require("../utils/pick");
+const { equalsIgnoringCase, fieldMatch } = require("../utils/identifiers");
 
 const prismaWarehouseLocation = prisma.warehouseLocation;
 
@@ -10,6 +11,12 @@ const LOCATION_QUERY_FIELDS = [
   "parentLocationId",
   "materializedPath",
 ];
+
+// Names keep the case they were typed in but are matched without it, and the
+// database refuses two siblings that differ only in case (migration
+// 20261003140000). The path is a lowercase slug of the names, so case-only
+// siblings would have shared one anyway.
+const CASELESS_FIELDS = ["locationName", "materializedPath"];
 
 const createWarehouseLocation = async (locationData) => {
   return await prismaWarehouseLocation.create({
@@ -92,14 +99,14 @@ const summariseWarehouseLocations = async (where = {}) => {
 const getWarehouseLocationByField = async (field, value) => {
   assertAllowedField(field, LOCATION_QUERY_FIELDS);
   return await prismaWarehouseLocation.findMany({
-    where: { [field]: value },
+    where: fieldMatch(field, value, CASELESS_FIELDS),
   });
 };
 
 const getWarehouseLocationFirstByField = async (field, value) => {
   assertAllowedField(field, LOCATION_QUERY_FIELDS);
   return await prismaWarehouseLocation.findFirst({
-    where: { [field]: value },
+    where: fieldMatch(field, value, CASELESS_FIELDS),
     include: {
       locationClass: {
         include: {
@@ -120,7 +127,7 @@ const getWarehouseLocationByParentAndName = async (
   return await prismaWarehouseLocation.findFirst({
     where: {
       parentLocationId,
-      locationName,
+      locationName: equalsIgnoringCase(locationName),
       ...(excludeId ? { id: { not: excludeId } } : {}),
     },
   });

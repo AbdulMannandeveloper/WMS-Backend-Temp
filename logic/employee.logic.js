@@ -9,6 +9,7 @@ const { enqueueMail } = require('../utils/mailQueue');
 const { normalisePermissions } = require('../utils/permissions');
 const { invalidateCachedUser } = require('../utils/authUserCache');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
+const { normaliseNiNumber } = require('../utils/identifiers');
 
 const INVITE_EXPIRY_HOURS = Number(process.env.INVITE_EXPIRY_HOURS || 24);
 const APP_BASE_URL = process.env.APP_BASE_URL || 'https://myapp.com';
@@ -101,7 +102,7 @@ const addEmployee = async ({ adminId, firstName, lastName, email }) => {
     const emailContent = inviteEmailTemplate({ setupUrl, expiresHours: INVITE_EXPIRY_HOURS });
 
     enqueueMail({
-      to: email,
+      to: newUser.email,
       subject: emailContent.subject,
       html: emailContent.html,
       text: emailContent.text,
@@ -214,11 +215,16 @@ const updateEmployee = async (id, rawUpdateData, actorUserId) => {
   // Blanks clear a field rather than storing an empty string, so an NI number
   // removed in the UI does not collide with the next empty one on the unique
   // index.
-  for (const field of ['jobTitle', 'nationalInsuranceNumber', 'address']) {
+  for (const field of ['jobTitle', 'address']) {
     if (typeof updateData[field] === 'string') {
       const trimmed = updateData[field].trim();
       updateData[field] = trimmed === '' ? null : trimmed;
     }
+  }
+  // One spelling, so `qq 12 34 56 c` is recognised as the QQ123456C already on
+  // file instead of slipping past the unique index as a second person.
+  if (typeof updateData.nationalInsuranceNumber === 'string') {
+    updateData.nationalInsuranceNumber = normaliseNiNumber(updateData.nationalInsuranceNumber);
   }
 
   if (updateData.wageRate !== undefined && updateData.wageRate !== null) {

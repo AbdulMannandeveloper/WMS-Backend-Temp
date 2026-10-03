@@ -1,15 +1,60 @@
 const { prisma } = require('../lib/prisma');
+const { normaliseCode, equalsIgnoringCase } = require('../utils/identifiers');
 
 const prismaProduct = prisma.product;
 
 // Pass `tx` to join an interactive transaction (e.g. create product + opening stock).
 const db = (tx) => (tx ? tx.product : prismaProduct);
 
+// SKU and barcode keep the case they were entered in but are matched without
+// it (utils/identifiers.js), and the database refuses two that differ only in
+// case. Both halves live here so every caller — the product form, goods-in,
+// the scanner — gets the same answer.
+const CODE_FIELDS = ['skuCode', 'barcode'];
+
+const normaliseCodes = (data) => {
+  const out = { ...data };
+  for (const field of CODE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(out, field)) {
+      out[field] = normaliseCode(out[field]);
+    }
+  }
+  return out;
+};
+
+const whereField = (field, value) =>
+  CODE_FIELDS.includes(field) && typeof value === 'string'
+    ? { [field]: equalsIgnoringCase(normaliseCode(value) ?? '') }
+    : { [field]: value };
+
+/**
+ * Says which code is taken, instead of Prisma's constraint dump.
+ *
+ * The case-insensitive indexes report their target as `lower(sku_code::text)`,
+ * the exact ones as `sku_code`; either way the column name is in there.
+ */
+const explainClash = (err) => {
+  if (err?.code !== 'P2002') return err;
+  const target = err.meta?.target;
+  const fields = (Array.isArray(target) ? target : [target]).map((f) => String(f ?? ''));
+  if (fields.some((f) => f.includes('sku'))) {
+    return new Error('That client already has a product with this SKU (letter case is ignored).');
+  }
+  if (fields.some((f) => f.includes('barcode'))) {
+    return new Error('That barcode is already assigned to another product (letter case is ignored).');
+  }
+  return err;
+};
+
 const createProduct = async (productData, tx) => {
-  return await db(tx).create({
-    data: productData,
-    include: { client: true },
-  });
+  try {
+    return await db(tx).create({
+      data: normaliseCodes(productData),
+      include: { client: true },
+    });
+  } catch (err) {
+    throw explainClash(err);
+  }
 };
 
 const getAllProducts = async () => {
@@ -22,7 +67,7 @@ const getAllProducts = async () => {
 
 const getProductsByField = async (field, value) => {
   return await prismaProduct.findMany({
-    where: { [field]: value },
+    where: whereField(field, value),
     include: {
       client: true,
     },
@@ -38,7 +83,7 @@ const getProductsByField = async (field, value) => {
  */
 const getProductsByFieldWithStock = async (field, value, tx) => {
   return await (tx || prisma).product.findMany({
-    where: { [field]: value },
+    where: whereField(field, value),
     include: {
       client: { select: { id: true, companyName: true } },
       stockLevels: {
@@ -60,7 +105,7 @@ const getProductsByFieldWithStock = async (field, value, tx) => {
  */
 const getProductByField = async (field, value, tx) => {
   return await db(tx).findFirst({
-    where: { [field]: value },
+    where: whereField(field, value),
     include: {
       client: true,
     },
@@ -77,11 +122,15 @@ const getProductById = async (id, tx) => {
 };
 
 const updateProduct = async (id, updateData) => {
-  return await prismaProduct.update({
-    where: { id },
-    data: updateData,
-    include: { client: true },
-  });
+  try {
+    return await prismaProduct.update({
+      where: { id },
+      data: normaliseCodes(updateData),
+      include: { client: true },
+    });
+  } catch (err) {
+    throw explainClash(err);
+  }
 };
 
 const deleteProduct = async (id) => {

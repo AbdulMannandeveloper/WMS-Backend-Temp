@@ -9,6 +9,7 @@ const { invalidateCachedUser } = require('../utils/authUserCache');
 const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { enqueueMail } = require('../utils/mailQueue');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
+const { normaliseEmail } = require('../utils/identifiers');
 
 const INVITE_EXPIRY_HOURS = Number(process.env.INVITE_EXPIRY_HOURS || 24);
 const APP_BASE_URL = process.env.APP_BASE_URL || 'https://myapp.com';
@@ -53,6 +54,10 @@ const addClient = async ({ adminId, companyName, contactName, email, mobile, pho
   if (!companyName || !contactName || !email) {
     throw new Error('companyName, contactName, and email are required.');
   }
+
+  // The contact email is also the login, so it is kept in the login's spelling
+  // (see utils/identifiers.js) rather than drifting from it in another case.
+  email = normaliseEmail(email);
 
   if (!/\S+@\S+\.\S+/.test(email)) {
     throw new Error('Invalid email format.');
@@ -196,6 +201,10 @@ const updateClient = async (clientId, updateData, actorUserId) => {
 
   if (Object.keys(dataToUpdate).length === 0) {
     return client;
+  }
+
+  if (typeof dataToUpdate.email === 'string') {
+    dataToUpdate.email = normaliseEmail(dataToUpdate.email);
   }
 
   // The contact email is also the login. Changing one without the other left

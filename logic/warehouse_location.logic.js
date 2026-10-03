@@ -77,8 +77,9 @@ const WAREHOUSE_LOCATION_LIST_SPEC = {
       return { parentLocationId: parseUuid(raw, "parentLocationId") };
     },
     (q) => {
+      // Paths are lowercase slugs (createMaterializedPath), so the prefix is too.
       const prefix = parseString(q.pathPrefix, { label: "pathPrefix" });
-      return prefix ? { materializedPath: { startsWith: prefix } } : undefined;
+      return prefix ? { materializedPath: { startsWith: prefix.toLowerCase() } } : undefined;
     },
     (q) => {
       const hasStock = parseBoolean(q.hasStock, "hasStock");

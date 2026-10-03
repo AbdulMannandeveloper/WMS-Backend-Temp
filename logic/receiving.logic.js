@@ -82,7 +82,8 @@ const assertNoInternalClashes = (lines) => {
     seenSku.set(skuKey, i + 1);
 
     if (barcode) {
-      const barcodeKey = String(barcode).trim();
+      // Case-insensitive like the SKU above and the unique index behind both.
+      const barcodeKey = String(barcode).trim().toLowerCase();
       if (seenBarcode.has(barcodeKey)) {
         throw new Error(
           `${at} repeats barcode ${barcode} from line ${seenBarcode.get(barcodeKey)}. Combine them into one line.`,

@@ -5,6 +5,7 @@ const freightRepository = require('../repositories/freight_shipment.repository')
 const auditLogLogic = require('./audit_log.logic');
 const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { removeStoredFile } = require('../lib/objectStorage');
+const { equalsIgnoringCase, findExactThenIgnoringCase } = require('../utils/identifiers');
 
 /**
  * Removes a document's stored file once no document row points at it. Called
@@ -443,7 +444,7 @@ const FREIGHT_SHIPMENT_LIST_SPEC = {
         maxLength: 80,
       });
       return destinationCountry
-        ? { destinationCountry: { equals: destinationCountry, mode: 'insensitive' } }
+        ? { destinationCountry: equalsIgnoringCase(destinationCountry) }
         : undefined;
     },
     (q) => {
@@ -498,12 +499,20 @@ const lookupByBarcode = async (value) => {
   const code = String(value ?? '').trim();
   if (!code) return { shipment: null, matchedOn: null };
 
-  const byBarcode = await freightRepository.getFreightShipmentByField('barcode', code);
+  // Keyed-in codes come in whatever case the operator typed; the gun reads the
+  // label exactly, so it still gets the indexed exact match first.
+  const byBarcode = await findExactThenIgnoringCase(
+    (match) => freightRepository.getFreightShipmentByField('barcode', match),
+    code,
+  );
   if (byBarcode) {
     return { shipment: await hydrateActors(byBarcode), matchedOn: 'barcode' };
   }
 
-  const byReference = await freightRepository.getFreightShipmentByField('reference', code);
+  const byReference = await findExactThenIgnoringCase(
+    (match) => freightRepository.getFreightShipmentByField('reference', match),
+    code,
+  );
   if (byReference) {
     return { shipment: await hydrateActors(byReference), matchedOn: 'reference' };
   }

@@ -12,6 +12,10 @@ const locationRepository = require("../repositories/location.repository");
 const userRepository = require("../repositories/user.repository");
 const stockLevelRepository = require("../repositories/stock_level.repository");
 const shipmentRepository = require("../repositories/shipment.repository");
+const {
+  equalsIgnoringCase,
+  findExactThenIgnoringCase,
+} = require("../utils/identifiers");
 
 const validateLedgerInput = async (newData, tx) => {
   if (
@@ -55,21 +59,30 @@ const validateLedgerInput = async (newData, tx) => {
     // both bill on dispatch, so a CHECKOUT may reference either. The outbound
     // table is tried first, then the bulk one; whichever is found must be
     // DISPATCHED before its stock can move.
+    //
+    // A reference typed at the bench in lower case still finds its shipment:
+    // see findExactThenIgnoringCase for why it is exact first.
     const client = tx || null;
-    const shipment = client
-      ? await client.shipment.findFirst({ where: { reference: newData.referenceId } })
-      : await shipmentRepository.getShipmentByField(
-          "reference",
-          newData.referenceId,
-        );
+    const reference = String(newData.referenceId).trim();
+    const shipment = await findExactThenIgnoringCase(
+      (match) =>
+        client
+          ? client.shipment.findFirst({ where: { reference: match } })
+          : shipmentRepository.getShipmentByField("reference", match),
+      reference,
+    );
     const source =
       shipment ||
-      (client
-        ? await client.fbaShipment.findFirst({ where: { reference: newData.referenceId } })
-        : await prisma.fbaShipment.findFirst({ where: { reference: newData.referenceId } }));
+      (await findExactThenIgnoringCase(
+        (match) => (client || prisma).fbaShipment.findFirst({ where: { reference: match } }),
+        reference,
+      ));
     if (!source) {
       throw new Error(`Provided shipment not found.`);
     }
+    // Stored as the shipment spells it, so filtering the ledger by reference
+    // finds this movement alongside the ones dispatch wrote.
+    newData.referenceId = source.reference;
     if (source.status !== "DISPATCHED") {
       throw new Error(
         `Shipment must be in DISPATCHED status to be referenced in a checkout movement.`,
@@ -295,7 +308,7 @@ const INVENTORY_LEDGER_LIST_SPEC = {
     },
     (q) => {
       const referenceId = parseString(q.referenceId, { label: "referenceId", maxLength: 100 });
-      return referenceId ? { referenceId } : undefined;
+      return referenceId ? { referenceId: equalsIgnoringCase(referenceId) } : undefined;
     },
     (q) => {
       const fromLocationId = parseUuid(q.fromLocationId, "fromLocationId");
