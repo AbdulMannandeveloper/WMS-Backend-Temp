@@ -39,6 +39,7 @@ const updateService = async (req, res) => {
     const updatedService = await serviceLogic.updateService(
       req.params.id,
       req.body,
+      req.user.id,
     );
     res.status(200).json(updatedService);
   } catch (err) {

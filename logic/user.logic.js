@@ -213,9 +213,18 @@ const updateUser = async (id, rawUpdateData, actorUserId) => {
         }
     }
 
-    const updated = sanitizeUser(await userRepository.updateUser(user.id, updateData));
+    const saved = await userRepository.updateUser(user.id, updateData);
     await invalidateCachedUser(user.id);
-    return updated;
+    // Role and active state above all: who may do what is what the log is for.
+    await auditLogLogic.auditChange(
+        actorUserId,
+        'UPDATE_USER',
+        { userId: user.id, name: `${user.firstName} ${user.lastName}` },
+        user,
+        saved,
+        Object.keys(updateData).filter((key) => key !== 'tokenVersion'),
+    );
+    return sanitizeUser(saved);
 };
 
 const notFound = () => {

@@ -1,4 +1,5 @@
 const holidayRepository = require("../repositories/holiday.repository");
+const auditLogLogic = require("./audit_log.logic");
 
 const createHoliday = async (holidayData) => {
   if (!holidayData.name || !holidayData.startDate) {
@@ -32,7 +33,7 @@ const notFound = () => {
   return error;
 };
 
-const updateHoliday = async (id, rawData) => {
+const updateHoliday = async (id, rawData, actorUserId) => {
   const holiday = await holidayRepository.getHolidayById(id);
   if (!holiday) throw notFound();
 
@@ -60,13 +61,29 @@ const updateHoliday = async (id, rawData) => {
     throw new Error("startDate must be before endDate");
   }
 
-  return await holidayRepository.updateHoliday(id, updateData);
+  const updated = await holidayRepository.updateHoliday(id, updateData);
+  await auditLogLogic.auditChange(
+    actorUserId,
+    "UPDATE_HOLIDAY",
+    { holidayId: id, name: updated.name },
+    holiday,
+    updated,
+    Object.keys(updateData),
+  );
+  return updated;
 };
 
-const deleteHoliday = async (id) => {
+const deleteHoliday = async (id, actorUserId) => {
   const holiday = await holidayRepository.getHolidayById(id);
   if (!holiday) throw notFound();
-  return await holidayRepository.deleteHoliday(id);
+  const deleted = await holidayRepository.deleteHoliday(id);
+  await auditLogLogic.auditQuietly(actorUserId, "DELETE_HOLIDAY", {
+    holidayId: id,
+    name: holiday.name,
+    startDate: holiday.startDate,
+    endDate: holiday.endDate,
+  });
+  return deleted;
 };
 
 module.exports = {

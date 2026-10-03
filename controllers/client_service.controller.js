@@ -8,7 +8,7 @@ const createClientServiceEntry = async (req, res) => {
   try {
     const clientServiceData = req.body;
     const clientService =
-      await clientServiceLogic.addClientService(clientServiceData);
+      await clientServiceLogic.addClientService(clientServiceData, req.user.id);
     res.status(201).json(clientService);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -85,6 +85,7 @@ const updateClientService = async (req, res) => {
     const clientService = await clientServiceLogic.updateClientService(
       id,
       updateData,
+      req.user.id,
     );
     res.status(200).json(clientService);
   } catch (error) {
@@ -101,7 +102,7 @@ const updateClientService = async (req, res) => {
 const deleteClientService = async (req, res) => {
   try {
     const { id } = req.params;
-    await clientServiceLogic.deleteClientService(id);
+    await clientServiceLogic.deleteClientService(id, req.user.id);
     res
       .status(200)
       .json({ message: "Client-service entry deleted successfully." });

@@ -14,6 +14,7 @@ const {
 const shiftRepository = require("../repositories/shift.repository");
 const holidayRepository = require("../repositories/holiday.repository");
 const { prisma } = require("../lib/prisma");
+const auditLogLogic = require("./audit_log.logic");
 /** A date that must parse, because the roster is always about one day. */
 const toDateOrThrow = (value) => {
   const parsed = new Date(String(value).trim());
@@ -395,12 +396,44 @@ const getAttendanceLogByField = async (field, value) => {
   return await attendanceLogRepository.getAttendanceLogByField(field, value);
 };
 
-const updateAttendanceLog = async (id, updateData) => {
+const attendanceLogNotFound = () => {
+  const error = new Error("Attendance log not found.");
+  error.status = 404;
+  return error;
+};
+
+/** How an admin's correction to someone's attendance is named in the log. */
+const attendanceSubject = async (log) => {
+  const person = await prisma.user.findUnique({
+    where: { id: log.userId },
+    select: { firstName: true, lastName: true },
+  });
+  return {
+    attendanceLogId: log.id,
+    userId: log.userId,
+    employeeName: person ? `${person.firstName} ${person.lastName}` : null,
+    date: log.date,
+  };
+};
+
+const updateAttendanceLog = async (id, updateData, actorUserId) => {
+  const existing = await attendanceLogRepository.getAttendanceLogFirstByField("id", id);
+  if (!existing) throw attendanceLogNotFound();
+
   if (updateData.status === "leave") {
     updateData.loginTimestamp = null;
     updateData.logoutTimestamp = null;
   }
-  return await attendanceLogRepository.updateAttendanceLog(id, updateData);
+  const updated = await attendanceLogRepository.updateAttendanceLog(id, updateData);
+  await auditLogLogic.auditChange(
+    actorUserId,
+    "UPDATE_ATTENDANCE_LOG",
+    await attendanceSubject(existing),
+    existing,
+    updated,
+    Object.keys(updateData),
+  );
+  return updated;
 };
 
 const updateLogoutTimestamp = async (id, logoutTimestamp) => {
@@ -426,8 +459,18 @@ const updateLogoutTimestamp = async (id, logoutTimestamp) => {
   });
 };
 
-const deleteAttendanceLog = async (id) => {
-  return await attendanceLogRepository.deleteAttendanceLog(id);
+const deleteAttendanceLog = async (id, actorUserId) => {
+  const existing = await attendanceLogRepository.getAttendanceLogFirstByField("id", id);
+  if (!existing) throw attendanceLogNotFound();
+
+  const deleted = await attendanceLogRepository.deleteAttendanceLog(id);
+  await auditLogLogic.auditQuietly(actorUserId, "DELETE_ATTENDANCE_LOG", {
+    ...(await attendanceSubject(existing)),
+    status: existing.status,
+    loginTimestamp: existing.loginTimestamp,
+    logoutTimestamp: existing.logoutTimestamp,
+  });
+  return deleted;
 };
 
 // US-069: Compute and persist a MonthlyAttendanceSummary for a given user + month

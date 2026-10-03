@@ -1,4 +1,5 @@
 const shiftRepository = require("../repositories/shift.repository");
+const auditLogLogic = require("./audit_log.logic");
 const { buildReport, assertDeletable } = require("../utils/dependents");
 
 /**
@@ -47,7 +48,7 @@ const getShiftByField = async (field, value) => {
   return await shiftRepository.getShiftByField(field, value);
 };
 
-const updateShift = async (id, rawData) => {
+const updateShift = async (id, rawData, actorUserId) => {
   const shift = await shiftRepository.getShiftById(id);
   if (!shift) throw notFound("Shift");
 
@@ -93,7 +94,16 @@ const updateShift = async (id, rawData) => {
     }
   }
 
-  return await shiftRepository.updateShift(id, updateData);
+  const updated = await shiftRepository.updateShift(id, updateData);
+  await auditLogLogic.auditChange(
+    actorUserId,
+    "UPDATE_SHIFT",
+    { shiftId: id, name: updated.name },
+    shift,
+    updated,
+    Object.keys(updateData),
+  );
+  return updated;
 };
 
 /**
@@ -118,10 +128,18 @@ const getShiftDependents = async (id) => {
   };
 };
 
-const deleteShift = async (id) => {
+const deleteShift = async (id, actorUserId) => {
   const { shift, report } = await getShiftDependents(id);
   assertDeletable(`Shift "${shift.name}"`, report);
-  return await shiftRepository.deleteShift(id);
+  const deleted = await shiftRepository.deleteShift(id);
+  await auditLogLogic.auditQuietly(actorUserId, "DELETE_SHIFT", {
+    shiftId: id,
+    name: shift.name,
+    startTime: shift.startTime,
+    endTime: shift.endTime,
+    gracePeriodMins: shift.gracePeriodMins,
+  });
+  return deleted;
 };
 
 module.exports = {

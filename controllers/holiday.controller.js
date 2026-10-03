@@ -35,6 +35,7 @@ const updateHoliday = async (req, res) => {
     const holiday = await holidayLogic.updateHoliday(
       req.params.id,
       req.body,
+      req.user.id,
     );
     res.status(200).json(holiday);
   } catch (error) {
@@ -44,7 +45,7 @@ const updateHoliday = async (req, res) => {
 
 const deleteHoliday = async (req, res) => {
   try {
-    const holiday = await holidayLogic.deleteHoliday(req.params.id);
+    const holiday = await holidayLogic.deleteHoliday(req.params.id, req.user.id);
     res.status(200).json(holiday);
   } catch (error) {
     res.status(error.status || 400).json({ error: error.message });

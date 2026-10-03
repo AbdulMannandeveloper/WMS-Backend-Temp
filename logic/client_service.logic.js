@@ -7,8 +7,17 @@ const {
 } = require("../utils/queryFilters");
 const clientRepository = require("../repositories/client.repository");
 const serviceRepository = require("../repositories/service.repository");
+const auditLogLogic = require("./audit_log.logic");
 
-const addClientService = async (clientServiceData) => {
+/** How an agreed rate is named in its audit entries. */
+const rateSubject = (rate, companyName, serviceDescription) => ({
+  clientServiceId: rate.id,
+  clientId: rate.clientId,
+  companyName,
+  service: serviceDescription,
+});
+
+const addClientService = async (clientServiceData, actorUserId) => {
   // Validate client existence
   const client = await clientRepository.getClientById(
     clientServiceData.clientId,
@@ -38,9 +47,15 @@ const addClientService = async (clientServiceData) => {
   }
 
   // Create the client-service entry
-  return await clientServiceRepository.createClientServiceEntry(
+  const rate = await clientServiceRepository.createClientServiceEntry(
     clientServiceData,
   );
+  await auditLogLogic.auditQuietly(actorUserId, "ADD_AGREED_RATE", {
+    ...rateSubject(rate, client.companyName, service.description),
+    chargedPrice: Number(rate.chargedPrice),
+    unit: rate.unit,
+  });
+  return rate;
 };
 
 /**
@@ -140,7 +155,12 @@ const CLIENT_SERVICE_UPDATE_FIELDS = [
   'unit',
 ];
 
-const updateClientService = async (id, rawUpdateData) => {
+const rateNotFound = () => new Error("Agreed rate not found.");
+
+const updateClientService = async (id, rawUpdateData, actorUserId) => {
+  const before = await clientServiceRepository.getClientServiceById(id);
+  if (!before) throw rateNotFound();
+
   const updateData = {};
   for (const field of CLIENT_SERVICE_UPDATE_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(rawUpdateData, field)) {
@@ -152,11 +172,29 @@ const updateClientService = async (id, rawUpdateData) => {
     throw new Error('A charged price cannot be negative.');
   }
 
-  return await clientServiceRepository.updateClientService(id, updateData);
+  const updated = await clientServiceRepository.updateClientService(id, updateData);
+  await auditLogLogic.auditChange(
+    actorUserId,
+    "UPDATE_AGREED_RATE",
+    rateSubject(before, before.client?.companyName, before.service?.description),
+    before,
+    updated,
+    Object.keys(updateData),
+  );
+  return updated;
 };
 
-const deleteClientService = async (id) => {
-  return await clientServiceRepository.deleteClientService(id);
+const deleteClientService = async (id, actorUserId) => {
+  const before = await clientServiceRepository.getClientServiceById(id);
+  if (!before) throw rateNotFound();
+
+  const deleted = await clientServiceRepository.deleteClientService(id);
+  await auditLogLogic.auditQuietly(actorUserId, "DELETE_AGREED_RATE", {
+    ...rateSubject(before, before.client?.companyName, before.service?.description),
+    chargedPrice: Number(before.chargedPrice),
+    unit: before.unit,
+  });
+  return deleted;
 };
 
 module.exports = {

@@ -45,7 +45,7 @@ const getShiftById = async (req, res) => {
 
 const updateShift = async (req, res) => {
   try {
-    const shift = await shiftLogic.updateShift(req.params.id, req.body);
+    const shift = await shiftLogic.updateShift(req.params.id, req.body, req.user.id);
     res.status(200).json(shift);
   } catch (error) {
     res.status(error.status || 400).json({ error: error.message });
@@ -64,7 +64,7 @@ const getShiftDependents = async (req, res) => {
 
 const deleteShift = async (req, res) => {
   try {
-    const shift = await shiftLogic.deleteShift(req.params.id);
+    const shift = await shiftLogic.deleteShift(req.params.id, req.user.id);
     res.status(200).json(shift);
   } catch (error) {
     if (error.code === "HAS_DEPENDENTS") return res.status(409).json(dependentsBody(error));

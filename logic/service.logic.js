@@ -28,7 +28,12 @@ const getServiceById = async (id) => {
   return await serviceRepository.getServiceById(id);
 };
 
-const updateService = async (id, rawServiceData) => {
+const updateService = async (id, rawServiceData, actorUserId) => {
+  const service = await serviceRepository.getServiceById(id);
+  if (!service) {
+    throw new Error("Service not found.");
+  }
+
   const serviceData = {};
   for (const field of SERVICE_UPDATE_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(rawServiceData, field)) {
@@ -40,7 +45,16 @@ const updateService = async (id, rawServiceData) => {
     throw new Error("Service price cannot be negative");
   }
 
-  return await serviceRepository.updateService(id, serviceData);
+  const updated = await serviceRepository.updateService(id, serviceData);
+  await auditLogLogic.auditChange(
+    actorUserId,
+    "UPDATE_SERVICE",
+    { serviceId: id, description: updated.description },
+    service,
+    updated,
+    Object.keys(serviceData),
+  );
+  return updated;
 };
 
 /**

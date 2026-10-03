@@ -175,7 +175,7 @@ const getClientById = async (clientId) => {
 /**
  * Update client details.
  */
-const updateClient = async (clientId, updateData) => {
+const updateClient = async (clientId, updateData, actorUserId) => {
   if (!clientId) {
     throw new Error('clientId is required.');
   }
@@ -221,6 +221,14 @@ const updateClient = async (clientId, updateData) => {
   if (emailChanged) {
     await invalidateCachedUser(client.userId);
   }
+  await auditLogLogic.auditChange(
+    actorUserId,
+    'UPDATE_CLIENT',
+    { clientId, companyName: updated.companyName },
+    client,
+    updated,
+    Object.keys(dataToUpdate),
+  );
   return updated;
 };
 
