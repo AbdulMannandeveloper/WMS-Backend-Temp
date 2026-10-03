@@ -575,6 +575,7 @@ const reopenPayroll = async (rawMonth, adminUserId) => {
 };
 
 module.exports = {
+  assertMonthOpen,
   setBaseSalary,
   createFineRule,
   getActiveFineRule,
