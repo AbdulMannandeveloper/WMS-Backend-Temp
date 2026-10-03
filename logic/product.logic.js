@@ -6,6 +6,7 @@ const auditLogLogic = require("./audit_log.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const { assertAllowedField } = require("../utils/pick");
 const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
+const { normaliseCode } = require("../utils/identifiers");
 
 const PRODUCT_QUERY_FIELDS = [
   "id",
@@ -25,6 +26,12 @@ const PRODUCT_QUERY_FIELDS = [
  * drifted would be the one an employee could reach from the scanning bench.
  */
 const assertProductIsValid = async (productData) => {
+  // Trimmed before the required check, so a SKU of only spaces counts as none.
+  productData.skuCode = normaliseCode(productData.skuCode);
+  if (Object.prototype.hasOwnProperty.call(productData, "barcode")) {
+    productData.barcode = normaliseCode(productData.barcode);
+  }
+
   if (!productData.productName || !productData.clientId || !productData.skuCode) {
     throw new Error(
       "Name, Client ID, and SKU Code are required to create a product.",
@@ -36,6 +43,29 @@ const assertProductIsValid = async (productData) => {
   const client = await clientRepository.getClientById(productData.clientId);
   if (!client) {
     throw new Error("Client not found.");
+  }
+
+  // The database refuses these too, ignoring case, but only with a constraint
+  // name. Saying which product already holds the code lets the operator go and
+  // use it — the usual meaning of a clash is that the product already exists.
+  const sameSku = (
+    await prodcutRepository.getProductsByField("skuCode", productData.skuCode)
+  ).find((p) => p.clientId === productData.clientId);
+  if (sameSku) {
+    throw new Error(
+      `${client.companyName} already has SKU ${sameSku.skuCode} (${sameSku.productName}). Use that product, or choose a different SKU.`,
+    );
+  }
+  if (productData.barcode) {
+    const [sameBarcode] = await prodcutRepository.getProductsByField(
+      "barcode",
+      productData.barcode,
+    );
+    if (sameBarcode) {
+      throw new Error(
+        `Barcode ${productData.barcode} is already assigned to ${sameBarcode.skuCode} (${sameBarcode.productName}).`,
+      );
+    }
   }
 
   if (productData.size && productData.size <= 0) {
@@ -190,6 +220,13 @@ const updateProduct = async (id, updateData, actorUserId) => {
 
   if (updateData.weight && updateData.weight <= 0) {
     throw new Error("Weight must be a positive number.");
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(updateData, "skuCode") &&
+    !normaliseCode(updateData.skuCode)
+  ) {
+    throw new Error("SKU Code cannot be blank.");
   }
 
   // Binding a scanned barcode to a product is a normal action from the scanner,

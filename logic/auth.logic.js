@@ -127,6 +127,9 @@ const authenticateUser = async (identifier, password) => {
     throw new Error("Invalid credentials.");
   }
 
+  // Neither lookup cares about letter case: the repository stores and matches
+  // both in lowercase, so `Jo@Acme.com` signs in to the account made as
+  // `jo@acme.com`.
   let user = await userRepository.getUserByField("email", identifier);
   if (!user) {
     user = await userRepository.getUserByField("username", identifier);
@@ -211,7 +214,7 @@ const requestAdminSignupOtp = async (payload) => {
     });
 
     enqueueMail({
-      to: email,
+      to: user.email,
       subject: emailContent.subject,
       html: emailContent.html,
       text: emailContent.text,
