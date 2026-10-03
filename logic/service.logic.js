@@ -1,7 +1,7 @@
 const serviceRepository = require("../repositories/service.repository");
 const auditLogLogic = require("./audit_log.logic");
 const { prisma } = require("../lib/prisma");
-const { buildReport, assertDeletable } = require("../utils/dependents");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 
 /**
  * What an admin may change on a catalogue entry.
@@ -71,8 +71,9 @@ const updateService = async (id, rawServiceData, actorUserId) => {
  * billing would recreate it on next use, at a list price of zero, with every
  * client's agreed rate gone.
  */
-const getServiceDependents = async (id) => {
-  const service = await serviceRepository.getServiceById(id);
+const getServiceDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const service = await serviceRepository.getServiceById(id, tx);
   if (!service) {
     const err = new Error("Service not found");
     err.status = 404;
@@ -80,9 +81,9 @@ const getServiceDependents = async (id) => {
   }
 
   const [shipments, fbaShipments, clientRates] = await Promise.all([
-    prisma.shipmentServiceMapping.count({ where: { serviceId: id } }),
-    prisma.fbaShipmentService.count({ where: { serviceId: id } }),
-    prisma.clientService.count({ where: { serviceId: id } }),
+    db.shipmentServiceMapping.count({ where: { serviceId: id } }),
+    db.fbaShipmentService.count({ where: { serviceId: id } }),
+    db.clientService.count({ where: { serviceId: id } }),
   ]);
 
   return {
@@ -127,10 +128,13 @@ const getServiceDependents = async (id) => {
  * @throws {HasDependentsError} (409) while anything in getServiceDependents blocks
  */
 const deleteService = async (id, actorUserId) => {
-  const { service, report } = await getServiceDependents(id);
-  assertDeletable(service.description, report, { deactivatable: !service.code });
-
-  await serviceRepository.deleteService(id);
+  const { service, report } = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "services", id);
+    const found = await getServiceDependents(id, tx);
+    assertDeletable(found.service.description, found.report, { deactivatable: !found.service.code });
+    await serviceRepository.deleteService(id, tx);
+    return found;
+  });
 
   if (actorUserId) {
     await auditLogLogic

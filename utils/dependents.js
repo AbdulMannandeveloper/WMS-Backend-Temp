@@ -20,7 +20,9 @@
  *
  * The same report is served by a `GET /:id/dependents` route — so the warning
  * appears before the admin presses anything — and attached to the 409 a delete
- * answers with, in case something was added in between.
+ * answers with, in case something was added in between. The delete builds it
+ * again inside its own transaction, after lockForDelete, so nothing can be
+ * added between that check and the delete itself.
  */
 
 /**
@@ -73,6 +75,26 @@ const assertDeletable = (subject, report, options) => {
   }
 };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Holds a record's row for the rest of a delete's transaction, so what is
+ * counted after it is still what there is when the delete commits.
+ *
+ * Adding a row that names this one by foreign key takes a KEY SHARE lock on
+ * it, which FOR UPDATE blocks: whatever would add a dependent waits for the
+ * delete, then fails on the missing parent. One that got in first has
+ * committed by the time the lock is granted, so the count that follows sees
+ * it. An edit to the row itself (a status change, say) waits the same way.
+ *
+ * `table` and `column` come from the code, never from a request. An id that is
+ * not a uuid locks nothing, and the lookup after it answers as it always did.
+ */
+const lockForDelete = async (tx, table, id, column = 'id') => {
+  if (typeof id !== 'string' || !UUID.test(id)) return;
+  await tx.$queryRawUnsafe(`SELECT 1 FROM "${table}" WHERE "${column}" = $1::uuid FOR UPDATE`, id);
+};
+
 /** The 409 body a controller sends for a HasDependentsError. */
 const dependentsBody = (err) => ({
   error: err.message,
@@ -80,4 +102,4 @@ const dependentsBody = (err) => ({
   dependents: err.dependents,
 });
 
-module.exports = { buildReport, assertDeletable, HasDependentsError, dependentsBody };
+module.exports = { buildReport, assertDeletable, lockForDelete, HasDependentsError, dependentsBody };

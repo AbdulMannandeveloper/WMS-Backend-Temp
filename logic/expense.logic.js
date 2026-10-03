@@ -1,7 +1,8 @@
 const expenseCategoryRepository = require('../repositories/expense_category.repository');
 const expenseRepository = require('../repositories/expense.repository');
 const auditLogLogic = require('./audit_log.logic');
-const { buildReport, assertDeletable } = require('../utils/dependents');
+const { prisma } = require('../lib/prisma');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { removeStoredFile } = require('../lib/objectStorage');
 
 /** How the receipt upload names a stored receipt (expense.controller uploadReceipt). */
@@ -95,10 +96,10 @@ const updateCategory = async (id, data, adminUserId) => {
  * cannot be left without one — moved to another category with Edit, or
  * deleted — and, for a built-in category, the fact that it is built in.
  */
-const getCategoryDependents = async (id) => {
-  const category = await expenseCategoryRepository.getCategoryById(id);
+const getCategoryDependents = async (id, tx) => {
+  const category = await expenseCategoryRepository.getCategoryById(id, tx);
   if (!category) throw new Error('Expense category not found.');
-  const inUse = await expenseCategoryRepository.countExpensesInCategory(id);
+  const inUse = await expenseCategoryRepository.countExpensesInCategory(id, tx);
   return {
     category,
     report: buildReport({
@@ -122,10 +123,13 @@ const getCategoryDependents = async (id) => {
 };
 
 const deleteCategory = async (id, adminUserId) => {
-  const { category, report } = await getCategoryDependents(id);
-  assertDeletable(`"${category.categoryName}"`, report);
-
-  await expenseCategoryRepository.deleteCategory(id);
+  const category = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, 'expense_categories', id);
+    const { category, report } = await getCategoryDependents(id, tx);
+    assertDeletable(`"${category.categoryName}"`, report);
+    await expenseCategoryRepository.deleteCategory(id, tx);
+    return category;
+  });
 
   if (adminUserId) {
     await auditLogLogic.createAuditLog(adminUserId, 'DELETE_EXPENSE_CATEGORY', {

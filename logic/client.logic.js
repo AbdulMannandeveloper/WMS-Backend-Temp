@@ -6,7 +6,7 @@ const invitationTokenRepository = require('../repositories/invitation-token.repo
 const auditLogLogic = require('./audit_log.logic');
 const { prisma } = require('../lib/prisma');
 const { invalidateCachedUser } = require('../utils/authUserCache');
-const { buildReport, assertDeletable } = require('../utils/dependents');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { enqueueMail } = require('../utils/mailQueue');
 const { inviteEmailTemplate } = require('../utils/emailTemplates');
 
@@ -241,8 +241,9 @@ const updateClient = async (clientId, updateData, actorUserId) => {
  * Restrict), and one with stock on a shelf should not vanish without somebody
  * deciding it should. Product delete already knows how to judge each one.
  */
-const getClientDependents = async (clientId) => {
-  const client = await clientRepository.getClientByField('id', clientId);
+const getClientDependents = async (clientId, tx) => {
+  const db = tx ?? prisma;
+  const client = await db.client.findUnique({ where: { id: clientId } });
   if (!client) {
     const err = new Error('Client not found.');
     err.status = 404;
@@ -251,13 +252,13 @@ const getClientDependents = async (clientId) => {
 
   const [products, shipments, fbaShipments, invoices, returns, ledgerRows, clientServices] =
     await Promise.all([
-      prisma.product.count({ where: { clientId } }),
-      prisma.shipment.count({ where: { clientId } }),
-      prisma.fbaShipment.count({ where: { clientId } }),
-      prisma.monthlyInvoice.count({ where: { clientId } }),
-      prisma.productReturn.count({ where: { clientId } }),
-      prisma.inventoryLedger.count({ where: { userId: client.userId } }),
-      prisma.clientService.count({ where: { clientId } }),
+      db.product.count({ where: { clientId } }),
+      db.shipment.count({ where: { clientId } }),
+      db.fbaShipment.count({ where: { clientId } }),
+      db.monthlyInvoice.count({ where: { clientId } }),
+      db.productReturn.count({ where: { clientId } }),
+      db.inventoryLedger.count({ where: { userId: client.userId } }),
+      db.clientService.count({ where: { clientId } }),
     ]);
 
   return {
@@ -340,10 +341,11 @@ const deleteClient = async (clientId, actorUserId) => {
     throw new Error('clientId is required.');
   }
 
-  const { client, report } = await getClientDependents(clientId);
-  assertDeletable(client.companyName, report, { deactivatable: true });
+  const client = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, 'clients', clientId);
+    const { client, report } = await getClientDependents(clientId, tx);
+    assertDeletable(client.companyName, report, { deactivatable: true });
 
-  await prisma.$transaction(async (tx) => {
     // Their audit entries outlive the login (AuditLog.user is SetNull), so
     // they are named before the link is cleared.
     await tx.auditLog.updateMany({
@@ -351,6 +353,7 @@ const deleteClient = async (clientId, actorUserId) => {
       data: { actorName: `${client.contactName} (${client.companyName}, deleted)`.slice(0, 120) },
     });
     await tx.user.delete({ where: { id: client.userId } });
+    return client;
   });
   await invalidateCachedUser(client.userId);
 

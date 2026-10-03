@@ -8,8 +8,8 @@ const createCategory = async (data) => {
   });
 };
 
-const getCategoryById = async (id) => {
-  return await prismaCategory.findUnique({
+const getCategoryById = async (id, tx) => {
+  return await (tx ? tx.expenseCategory : prismaCategory).findUnique({
     where: { id },
   });
 };
@@ -33,12 +33,12 @@ const updateCategory = async (id, data) => {
   });
 };
 
-const countExpensesInCategory = async (categoryId) => {
-  return await prisma.expense.count({ where: { categoryId } });
+const countExpensesInCategory = async (categoryId, tx) => {
+  return await (tx ?? prisma).expense.count({ where: { categoryId } });
 };
 
-const deleteCategory = async (id) => {
-  return await prismaCategory.delete({
+const deleteCategory = async (id, tx) => {
+  return await (tx ? tx.expenseCategory : prismaCategory).delete({
     where: { id },
   });
 };

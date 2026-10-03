@@ -8,7 +8,7 @@ const {
 const warehouseLocationClassRepository = require("../repositories/warehouse_location_class.repository");
 const auditLogLogic = require("./audit_log.logic");
 const { prisma } = require("../lib/prisma");
-const { buildReport, assertDeletable } = require("../utils/dependents");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 
 const createWarehouseLocation = async (locationData) => {
   const locationName = resolveLocationName(locationData);
@@ -335,8 +335,9 @@ const setWarehouseLocationClassActive = async (id, rawIsActive, actorUserId) => 
  * stays: it can be renamed, not deleted. Empty stock rows (a product that was
  * here and has all gone) are not history and go with the location.
  */
-const getWarehouseLocationDependents = async (id) => {
-  const location = await prisma.warehouseLocation.findUnique({ where: { id } });
+const getWarehouseLocationDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const location = await db.warehouseLocation.findUnique({ where: { id } });
   if (!location) {
     throw notFound("Location");
   }
@@ -347,13 +348,13 @@ const getWarehouseLocationDependents = async (id) => {
   };
   const [children, stocked, emptySlots, shipmentLines, fbaLines, returns, movements] =
     await Promise.all([
-      prisma.warehouseLocation.count({ where: { parentLocationId: id } }),
-      prisma.stockLevel.count({ where: occupied }),
-      prisma.stockLevel.count({ where: { locationId: id, NOT: occupied } }),
-      prisma.shipmentItem.count({ where: { sourceLocationId: id } }),
-      prisma.fbaShipmentItem.count({ where: { sourceLocationId: id } }),
-      prisma.productReturn.count({ where: { restockLocationId: id } }),
-      prisma.inventoryLedger.count({
+      db.warehouseLocation.count({ where: { parentLocationId: id } }),
+      db.stockLevel.count({ where: occupied }),
+      db.stockLevel.count({ where: { locationId: id, NOT: occupied } }),
+      db.shipmentItem.count({ where: { sourceLocationId: id } }),
+      db.fbaShipmentItem.count({ where: { sourceLocationId: id } }),
+      db.productReturn.count({ where: { restockLocationId: id } }),
+      db.inventoryLedger.count({
         where: { OR: [{ fromLocationId: id }, { toLocationId: id }] },
       }),
     ]);
@@ -412,13 +413,21 @@ const getWarehouseLocationDependents = async (id) => {
  * @throws {HasDependentsError} (409) while anything in getWarehouseLocationDependents blocks
  */
 const deleteWarehouseLocation = async (id, actorUserId) => {
-  const { location, report } = await getWarehouseLocationDependents(id);
-  assertDeletable(location.locationName, report, { deactivatable: true });
+  // Locked first: a check-in or move writes its ledger line, which names this
+  // location, before it touches stock — so it waits here and cannot fill a row
+  // that is about to be deleted as empty.
+  const location = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "warehouse_locations", id);
+    const { location, report } = await getWarehouseLocationDependents(id, tx);
+    assertDeletable(location.locationName, report, { deactivatable: true });
 
-  await prisma.$transaction(async (tx) => {
     // StockLevel.location is Restrict, so the empty rows have to go first.
-    await tx.stockLevel.deleteMany({ where: { locationId: id } });
+    // Only empty ones, whatever the check said: a full row stops the delete.
+    await tx.stockLevel.deleteMany({
+      where: { locationId: id, currentQuantity: 0, reservedQuantity: 0 },
+    });
     await tx.warehouseLocation.delete({ where: { id } });
+    return location;
   });
 
   if (actorUserId) {
@@ -550,15 +559,16 @@ const updateWarehouseLocationClass = async (id, updateData) => {
 };
 
 /** Child classes and the locations of this kind, for the warning before a delete. */
-const getWarehouseLocationClassDependents = async (id) => {
-  const locationClass = await prisma.warehouseLocationClass.findUnique({ where: { id } });
+const getWarehouseLocationClassDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const locationClass = await db.warehouseLocationClass.findUnique({ where: { id } });
   if (!locationClass) {
     throw notFound("Location class");
   }
 
   const [childClasses, locations] = await Promise.all([
-    prisma.warehouseLocationClass.count({ where: { parentClassId: id } }),
-    prisma.warehouseLocation.count({ where: { locationClassId: id } }),
+    db.warehouseLocationClass.count({ where: { parentClassId: id } }),
+    db.warehouseLocation.count({ where: { locationClassId: id } }),
   ]);
 
   return {
@@ -588,10 +598,13 @@ const getWarehouseLocationClassDependents = async (id) => {
  * @throws {HasDependentsError} (409) while classes or locations still use it
  */
 const deleteWarehouseLocationClass = async (id, actorUserId) => {
-  const { locationClass, report } = await getWarehouseLocationClassDependents(id);
-  assertDeletable(locationClass.name, report, { deactivatable: true });
-
-  await warehouseLocationClassRepository.deleteWarehouseLocationClass(id);
+  const locationClass = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "warehouse_location_classes", id);
+    const { locationClass, report } = await getWarehouseLocationClassDependents(id, tx);
+    assertDeletable(locationClass.name, report, { deactivatable: true });
+    await warehouseLocationClassRepository.deleteWarehouseLocationClass(id, tx);
+    return locationClass;
+  });
 
   if (actorUserId) {
     await auditLogLogic

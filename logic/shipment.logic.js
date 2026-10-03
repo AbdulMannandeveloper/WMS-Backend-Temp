@@ -16,7 +16,7 @@ const {
   resolveOpenInvoiceFor,
 } = require("./billing_services");
 const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
-const { buildReport, assertDeletable } = require("../utils/dependents");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require("./reversal");
 
 /**
@@ -666,22 +666,23 @@ const updateShipment = async (id, data, actorUserId) => {
  * on the shelf (or the reservation handed back, before dispatch), and the
  * charge lines on unpaid invoices, which are recomputed.
  */
-const getShipmentDependents = async (id) => {
-  const shipment = await requireShipment(id);
+const getShipmentDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const shipment = await requireShipment(id, tx);
   const dispatched = shipment.status === "DISPATCHED";
 
   const [items, services, returns, chargeLines] = await Promise.all([
-    prisma.shipmentItem.findMany({
+    db.shipmentItem.findMany({
       where: { shipmentId: id },
       select: { quantity: true, returnedQuantity: true },
     }),
-    prisma.shipmentServiceMapping.count({ where: { shipmentId: id } }),
-    prisma.productReturn.findMany({
+    db.shipmentServiceMapping.count({ where: { shipmentId: id } }),
+    db.productReturn.findMany({
       where: { shipmentId: id },
       select: { quantity: true, shipmentItemId: true },
     }),
     dispatched
-      ? prisma.invoiceLineItem.findMany({
+      ? db.invoiceLineItem.findMany({
           where: { shipmentId: id, itemType: "SHIPMENT_CHARGE" },
           select: { invoice: { select: { status: true } } },
         })
@@ -757,17 +758,24 @@ const deleteShipment = async (id, actorUserId) => {
     throw new Error("An authenticated user is required to delete a shipment.");
   }
 
-  const { shipment, report } = await getShipmentDependents(id);
-  assertDeletable(`Shipment ${shipment.reference}`, report);
-
-  const reversal = await prisma.$transaction(
+  const { shipment, reversal } = await prisma.$transaction(
     async (tx) => {
+      // Locked, then checked: a dispatch landing between a check and this
+      // would otherwise be deleted as the undispatched shipment it was, with
+      // its goods never put back.
+      await lockForDelete(tx, "shipments", id);
+      const { shipment, report } = await getShipmentDependents(id, tx);
+      assertDeletable(`Shipment ${shipment.reference}`, report);
+
       const shipmentItems = await tx.shipmentItem.findMany({
         where: { shipmentId: id },
       });
 
       if (shipment.status === "DISPATCHED") {
-        return await reverseDispatchedShipment(shipment, shipmentItems, actorUserId, tx);
+        return {
+          shipment,
+          reversal: await reverseDispatchedShipment(shipment, shipmentItems, actorUserId, tx),
+        };
       }
 
       // Not dispatched: nothing left the shelf. A cancelled shipment already
@@ -791,7 +799,7 @@ const deleteShipment = async (id, actorUserId) => {
       }
 
       await shipmentRepositry.deleteShipment(id, tx);
-      return { restored: [], chargeRemoved: false };
+      return { shipment, reversal: { restored: [], chargeRemoved: false } };
     },
     {
       maxWait: 10_000,
@@ -954,9 +962,9 @@ const lineReturnCharges = (shipmentId, tx) =>
  * Blocking, as for a return record: a charge on a paid invoice, and units that
  * are no longer free in the bin they went back to.
  */
-const getLineReturnDependents = async (id) => {
-  const shipment = await requireShipment(id);
-  const [lines, charges] = await Promise.all([lineReturnsOn(id), lineReturnCharges(id)]);
+const getLineReturnDependents = async (id, tx) => {
+  const shipment = await requireShipment(id, tx);
+  const [lines, charges] = await Promise.all([lineReturnsOn(id, tx), lineReturnCharges(id, tx)]);
 
   // Two lines can share a product and a bin; the shelf has to cover both.
   const wanted = new Map();
@@ -967,7 +975,7 @@ const getLineReturnDependents = async (id) => {
   let shortfall = 0;
   for (const [key, quantity] of wanted) {
     const [productId, locationId] = key.split("|");
-    shortfall += Math.max(0, quantity - (await freeUnitsIn(productId, locationId)));
+    shortfall += Math.max(0, quantity - (await freeUnitsIn(productId, locationId, tx)));
   }
 
   const paid = paidAmong(charges).length;
@@ -976,6 +984,7 @@ const getLineReturnDependents = async (id) => {
   return {
     shipment,
     lines,
+    charges,
     report: buildReport({
       blocking: [
         {
@@ -1018,23 +1027,17 @@ const undoLineReturns = async (id, actorUserId) => {
   if (!actorUserId) {
     throw new Error("An authenticated user is required to undo returns.");
   }
-  const { shipment, lines, report } = await getLineReturnDependents(id);
-  if (lines.length === 0) {
-    throw new Error(`Nothing was returned with the line return button on ${shipment.reference}.`);
-  }
-  assertDeletable(`Shipment ${shipment.reference}`, report);
-
-  const undone = await prisma.$transaction(
+  const { shipment, undone } = await prisma.$transaction(
     async (tx) => {
-      // Re-read inside the transaction, as deleteShipment does.
-      const [fresh, charges] = await Promise.all([lineReturnsOn(id, tx), lineReturnCharges(id, tx)]);
-      if (paidAmong(charges).length > 0) {
-        throw new Error(
-          `A return charge for ${shipment.reference} is on a paid invoice — raise a credit note instead.`,
-        );
+      // Checked under the lock, as deleteShipment is.
+      await lockForDelete(tx, "shipments", id);
+      const { shipment, lines, charges, report } = await getLineReturnDependents(id, tx);
+      if (lines.length === 0) {
+        throw new Error(`Nothing was returned with the line return button on ${shipment.reference}.`);
       }
+      assertDeletable(`Shipment ${shipment.reference}`, report);
 
-      for (const line of fresh) {
+      for (const line of lines) {
         const { count } = await tx.shipmentItem.updateMany({
           where: { id: line.id, returnedQuantity: { gte: line.quantity } },
           data: { returnedQuantity: { decrement: line.quantity } },
@@ -1058,8 +1061,11 @@ const undoLineReturns = async (id, actorUserId) => {
 
       await removeChargeLines(charges, tx);
       return {
-        lines: fresh.map((line) => ({ shipmentItemId: line.id, quantity: line.quantity })),
-        chargesRemoved: charges.length,
+        shipment,
+        undone: {
+          lines: lines.map((line) => ({ shipmentItemId: line.id, quantity: line.quantity })),
+          chargesRemoved: charges.length,
+        },
       };
     },
     { maxWait: 10_000, timeout: 30_000 },

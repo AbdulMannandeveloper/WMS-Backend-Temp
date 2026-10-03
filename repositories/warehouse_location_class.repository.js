@@ -48,8 +48,8 @@ const updateWarehouseLocationClass = async (id, updateData) => {
   });
 };
 
-const deleteWarehouseLocationClass = async (id) => {
-  return await prismaWarehouseLocationClass.delete({
+const deleteWarehouseLocationClass = async (id, tx) => {
+  return await (tx ? tx.warehouseLocationClass : prismaWarehouseLocationClass).delete({
     where: { id },
   });
 };

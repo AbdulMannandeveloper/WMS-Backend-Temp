@@ -5,7 +5,7 @@ const stockLevelRepository = require("../repositories/stock_level.repository");
 const auditLogLogic = require("./audit_log.logic");
 const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const { assertAllowedField } = require("../utils/pick");
-const { buildReport, assertDeletable } = require("../utils/dependents");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 
 const PRODUCT_QUERY_FIELDS = [
   "id",
@@ -262,25 +262,26 @@ const OUTBOUND_MOVEMENTS = ["CHECKOUT", "RETURN"];
  *
  * @returns {Promise<null | object>} null when there is no such product
  */
-const getProductDependents = async (id) => {
-  const product = await prodcutRepository.getProductById(id);
+const getProductDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const product = await prodcutRepository.getProductById(id, tx);
   if (!product) {
     return null;
   }
 
   const [onShipments, onFbaShipments, returned, shipped, stockLevels, movementsRemoved] =
     await Promise.all([
-      prisma.shipmentItem.count({ where: { productId: id } }),
-      prisma.fbaShipmentItem.count({ where: { productId: id } }),
+      db.shipmentItem.count({ where: { productId: id } }),
+      db.fbaShipmentItem.count({ where: { productId: id } }),
       // A return is a record of what a client was charged for handling these
       // goods, and product_returns.product_id is Restrict.
-      prisma.productReturn.count({ where: { productId: id } }),
-      prisma.inventoryLedger.count({
+      db.productReturn.count({ where: { productId: id } }),
+      db.inventoryLedger.count({
         where: { productId: id, movementType: { in: OUTBOUND_MOVEMENTS } },
       }),
       // Counted before the delete, because afterwards there is nothing to count.
-      stockLevelRepository.getStockLevelByField("productId", id),
-      prisma.inventoryLedger.count({ where: { productId: id } }),
+      stockLevelRepository.getStockLevelByField("productId", id, tx),
+      db.inventoryLedger.count({ where: { productId: id } }),
     ]);
 
   const unitsRemoved = stockLevels.reduce(
@@ -351,24 +352,29 @@ const getProductDependents = async (id) => {
  * @throws {HasDependentsError} (409) while anything in getProductDependents blocks
  */
 const deleteProduct = async (id, actorUserId) => {
-  const dependents = await getProductDependents(id);
-  if (!dependents) {
-    return null;
-  }
-  const { product, report, stockLevels, unitsRemoved, movementsRemoved } = dependents;
-  assertDeletable(product.productName, report, { deactivatable: true });
+  // Checked under the lock: a dispatch recorded between a check and the
+  // delete would otherwise go with the product's history below, as if it had
+  // never shipped.
+  const deleted = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "products", id);
+    const dependents = await getProductDependents(id, tx);
+    if (!dependents) {
+      return null;
+    }
+    const { product, report, stockLevels, unitsRemoved, movementsRemoved } = dependents;
+    assertDeletable(product.productName, report, { deactivatable: true });
 
-  // A transaction for a window the test suite cannot reach: both guards above
-  // have passed, and a shipment item created between then and the delete below
-  // would make product.delete throw with the ledger rows already gone. Rare,
-  // but the failure is silent and permanent, and one line prevents it.
-  const deletedProduct = await prisma.$transaction(async (tx) => {
     // Explicit, because InventoryLedger.product is Restrict — without this the
     // delete below fails with a foreign-key error rather than doing anything.
     // StockLevel cascades and needs no help.
     await tx.inventoryLedger.deleteMany({ where: { productId: id } });
-    return await tx.product.delete({ where: { id } });
+    const deletedProduct = await tx.product.delete({ where: { id } });
+    return { deletedProduct, stockLevels, unitsRemoved, movementsRemoved };
   });
+  if (!deleted) {
+    return null;
+  }
+  const { deletedProduct, stockLevels, unitsRemoved, movementsRemoved } = deleted;
 
   if (actorUserId) {
     await auditLogLogic.createAuditLog(actorUserId, "DELETE_PRODUCT", {

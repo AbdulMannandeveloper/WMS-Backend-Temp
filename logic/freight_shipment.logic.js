@@ -3,7 +3,7 @@
 const { prisma } = require('../lib/prisma');
 const freightRepository = require('../repositories/freight_shipment.repository');
 const auditLogLogic = require('./audit_log.logic');
-const { buildReport, assertDeletable } = require('../utils/dependents');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { removeStoredFile } = require('../lib/objectStorage');
 
 /**
@@ -750,8 +750,8 @@ const cancelFreightShipment = async (id, actorUserId) => {
  *
  * Removed with it: the documents attached to it.
  */
-const getFreightShipmentDependents = async (id) => {
-  const shipment = await requireShipment(id);
+const getFreightShipmentDependents = async (id, tx) => {
+  const shipment = await requireShipment(id, tx);
   const received = shipment.status === 'RECEIVED' || Boolean(shipment.receiving);
   return {
     shipment,
@@ -773,10 +773,15 @@ const getFreightShipmentDependents = async (id) => {
 
 /** Removes the record entirely, for a mis-key. */
 const deleteFreightShipment = async (id, actorUserId) => {
-  const { shipment, report } = await getFreightShipmentDependents(id);
-  assertDeletable(`Freight shipment ${shipment.reference}`, report);
-
-  await freightRepository.deleteFreightShipment(id);
+  // Read under the lock, so a document attached meanwhile is on the list
+  // below rather than cascading away with its file left behind.
+  const shipment = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, 'freight_shipments', id);
+    const { shipment, report } = await getFreightShipmentDependents(id, tx);
+    assertDeletable(`Freight shipment ${shipment.reference}`, report);
+    await freightRepository.deleteFreightShipment(id, tx);
+    return shipment;
+  });
   // Its documents went with the row (cascade); their files go now.
   for (const document of shipment.documents ?? []) {
     await releaseDocumentFile(document.storageKey);

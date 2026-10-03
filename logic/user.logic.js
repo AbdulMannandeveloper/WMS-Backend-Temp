@@ -6,7 +6,7 @@ const clientRepository = require('../repositories/client.repository');
 const clientLogic = require('./client.logic');
 const auditLogLogic = require('./audit_log.logic');
 const { prisma } = require('../lib/prisma');
-const { buildReport, assertDeletable } = require('../utils/dependents');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
@@ -248,28 +248,29 @@ const notFound = () => {
  * A client login is judged by the client's own rules, which it delegates to —
  * deleting one is deleting the client.
  */
-const getUserDependents = async (id) => {
-    const user = await userRepository.getUserByField('id', id);
+const getUserDependents = async (id, tx) => {
+    const db = tx ?? prisma;
+    const user = await db.user.findUnique({ where: { id } });
     if (!user) {
         throw notFound();
     }
 
     if (user.role === 'client') {
-        const client = await clientRepository.getClientByField('userId', id);
+        const client = await db.client.findUnique({ where: { userId: id } });
         if (client) {
-            const { report } = await clientLogic.getClientDependents(client.id);
+            const { report } = await clientLogic.getClientDependents(client.id, tx);
             return { user, report };
         }
     }
 
-    const employee = await employeeRepository.getEmployeeByField('userId', id);
+    const employee = await db.employee.findUnique({ where: { userId: id }, select: { id: true } });
     const [shipments, ledgerRows, payrollRecords, attendance, fines, bonuses] = await Promise.all([
-        employee ? prisma.shipment.count({ where: { employeeId: employee.id } }) : 0,
-        prisma.inventoryLedger.count({ where: { userId: id } }),
-        prisma.payrollRecord.count({ where: { userId: id } }),
-        prisma.employeeAttendanceLog.count({ where: { userId: id } }),
-        prisma.employeeFine.count({ where: { userId: id } }),
-        prisma.employeeBonus.count({ where: { userId: id } }),
+        employee ? db.shipment.count({ where: { employeeId: employee.id } }) : 0,
+        db.inventoryLedger.count({ where: { userId: id } }),
+        db.payrollRecord.count({ where: { userId: id } }),
+        db.employeeAttendanceLog.count({ where: { userId: id } }),
+        db.employeeFine.count({ where: { userId: id } }),
+        db.employeeBonus.count({ where: { userId: id } }),
     ]);
 
     return {
@@ -314,21 +315,32 @@ const getUserDependents = async (id) => {
  * @throws {HasDependentsError} (409) while records still refer to the login
  */
 const deleteUser = async (id, actorUserId) => {
-    const { user, report } = await getUserDependents(id);
+    const user = await userRepository.getUserByField('id', id);
+    if (!user) {
+        throw notFound();
+    }
     assertNotSelf(user, actorUserId, 'delete');
-
     const name = `${user.firstName} ${user.lastName}`.trim() || user.email;
-    assertDeletable(name, report, { deactivatable: true });
 
+    // A client login is the client, and deleteClient checks again under its
+    // own lock. Checked here as well, so a refusal names the person.
     if (user.role === 'client') {
         const client = await clientRepository.getClientByField('userId', id);
         if (client) {
+            const { report } = await clientLogic.getClientDependents(client.id);
+            assertDeletable(name, report, { deactivatable: true });
             await clientLogic.deleteClient(client.id, actorUserId);
             return { id, name };
         }
     }
 
     await prisma.$transaction(async (tx) => {
+        // The employee row too: shipments name it rather than the login.
+        await lockForDelete(tx, 'users', id);
+        await lockForDelete(tx, 'employees', id, 'user_id');
+        const { report } = await getUserDependents(id, tx);
+        assertDeletable(name, report, { deactivatable: true });
+
         // Before the delete, while the rows still point at this person.
         await tx.auditLog.updateMany({
             where: { userId: id },

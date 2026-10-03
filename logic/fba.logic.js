@@ -51,7 +51,7 @@ const {
 } = require('./billing_services');
 const { renderDeliveryNotePdf } = require('../utils/deliveryNotePdf');
 const { prisma } = require('../lib/prisma');
-const { buildReport, assertDeletable } = require('../utils/dependents');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require('./reversal');
 
 // Prisma's interactive-transaction default is 5s. Preparing a shipment does
@@ -126,10 +126,10 @@ const updateCategory = async (id, { name }, actorUserId) => {
  * it, of any status. A shipment cannot be without one, so they are moved to
  * another category (Edit on each) or deleted first.
  */
-const getCategoryDependents = async (id) => {
-  const category = await fbaRepository.getCategoryById(id);
+const getCategoryDependents = async (id, tx) => {
+  const category = await fbaRepository.getCategoryById(id, tx);
   if (!category) throw new Error('Category not found.');
-  const inUse = await fbaRepository.countShipmentsInCategory(id);
+  const inUse = await fbaRepository.countShipmentsInCategory(id, tx);
   return {
     category,
     report: buildReport({
@@ -147,10 +147,13 @@ const getCategoryDependents = async (id) => {
 };
 
 const deleteCategory = async (id, actorUserId) => {
-  const { category, report } = await getCategoryDependents(id);
-  assertDeletable(`"${category.name}"`, report);
-
-  await fbaRepository.deleteCategory(id);
+  const category = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, 'fba_categories', id);
+    const { category, report } = await getCategoryDependents(id, tx);
+    assertDeletable(`"${category.name}"`, report);
+    await fbaRepository.deleteCategory(id, tx);
+    return category;
+  });
   await audit(actorUserId, 'FBA_CATEGORY_DELETED', { categoryId: id, name: category.name });
   return { message: 'Category deleted.' };
 };
@@ -189,8 +192,8 @@ const isReferenceClash = (error) => {
 
 // ─── Consignments ─────────────────────────────────────────────────────────────
 
-const requireShipment = async (id) => {
-  const shipment = await fbaRepository.getShipmentById(id);
+const requireShipment = async (id, tx) => {
+  const shipment = await fbaRepository.getShipmentById(id, tx);
   if (!shipment) throw new Error('Bulk shipment not found.');
   return shipment;
 };
@@ -1168,21 +1171,22 @@ const legacyLineReturnCharges = (fbaShipmentId, tx) =>
  *    own. Deleted first, from the Returns screen; and what the line Return
  *    button booked before it made records, undone from the shipment.
  */
-const getBulkShipmentDependents = async (id) => {
-  const shipment = await requireShipment(id);
+const getBulkShipmentDependents = async (id, tx) => {
+  const db = tx ?? prisma;
+  const shipment = await requireShipment(id, tx);
   const dispatched = shipment.status === 'DISPATCHED';
   const items = shipment.items || [];
 
   const [returns, legacy, chargeLines, services] = await Promise.all([
-    prisma.productReturn.count({ where: { fbaShipmentId: id } }),
-    legacyLineReturnsOn(id),
+    db.productReturn.count({ where: { fbaShipmentId: id } }),
+    legacyLineReturnsOn(id, tx),
     dispatched
-      ? prisma.invoiceLineItem.findMany({
+      ? db.invoiceLineItem.findMany({
           where: { fbaShipmentId: id, itemType: { in: DISPATCH_CHARGE_TYPES } },
           select: { invoice: { select: { status: true } } },
         })
       : [],
-    prisma.fbaShipmentService.count({ where: { fbaShipmentId: id } }),
+    db.fbaShipmentService.count({ where: { fbaShipmentId: id } }),
   ]);
   const paid = paidAmong(chargeLines).length;
   const picked = dispatched ? 0 : pickedUnitsOf(items);
@@ -1247,9 +1251,9 @@ const getBulkShipmentDependents = async (id) => {
  * the bulk counterpart of shipment.logic getLineReturnDependents, for returns
  * the line Return button booked before it made records.
  */
-const getBulkLineReturnDependents = async (id) => {
-  const shipment = await requireShipment(id);
-  const [lines, charges] = await Promise.all([legacyLineReturnsOn(id), legacyLineReturnCharges(id)]);
+const getBulkLineReturnDependents = async (id, tx) => {
+  const shipment = await requireShipment(id, tx);
+  const [lines, charges] = await Promise.all([legacyLineReturnsOn(id, tx), legacyLineReturnCharges(id, tx)]);
 
   // Two lines can share a product and a bin; the shelf has to cover both.
   const wanted = new Map();
@@ -1260,13 +1264,14 @@ const getBulkLineReturnDependents = async (id) => {
   let shortfall = 0;
   for (const [key, quantity] of wanted) {
     const [productId, locationId] = key.split('|');
-    shortfall += Math.max(0, quantity - (await freeUnitsIn(productId, locationId)));
+    shortfall += Math.max(0, quantity - (await freeUnitsIn(productId, locationId, tx)));
   }
   const paid = paidAmong(charges).length;
 
   return {
     shipment,
     lines,
+    charges,
     report: buildReport({
       blocking: [
         {
@@ -1309,25 +1314,15 @@ const getBulkLineReturnDependents = async (id) => {
  */
 const undoBulkLineReturns = async (id, actorUserId) => {
   if (!actorUserId) throw new Error('An authenticated user is required to undo returns.');
-  const { shipment, lines, report } = await getBulkLineReturnDependents(id);
-  if (lines.length === 0) {
-    throw new Error(`Nothing was returned with the old line return button on ${shipment.reference}.`);
-  }
-  assertDeletable(`Bulk shipment ${shipment.reference}`, report);
-
-  const undone = await prisma.$transaction(async (tx) => {
+  const { shipment, undone } = await prisma.$transaction(async (tx) => {
     await lockShipment(id, tx);
-    const [fresh, charges] = await Promise.all([
-      legacyLineReturnsOn(id, tx),
-      legacyLineReturnCharges(id, tx),
-    ]);
-    if (paidAmong(charges).length > 0) {
-      throw new Error(
-        `A return charge for ${shipment.reference} is on a paid invoice — raise a credit note instead.`,
-      );
+    const { shipment, lines, charges, report } = await getBulkLineReturnDependents(id, tx);
+    if (lines.length === 0) {
+      throw new Error(`Nothing was returned with the old line return button on ${shipment.reference}.`);
     }
+    assertDeletable(`Bulk shipment ${shipment.reference}`, report);
 
-    for (const line of fresh) {
+    for (const line of lines) {
       const { count } = await tx.fbaShipmentItem.updateMany({
         where: { id: line.id, returnedQuantity: { gte: line.quantity } },
         data: { returnedQuantity: { decrement: line.quantity } },
@@ -1350,8 +1345,11 @@ const undoBulkLineReturns = async (id, actorUserId) => {
 
     await removeChargeLines(charges, tx);
     return {
-      lines: fresh.map((line) => ({ fbaShipmentItemId: line.id, quantity: line.quantity })),
-      chargesRemoved: charges.length,
+      shipment,
+      undone: {
+        lines: lines.map((line) => ({ fbaShipmentItemId: line.id, quantity: line.quantity })),
+        chargesRemoved: charges.length,
+      },
     };
   }, TRANSACTION_OPTIONS);
 
@@ -1383,15 +1381,12 @@ const undoBulkLineReturns = async (id, actorUserId) => {
  * charges of their own, and are deleted first, from the Returns screen.
  */
 const remove = async (id, actorUserId) => {
-  const { shipment, report } = await getBulkShipmentDependents(id);
-  assertDeletable(`Bulk shipment ${shipment.reference}`, report);
-
-  const reversal = await prisma.$transaction(async (tx) => {
-    const fresh = await lockShipment(id, tx);
-    if (fresh.status !== shipment.status) {
-      throw new Error(`It changed to ${fresh.status} while you were looking at it. Reopen it and try again.`);
-    }
-    if (fresh.status !== 'DISPATCHED') assertNothingPicked(fresh, 'It cannot be deleted');
+  // Checked under the lock, so the shipment is deleted as it stands — a pick or
+  // dispatch saved since the warning waits, or is what gets counted.
+  const { shipment, reversal } = await prisma.$transaction(async (tx) => {
+    await lockShipment(id, tx);
+    const { shipment, report } = await getBulkShipmentDependents(id, tx);
+    assertDeletable(`Bulk shipment ${shipment.reference}`, report);
     const restored = [];
     let chargesRemoved = 0;
 
@@ -1452,7 +1447,7 @@ const remove = async (id, actorUserId) => {
     }
 
     await fbaRepository.deleteShipment(id, tx);
-    return { restored, chargesRemoved };
+    return { shipment, reversal: { restored, chargesRemoved } };
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {

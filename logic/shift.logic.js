@@ -1,6 +1,7 @@
 const shiftRepository = require("../repositories/shift.repository");
 const auditLogLogic = require("./audit_log.logic");
-const { buildReport, assertDeletable } = require("../utils/dependents");
+const { prisma } = require("../lib/prisma");
+const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 
 /**
  * Check-in times every arrival against the shift called "default", found by
@@ -110,8 +111,8 @@ const updateShift = async (id, rawData, actorUserId) => {
  * What deleting a shift would refuse on. Nothing refers to a shift by id; the
  * one thing that depends on one is check-in, on the "default" shift by name.
  */
-const getShiftDependents = async (id) => {
-  const shift = await shiftRepository.getShiftById(id);
+const getShiftDependents = async (id, tx) => {
+  const shift = await shiftRepository.getShiftById(id, tx);
   if (!shift) throw notFound("Shift");
   return {
     shift,
@@ -129,9 +130,13 @@ const getShiftDependents = async (id) => {
 };
 
 const deleteShift = async (id, actorUserId) => {
-  const { shift, report } = await getShiftDependents(id);
-  assertDeletable(`Shift "${shift.name}"`, report);
-  const deleted = await shiftRepository.deleteShift(id);
+  // Locked, so a rename to or from "default" cannot slip in between.
+  const { shift, deleted } = await prisma.$transaction(async (tx) => {
+    await lockForDelete(tx, "shifts", id);
+    const { shift, report } = await getShiftDependents(id, tx);
+    assertDeletable(`Shift "${shift.name}"`, report);
+    return { shift, deleted: await shiftRepository.deleteShift(id, tx) };
+  });
   await auditLogLogic.auditQuietly(actorUserId, "DELETE_SHIFT", {
     shiftId: id,
     name: shift.name,

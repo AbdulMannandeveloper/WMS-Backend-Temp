@@ -32,7 +32,7 @@ const inventoryLedgerLogic = require('./inventory_ledger.logic');
 const auditLogLogic = require('./audit_log.logic');
 const { normaliseTrackingId } = require('./shipment.logic');
 const { parseUuid } = require('../utils/queryFilters');
-const { buildReport, assertDeletable } = require('../utils/dependents');
+const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require('./reversal');
 const {
   getReturnRateForClient,
@@ -412,10 +412,10 @@ const parseQuantity = (raw) => {
   return amount;
 };
 
-const requireReturn = async (rawId) => {
+const requireReturn = async (rawId, tx) => {
   const id = parseUuid(rawId, 'Return');
   if (!id) throw withStatus('Return not found.', 404);
-  const found = await productReturnRepository.getReturnById(id);
+  const found = await productReturnRepository.getReturnById(id, tx);
   if (!found) throw withStatus('Return not found.', 404);
   return found;
 };
@@ -1000,17 +1000,17 @@ const binName = (location) => location?.materializedPath || location?.locationNa
  *    or moved since. Taking them off anyway would push the count below what is
  *    physically there.
  */
-const getReturnDependents = async (id) => {
-  const productReturn = await requireReturn(id);
+const getReturnDependents = async (id, tx) => {
+  const productReturn = await requireReturn(id, tx);
   const restocked = productReturn.status === 'RESTOCKED' && productReturn.restockLocationId;
 
   const [charges, free] = await Promise.all([
-    prisma.invoiceLineItem.findMany({
+    (tx ?? prisma).invoiceLineItem.findMany({
       where: { returnId: productReturn.id },
       select: { id: true, invoiceId: true, invoice: { select: { status: true } } },
     }),
     restocked
-      ? freeUnitsIn(productReturn.productId, productReturn.restockLocationId)
+      ? freeUnitsIn(productReturn.productId, productReturn.restockLocationId, tx)
       : Promise.resolve(0),
   ]);
   const paid = paidAmong(charges).length;
@@ -1069,23 +1069,14 @@ const deleteReturn = async (id, actorUserId) => {
   if (!actorUserId) {
     throw new Error('An authenticated user is required to delete a return.');
   }
-  const { productReturn, report } = await getReturnDependents(id);
-  assertDeletable(`Return ${productReturn.reference}`, report);
+  const { productReturn, restocked, removedCharges } = await prisma.$transaction(async (tx) => {
+    // Locked, then checked: a restock landing between a check and this would
+    // leave its units on the shelf with no return to account for them.
+    await lockForDelete(tx, 'product_returns', id);
+    const { productReturn, charges, report } = await getReturnDependents(id, tx);
+    assertDeletable(`Return ${productReturn.reference}`, report);
 
-  const restocked = productReturn.status === 'RESTOCKED' && productReturn.restockLocationId;
-
-  const removedCharges = await prisma.$transaction(async (tx) => {
-    // Re-read inside the transaction: the warning was a minute ago.
-    const charges = await tx.invoiceLineItem.findMany({
-      where: { returnId: productReturn.id },
-      include: { invoice: { select: { status: true } } },
-    });
-    if (paidAmong(charges).length > 0) {
-      throw withStatus(
-        `A charge for return ${productReturn.reference} is on a paid invoice — raise a credit note instead.`,
-        409,
-      );
-    }
+    const restocked = productReturn.status === 'RESTOCKED' && productReturn.restockLocationId;
 
     if (productReturn.shipmentItemId) {
       // The line can be short only if its count was edited by hand; the
@@ -1120,7 +1111,7 @@ const deleteReturn = async (id, actorUserId) => {
 
     await removeChargeLines(charges, tx);
     await productReturnRepository.deleteReturn(productReturn.id, tx);
-    return charges.length;
+    return { productReturn, restocked, removedCharges: charges.length };
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'RETURN_DELETED', {
