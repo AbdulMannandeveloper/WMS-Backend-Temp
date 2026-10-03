@@ -440,10 +440,13 @@ describe('dispatching', () => {
   });
 
   it('will not dispatch a shipment with no products', async () => {
+    // One with no products is a DRAFT — made without lines, or with every line
+    // taken off — and a DRAFT is turned away before anything is counted.
     const { body: created } = await createShell();
     const res = await as(ctx.admin).post(`/api/fba-shipments/${created.id}/dispatch`);
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/no products/i);
+    expect(res.body.error).toMatch(/DRAFT bulk shipment cannot become DISPATCHED/);
+    expect((await prisma.fbaShipment.findUnique({ where: { id: created.id } })).status).toBe('DRAFT');
   });
 
   it('cannot be dispatched twice', async () => {

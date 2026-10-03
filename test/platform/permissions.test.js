@@ -35,8 +35,8 @@ beforeEach(async () => {
 });
 
 describe('the vocabulary', () => {
-  it('is sixteen permissions — four modules, four actions', () => {
-    expect(ALL_PERMISSIONS).toHaveLength(16);
+  it('is twenty permissions — five modules, four actions', () => {
+    expect(ALL_PERMISSIONS).toHaveLength(20);
     expect(ALL_PERMISSIONS).toContain('shipments:create');
     expect(ALL_PERMISSIONS).toContain('fba:delete');
     expect(ALL_PERMISSIONS).toContain('inventory:update');

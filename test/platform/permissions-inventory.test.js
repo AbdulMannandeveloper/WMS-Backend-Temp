@@ -108,9 +108,10 @@ describe('create', () => {
       });
     expect(created.status).toBe(201);
 
+    // Opened empty: units arrive only by a movement, like the one below.
     const stock = await as(employeeUser)
       .post('/api/stock')
-      .send({ productId: created.body.id, locationId: location.id, currentQuantity: 5 });
+      .send({ productId: created.body.id, locationId: location.id });
     expect(stock.status).toBe(201);
 
     const movement = await as(employeeUser)
@@ -138,7 +139,7 @@ describe('create', () => {
 });
 
 describe('update', () => {
-  it('opens editing a product and adjusting a stock row', async () => {
+  it('opens editing a product, and reaches the stock-row edit', async () => {
     const stock = await makeStockLevel(product.id, location.id, {
       currentQuantity: 10,
     });
@@ -149,10 +150,12 @@ describe('update', () => {
       .send({ productName: 'Renamed Widget' });
     expect(edited.status).toBe(200);
 
+    // Through the gate — then refused for everyone, because a count changes
+    // only by a stock movement (test/inventory/stock-rows.test.js).
     const adjusted = await as(employeeUser)
       .put(`/api/stock/${stock.id}`)
       .send({ currentQuantity: 12 });
-    expect(adjusted.status).toBe(200);
+    expect(adjusted.status).toBe(409);
   });
 
   it('covers deactivating, which is reversible and is floor work', async () => {
@@ -235,9 +238,10 @@ describe('an admin', () => {
     const stock = await makeStockLevel(product.id, location.id);
 
     expect((await as(admin).get('/api/products')).status).toBe(200);
+    // Past the gate; a count is refused to an admin too, as a ledger matter.
     expect(
       (await as(admin).put(`/api/stock/${stock.id}`).send({ currentQuantity: 1 })).status,
-    ).toBe(200);
+    ).toBe(409);
     expect((await as(admin).delete(`/api/stock/${stock.id}`)).status).not.toBe(403);
   });
 });
