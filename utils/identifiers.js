@@ -44,8 +44,38 @@ const normaliseNiNumber = (value) => {
   return compact === '' ? null : compact;
 };
 
+/**
+ * Codes a client owns: SKUs and product barcodes.
+ *
+ * Trimmed, and blank is no code at all, but the case is kept. A SKU is the
+ * client's own identifier — it is printed on their delivery notes and invoices
+ * and matched against their own systems — so rewriting `abc-red` as `ABC-RED`
+ * would be changing their data. Instead they are compared without regard to
+ * case (equalsIgnoringCase below) and the database refuses two that differ
+ * only in case (migration 20261003130000).
+ */
+const normaliseCode = (value) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+};
+
+/**
+ * A Prisma filter matching `value` exactly, ignoring case.
+ *
+ * Prisma compiles `{ equals, mode: 'insensitive' }` to ILIKE and passes the
+ * value through unescaped, so `_` and `%` in it act as wildcards: a scan of
+ * `AB_1` would also match `ABX1`. Escaping them makes it a true equality test.
+ */
+const equalsIgnoringCase = (value) => ({
+  equals: String(value).replace(/[\\%_]/g, '\\$&'),
+  mode: 'insensitive',
+});
+
 module.exports = {
   normaliseEmail,
   normaliseUsername,
   normaliseNiNumber,
+  normaliseCode,
+  equalsIgnoringCase,
 };

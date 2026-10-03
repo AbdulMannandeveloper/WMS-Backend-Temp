@@ -319,6 +319,11 @@ model Product {
   fbaItems         FbaShipmentItem[]
   productReturns   ProductReturn[]
 
+  // Also unique ignoring case, through expression indexes Prisma cannot
+  // declare: uq_products_client_sku_ci on (client_id, lower(sku_code)) and
+  // uq_products_barcode_ci on lower(barcode), both in migration
+  // 20261003130000_case_insensitive_product_codes. migrate diff ignores them,
+  // so they survive later migrations; they are only visible in SQL.
   @@unique([clientId, skuCode], map: "uq_products_client_sku")
   @@index([clientId], map: "idx_products_client_id")
   @@index([productName, id], map: "idx_products_product_name")
