@@ -28,6 +28,20 @@ import {
 } from '../factories/index.js';
 
 describe('a manual CHECKOUT', () => {
+  /**
+   * A warehouse with units already reserved: CHECKOUT takes stock out of the
+   * reserved quantity (checkoutStockAtomically), so with none reserved it is
+   * refused for want of stock before the reference matters.
+   */
+  const arrange = async () => {
+    const scenario = await makeWarehouseScenario();
+    await prisma.stockLevel.update({
+      where: { id: scenario.stock.id },
+      data: { reservedQuantity: 5 },
+    });
+    return scenario;
+  };
+
   const checkout = (s, referenceId) =>
     as(s.admin).post('/api/inventory-ledgers').send({
       productId: s.product.id,
@@ -38,7 +52,7 @@ describe('a manual CHECKOUT', () => {
     });
 
   it('finds the shipment from a reference typed in lower case', async () => {
-    const s = await makeWarehouseScenario();
+    const s = await arrange();
     const shipment = await makeShipment(s.employee.id, s.client.id, { status: 'DISPATCHED' });
 
     const res = await checkout(s, `  ${shipment.reference.toLowerCase()} `);
@@ -49,7 +63,7 @@ describe('a manual CHECKOUT', () => {
   it('stores the reference as the shipment spells it', async () => {
     // Otherwise filtering the ledger by the reference would miss this movement
     // while finding the ones dispatch wrote.
-    const s = await makeWarehouseScenario();
+    const s = await arrange();
     const shipment = await makeShipment(s.employee.id, s.client.id, { status: 'DISPATCHED' });
 
     const res = await checkout(s, shipment.reference.toLowerCase());
@@ -61,7 +75,7 @@ describe('a manual CHECKOUT', () => {
   it('finds a hand-written reference in its original case from an upper-case entry', async () => {
     // References written before the generators existed are in whatever case
     // they were typed, which is why the input is not simply uppercased.
-    const s = await makeWarehouseScenario();
+    const s = await arrange();
     await makeShipment(s.employee.id, s.client.id, {
       status: 'DISPATCHED',
       reference: 'legacy-order-17',

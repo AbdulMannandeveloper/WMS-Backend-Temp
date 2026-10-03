@@ -172,6 +172,8 @@ model Shipment {
 
 model ExpenseCategory {
   id                String    @id @default(uuid()) @db.Uuid
+  // Also unique ignoring case: uq_expense_categories_name_ci on
+  // lower(category_name), migration 20261003150000 (expression index; SQL only).
   categoryName      String    @unique @map("category_name") @db.VarChar(80)
   isSystemGenerated Boolean   @default(false) @map("is_system_generated")
   expenses          Expense[]
@@ -196,6 +198,8 @@ model Expense {
 
 model Shift {
   id              String   @id @default(uuid()) @db.Uuid
+  // Unique ignoring case: uq_shifts_name_ci on lower(name), migration
+  // 20261003150000 (expression index; SQL only). Check-in finds "default" by it.
   name            String
   startTime       DateTime @db.Time // e.g., 08:00:00
   endTime         DateTime @db.Time // e.g., 17:00:00
@@ -678,6 +682,8 @@ enum FbaShipmentStatus {
 
 model FbaCategory {
   id        String        @id @default(uuid()) @db.Uuid
+  // Also unique ignoring case: uq_fba_categories_name_ci on lower(name),
+  // migration 20261003150000 (expression index; SQL only).
   name      String        @unique @db.VarChar(120)
   createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   shipments FbaShipment[]

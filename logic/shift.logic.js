@@ -10,6 +10,14 @@ const { buildReport, assertDeletable, lockForDelete } = require("../utils/depend
  */
 const DEFAULT_SHIFT_NAME = "default";
 
+/** Shift names ignore case and surrounding spaces, as check-in's lookup does. */
+const sameName = (a, b) =>
+  typeof a === "string" &&
+  typeof b === "string" &&
+  a.trim().toLowerCase() === b.trim().toLowerCase();
+
+const isDefaultShift = (name) => sameName(name, DEFAULT_SHIFT_NAME);
+
 /** What a shift edit may change. Anything else in the body is ignored. */
 const SHIFT_UPDATE_FIELDS = ["name", "startTime", "endTime", "gracePeriodMins"];
 
@@ -20,6 +28,7 @@ const notFound = (what) => {
 };
 
 const createShift = async (shiftData) => {
+  if (typeof shiftData.name === "string") shiftData.name = shiftData.name.trim();
   if (!shiftData.name || !shiftData.startTime || !shiftData.endTime) {
     throw new Error("Missing required fields: ShiftName, startTime, endTime");
   }
@@ -30,7 +39,7 @@ const createShift = async (shiftData) => {
 
   // Check for shift with the same name
   const existingShifts = await shiftRepository.getAllShifts();
-  if (existingShifts.some((shift) => shift.name === shiftData.name)) {
+  if (existingShifts.some((shift) => sameName(shift.name, shiftData.name))) {
     throw new Error("Shift with the same name already exists");
   }
 
@@ -58,11 +67,13 @@ const updateShift = async (id, rawData, actorUserId) => {
     if (rawData && field in rawData) updateData[field] = rawData[field];
   }
 
-  if (
-    "name" in updateData &&
-    shift.name === DEFAULT_SHIFT_NAME &&
-    updateData.name !== DEFAULT_SHIFT_NAME
-  ) {
+  if ("name" in updateData) {
+    updateData.name = typeof updateData.name === "string" ? updateData.name.trim() : updateData.name;
+    if (!updateData.name) throw new Error("Shift name is required.");
+  }
+
+  // Recasing it ("Default") is still the default shift, so that is allowed.
+  if ("name" in updateData && isDefaultShift(shift.name) && !isDefaultShift(updateData.name)) {
     throw new Error(
       'The "default" shift is the one check-in times against, so it cannot be renamed.',
     );
@@ -88,7 +99,7 @@ const updateShift = async (id, rawData, actorUserId) => {
     const existingShifts = await shiftRepository.getAllShifts();
     if (
       existingShifts.some(
-        (shift) => shift.name === updateData.name && shift.id !== id,
+        (shift) => sameName(shift.name, updateData.name) && shift.id !== id,
       )
     ) {
       throw new Error("Shift with the same name already exists");
@@ -121,7 +132,7 @@ const getShiftDependents = async (id, tx) => {
         {
           key: "checkIn",
           label: "Check-in uses it",
-          count: shift.name === DEFAULT_SHIFT_NAME ? 1 : 0,
+          count: isDefaultShift(shift.name) ? 1 : 0,
           note: "Every clock-in is timed against the default shift. Change its hours instead.",
         },
       ],

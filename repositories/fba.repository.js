@@ -1,6 +1,7 @@
 'use strict';
 
 const { prisma } = require('../lib/prisma');
+const { equalsIgnoringCase } = require('../utils/identifiers');
 
 const db = (tx) => tx || prisma;
 
@@ -34,8 +35,10 @@ const getAllCategories = async (tx) =>
 const getCategoryById = async (id, tx) =>
   await db(tx).fbaCategory.findUnique({ where: { id } });
 
+// `Pallet` and `pallet` are one category; the database agrees (migration
+// 20261003150000). Only the duplicate checks look categories up by name.
 const getCategoryByName = async (name, tx) =>
-  await db(tx).fbaCategory.findUnique({ where: { name } });
+  await db(tx).fbaCategory.findFirst({ where: { name: equalsIgnoringCase(name) } });
 
 const updateCategory = async (id, data, tx) =>
   await db(tx).fbaCategory.update({ where: { id }, data });

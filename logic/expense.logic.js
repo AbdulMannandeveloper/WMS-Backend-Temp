@@ -33,7 +33,7 @@ const createCategory = async (data, adminUserId) => {
   }
 
   const normalized = data.categoryName.trim();
-  const existing = await expenseCategoryRepository.getCategoryByName(normalized);
+  const existing = await expenseCategoryRepository.findCategoryIgnoringCase(normalized);
   if (existing) {
     throw new Error('An expense category with this name already exists.');
   }
@@ -73,7 +73,7 @@ const updateCategory = async (id, data, adminUserId) => {
   if (normalized.length > 80) throw new Error('Category name is too long — 80 characters maximum.');
   if (normalized === category.categoryName) return category;
 
-  const clash = await expenseCategoryRepository.getCategoryByName(normalized);
+  const clash = await expenseCategoryRepository.findCategoryIgnoringCase(normalized);
   if (clash && clash.id !== id) {
     throw new Error('An expense category with this name already exists.');
   }
