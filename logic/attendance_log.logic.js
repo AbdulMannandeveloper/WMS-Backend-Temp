@@ -96,6 +96,9 @@ const createAttendanceLog = async (logData) => {
   const createdLog = await attendanceLogRepository.createAttendanceLog(logData);
 
   // Working on a holiday is allowed, but late fines are skipped that day.
+  // The fine is issued even in a month already finalised: the lateness
+  // happened either way. The payroll screen flags that month as changed since
+  // finalising, and Lock & Post again takes it in.
   const holidayDay = await isDateHoliday(logData.date || logData.loginTimestamp);
 
   if (logData.status === "late" && !holidayDay) {

@@ -31,5 +31,9 @@ router.get('/summary', authorizeRoles('admin'), payrollController.getSalarySumma
 
 // Finalize Month
 router.post('/finalize', authorizeRoles('admin'), payrollController.finalizePayroll);
+// Reopening it: its pay records and Salaries expense go, so its fines and
+// bonuses can be corrected; Lock & Post finalises it again.
+router.get('/finalize/:monthYear/dependents', authorizeRoles('admin'), payrollController.getReopenDependents);
+router.delete('/finalize/:monthYear', authorizeRoles('admin'), payrollController.reopenPayroll);
 
 module.exports = router;

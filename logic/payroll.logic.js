@@ -7,10 +7,24 @@ const payrollRepository = require('../repositories/payroll.repository');
 const expenseCategoryRepository = require('../repositories/expense_category.repository');
 const expenseRepository = require('../repositories/expense.repository');
 const auditLogLogic = require('./audit_log.logic');
+const { buildReport } = require('../utils/dependents');
 const { firstOfMonthUtc, endOfMonthUtc, lastDayOfMonthUtc } = require('../utils/dates');
 
 // month_year is a @db.Date, so the boundary must be built in UTC — see utils/dates.js.
 const normalizeMonth = (dateInput) => firstOfMonthUtc(dateInput);
+
+/** "September 2026", for a month normalised by normalizeMonth. */
+const monthLabelOf = (month) =>
+  month.toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+/** A month named in a request ("2026-09" or "2026-09-01"), normalised. */
+const parseMonth = (raw) => {
+  const date = new Date(raw);
+  if (!raw || Number.isNaN(date.getTime())) {
+    throw new Error('A valid month is required, e.g. 2026-09-01.');
+  }
+  return normalizeMonth(date);
+};
 
 const setBaseSalary = async (employeeId, amount, adminUserId) => {
   if (amount === undefined || amount === null || amount < 0) {
@@ -95,18 +109,18 @@ const deleteFineRule = async (id, adminUserId) => {
 // ─── Correcting fines and bonuses ───────────────────────────────────────────────
 
 /**
- * Refuses a change to a fine or bonus in a month whose payroll has been
- * finalised for that employee. The payroll record holds what they were paid;
- * changing what it was worked out from would leave the two disagreeing.
+ * Refuses adding, changing or removing a fine or bonus in a month whose payroll
+ * has been finalised for that employee. The payroll record holds what they
+ * were paid; changing what it was worked out from would leave the two
+ * disagreeing. Reopening the month (reopenPayroll) is the way to correct one.
  */
 const assertMonthOpen = async (userId, date) => {
   const month = normalizeMonth(date);
   const record = await payrollRepository.getPayrollRecordByUserAndMonth(userId, month);
   if (!record) return;
-  const label = month.toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const name = record.user ? `${record.user.firstName} ${record.user.lastName}` : 'this employee';
   const error = new Error(
-    `Payroll for ${label} has been finalised for ${name}, so its fines and bonuses stay as paid.`,
+    `Payroll for ${monthLabelOf(month)} has been finalised for ${name}, so its fines and bonuses stay as paid. Reopen the month to change them.`,
   );
   error.status = 409;
   throw error;
@@ -227,12 +241,14 @@ const createFine = async (data, adminUserId) => {
   if (!user) {
     throw new Error('User not found.');
   }
+  const date = data.date ? new Date(data.date) : new Date();
+  await assertMonthOpen(data.userId, date);
 
   const fine = await employeeFineRepository.createFine({
     userId: data.userId,
     amount: Number(data.amount),
     reason: data.reason,
-    date: data.date ? new Date(data.date) : new Date(),
+    date,
     cancelled: false,
   });
 
@@ -280,12 +296,14 @@ const createBonus = async (data, adminUserId) => {
   if (!user) {
     throw new Error('User not found.');
   }
+  const date = data.date ? new Date(data.date) : new Date();
+  await assertMonthOpen(data.userId, date);
 
   const bonus = await employeeBonusRepository.createBonus({
     userId: data.userId,
     amount: Number(data.amount),
     reason: data.reason,
-    date: data.date ? new Date(data.date) : new Date(),
+    date,
   });
 
   if (adminUserId) {
@@ -364,6 +382,10 @@ const getSalaryBreakdownForEmployee = async (userId, monthDate) => {
     hoursWorked: attendanceSummary?.totalHoursWorked ? Number(attendanceSummary.totalHoursWorked) : 0,
     monthYear: startOfMonth,
     finalised: Boolean(payrollRecord),
+    // What finalising recorded. It drifts from netPay when something changes
+    // afterwards that the lock does not cover: a late check-in's automatic
+    // fine, or a new base salary. The screen flags the difference.
+    finalisedNetPay: payrollRecord ? Number(payrollRecord.netPay) : null,
   };
 };
 
@@ -469,6 +491,89 @@ const finalizePayroll = async (monthYearStr, adminUserId) => {
   };
 };
 
+// ─── Reopening a finalised month ────────────────────────────────────────────────
+
+/** The Salaries expense finalising posted for the month, if there is one. */
+const findSalariesExpense = async (month) => {
+  const category = await expenseCategoryRepository.getCategoryByName('Salaries');
+  if (!category) return null;
+  const [expense] = await expenseRepository.getAllExpenses({
+    categoryId: category.id,
+    date: { gte: month, lte: lastDayOfMonthUtc(month) },
+  });
+  return expense ?? null;
+};
+
+/**
+ * What reopening a finalised month removes: every employee's pay record for
+ * it and the Salaries expense it posted. Nothing blocks it — Lock & Post
+ * writes both again from the corrected fines and bonuses.
+ *
+ * @throws 404 when the month has not been finalised
+ */
+const getReopenDependents = async (rawMonth) => {
+  const month = parseMonth(rawMonth);
+  const label = monthLabelOf(month);
+  const records = await payrollRepository.getPayrollRecordsByMonth(month);
+  if (records.length === 0) {
+    const error = new Error(`Payroll for ${label} has not been finalised.`);
+    error.status = 404;
+    throw error;
+  }
+  const salaries = await findSalariesExpense(month);
+
+  return {
+    month,
+    label,
+    records,
+    salaries,
+    report: buildReport({
+      removedWith: [
+        {
+          key: 'payrollRecords',
+          label: 'Finalised pay records',
+          count: records.length,
+          note: 'What each employee was paid for the month. Lock & Post writes them again.',
+        },
+        {
+          key: 'salariesExpense',
+          label: 'Salaries expense',
+          count: salaries ? 1 : 0,
+          where: '/expenses',
+          note: salaries
+            ? `£${Number(salaries.amount).toFixed(2)} for the month. Lock & Post posts it again.`
+            : undefined,
+        },
+      ],
+    }),
+  };
+};
+
+/**
+ * Reopens a finalised month so its fines and bonuses can be corrected. Pay
+ * records and the Salaries expense go together, so the month is never half
+ * finalised.
+ */
+const reopenPayroll = async (rawMonth, adminUserId) => {
+  const { month, label, records, salaries } = await getReopenDependents(rawMonth);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.payrollRecord.deleteMany({ where: { monthYear: month } });
+    if (salaries) await tx.expense.delete({ where: { id: salaries.id } });
+  });
+
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'REOPEN_PAYROLL', {
+      month: label,
+      employees: records.length,
+      netPayRemoved: records.reduce((sum, r) => sum + Number(r.netPay), 0),
+      salariesExpenseId: salaries?.id ?? null,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+
+  return { message: `Payroll for ${label} reopened.` };
+};
+
 module.exports = {
   setBaseSalary,
   createFineRule,
@@ -484,4 +589,6 @@ module.exports = {
   getSalaryBreakdownForEmployee,
   getSalarySummaryForAll,
   finalizePayroll,
+  getReopenDependents,
+  reopenPayroll,
 };
