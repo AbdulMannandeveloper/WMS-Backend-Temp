@@ -6,6 +6,8 @@ const airFreightController = require('../controllers/air_freight.controller');
 const { authorizeRoles } = require('../middlewares/authorize');
 const { requirePermission } = require('../middlewares/requirePermission');
 const { manifestUpload, handleUploadErrors } = require('../middlewares/manifestUpload');
+const upload = require('../middlewares/upload');
+const photo = (field) => handleUploadErrors(upload.single(field));
 
 const router = express.Router();
 
@@ -65,5 +67,36 @@ router.post(
 );
 router.post('/flights/:id/uploads/:uploadId/commit', staffOrClient('create'), airFreightController.commitUpload);
 router.post('/flights/:id/uploads/:uploadId/discard', staffOrClient('create'), airFreightController.discardUpload);
+
+// ─── Phase 3: landing & customs (staff) ───────────────────────────────────────
+router.post('/flights/:id/landed', staffWith('update'), airFreightController.markLanded);
+router.post('/flights/:id/customs-hold', staffWith('update'), airFreightController.customsHold);
+router.post('/flights/:id/customs-cleared', staffWith('update'), airFreightController.customsCleared);
+
+// ─── Phase 4: receiving bench (staff) ─────────────────────────────────────────
+router.post('/flights/:id/receive-scan', staffWith('update'), airFreightController.receiveScan);
+router.post('/flights/:id/close-receipt', staffWith('update'), airFreightController.closeReceipt);
+router.post('/flights/:id/reopen-receipt', adminOnly, airFreightController.reopenReceipt);
+router.get('/flights/:id/sort-summary', staffWith('read'), airFreightController.sortSummary);
+
+router.post('/boxes/:id/receive-manual', staffWith('update'), airFreightController.receiveManual);
+router.patch('/boxes/:id/measurements', staffWith('update'), airFreightController.recordMeasurements);
+router.post('/boxes/:id/damage', staffWith('update'), photo('photo'), airFreightController.raiseDamage);
+router.post('/boxes/:id/label-issue', staffWith('update'), photo('photo'), airFreightController.raiseLabelIssue);
+router.post('/boxes/:id/customs-hold', staffWith('update'), airFreightController.holdBox);
+router.post('/boxes/:id/customs-release', staffWith('update'), airFreightController.releaseBox);
+
+// ─── Phase 5: handover bench (staff; literal before :id) ──────────────────────
+router.get('/handovers/ready-summary', staffWith('read'), airFreightController.readyForHandover);
+router.get('/handovers', staffWith('read'), airFreightController.listHandovers);
+router.post('/handovers', staffWith('create'), airFreightController.openHandover);
+router.get('/handovers/:id', staffWith('read'), airFreightController.getHandover);
+router.get('/handovers/:id/manifest.pdf', staffWith('read'), airFreightController.handoverManifestPdf);
+router.get('/handovers/:id/proof', staffWith('read'), airFreightController.handoverProof);
+router.post('/handovers/:id/scan', staffWith('update'), airFreightController.scanHandover);
+router.delete('/handovers/:id/boxes/:boxId', staffWith('update'), airFreightController.removeHandoverBox);
+router.post('/handovers/:id/boxes/:boxId/refuse', staffWith('update'), airFreightController.refuseHandoverBox);
+router.post('/handovers/:id/close', staffWith('update'), photo('photo'), airFreightController.closeHandover);
+router.post('/handovers/:id/cancel', staffWith('update'), airFreightController.cancelHandover);
 
 module.exports = router;

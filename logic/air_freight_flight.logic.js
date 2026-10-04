@@ -19,6 +19,7 @@ const { prisma } = require('../lib/prisma');
 const flightRepository = require('../repositories/air_freight_flight.repository');
 const boxRepository = require('../repositories/air_freight_box.repository');
 const eventRepository = require('../repositories/air_freight_event.repository');
+const exceptionRepository = require('../repositories/air_freight_exception.repository');
 const auditLogLogic = require('./audit_log.logic');
 const { recomputeFlightStatus, TERMINAL_BOX_STATUSES } = require('./air_freight_status');
 const { normaliseMawb } = require('../utils/airFreightTracking');
@@ -362,6 +363,148 @@ const cancelFlight = async (id, reasonRaw, actorUserId) => {
   return result.updated;
 };
 
+// ─── Landing & customs (Phase 3) ────────────────────────────────────────────────
+
+/** Writes one timeline event per box id with the given transition. */
+const writeBoxEvents = (rows, flightId, fromToType, source, actorUserId, note, tx) =>
+  eventRepository.createEvents(
+    rows.map((box) => ({
+      boxId: box.id,
+      flightId,
+      fromStatus: box.status ?? fromToType.from ?? null,
+      toStatus: fromToType.to,
+      eventType: fromToType.type,
+      source,
+      userId: actorUserId,
+      note: note ?? null,
+    })),
+    tx,
+  );
+
+/** Marks a dispatched flight landed; every DISPATCHED box becomes LANDED. */
+const markLanded = async (id, { landedAt } = {}, actorUserId) => {
+  const flightId = parseUuid(id, 'Flight');
+  if (!flightId) throw withStatus('Flight not found.', 404);
+  const when = landedAt ? parseDateOrNull(landedAt, 'Landed at') : new Date();
+
+  const result = await prisma.$transaction(async (tx) => {
+    await lockFlight(flightId, tx);
+    const flight = await flightRepository.getFlightCore(flightId, tx);
+    if (!flight) throw withStatus('Flight not found.', 404);
+    if (flight.status !== 'DISPATCHED') {
+      throw withStatus('Only a dispatched flight can be marked landed.', 409);
+    }
+    const boxes = await boxRepository.findIdsByFlightAndStatus(flightId, ['DISPATCHED'], tx);
+    await boxRepository.transitionFlightBoxes(flightId, ['DISPATCHED'], { status: 'LANDED' }, tx);
+    await writeBoxEvents(boxes, flightId, { to: 'LANDED', type: 'LANDED' }, 'SYSTEM', actorUserId, null, tx);
+    await flightRepository.updateFlight(flightId, { landedAt: when, landedByUserId: actorUserId }, tx);
+    const status = await recomputeFlightStatus(flightId, tx);
+    return { status };
+  }, TRANSACTION_OPTIONS);
+
+  await audit(actorUserId, 'AIR_FREIGHT_FLIGHT_LANDED', { flightId });
+  return await flightRepository.getFlightById(flightId);
+};
+
+/**
+ * Flight-wide customs hold: every LANDED/CLEARED/RECEIVED box not on a handover
+ * goes to CUSTOMS_HOLD with holdScope FLIGHT, remembering where it came from.
+ * Raises one flight-level exception. Needs the flight to have landed.
+ */
+const customsHoldFlight = async (id, { note } = {}, actorUserId) => {
+  const flightId = parseUuid(id, 'Flight');
+  if (!flightId) throw withStatus('Flight not found.', 404);
+
+  await prisma.$transaction(async (tx) => {
+    await lockFlight(flightId, tx);
+    const flight = await flightRepository.getFlightCore(flightId, tx);
+    if (!flight) throw withStatus('Flight not found.', 404);
+    if (!flight.landedAt) throw new Error('A flight must have landed before a customs hold.');
+
+    for (const from of ['LANDED', 'CLEARED', 'RECEIVED']) {
+      const boxes = await tx.airFreightBox.findMany({
+        where: { flightId, status: from, handoverId: null },
+        select: { id: true },
+      });
+      if (boxes.length === 0) continue;
+      await tx.airFreightBox.updateMany({
+        where: { flightId, status: from, handoverId: null },
+        data: { status: 'CUSTOMS_HOLD', statusBeforeHold: from, holdScope: 'FLIGHT' },
+      });
+      await writeBoxEvents(boxes, flightId, { from, to: 'CUSTOMS_HOLD', type: 'CUSTOMS_HOLD' }, 'SYSTEM', actorUserId, note, tx);
+    }
+
+    const existing = await exceptionRepository.findOpen({ flightId, type: 'CUSTOMS_HOLD', boxId: null }, tx);
+    if (!existing) {
+      await exceptionRepository.createException(
+        { flightId, type: 'CUSTOMS_HOLD', status: 'OPEN', ownerRole: 'HUB', raisedByUserId: actorUserId, internalNote: note ?? null },
+        tx,
+      );
+    }
+    await flightRepository.updateFlight(flightId, { customsHoldAt: new Date() }, tx);
+    await recomputeFlightStatus(flightId, tx);
+  }, TRANSACTION_OPTIONS);
+
+  await audit(actorUserId, 'AIR_FREIGHT_FLIGHT_CUSTOMS_HOLD', { flightId });
+  return await flightRepository.getFlightById(flightId);
+};
+
+/**
+ * Flight cleared: flight-held boxes return to where they were (LANDED becomes
+ * CLEARED), boxes never held go LANDED→CLEARED, and the flight-level exception
+ * is resolved RELEASED. Box-level holds are left alone.
+ */
+const customsClearedFlight = async (id, actorUserId) => {
+  const flightId = parseUuid(id, 'Flight');
+  if (!flightId) throw withStatus('Flight not found.', 404);
+
+  await prisma.$transaction(async (tx) => {
+    await lockFlight(flightId, tx);
+    const flight = await flightRepository.getFlightCore(flightId, tx);
+    if (!flight) throw withStatus('Flight not found.', 404);
+
+    // Flight-held boxes: RECEIVED restores RECEIVED; LANDED/CLEARED become CLEARED.
+    const heldReceived = await tx.airFreightBox.findMany({
+      where: { flightId, holdScope: 'FLIGHT', statusBeforeHold: 'RECEIVED' }, select: { id: true },
+    });
+    if (heldReceived.length) {
+      await tx.airFreightBox.updateMany({
+        where: { flightId, holdScope: 'FLIGHT', statusBeforeHold: 'RECEIVED' },
+        data: { status: 'RECEIVED', holdScope: null, statusBeforeHold: null },
+      });
+      await writeBoxEvents(heldReceived, flightId, { from: 'CUSTOMS_HOLD', to: 'RECEIVED', type: 'CLEARED' }, 'SYSTEM', actorUserId, null, tx);
+    }
+    const heldOther = await tx.airFreightBox.findMany({
+      where: { flightId, holdScope: 'FLIGHT', statusBeforeHold: { in: ['LANDED', 'CLEARED'] } }, select: { id: true },
+    });
+    if (heldOther.length) {
+      await tx.airFreightBox.updateMany({
+        where: { flightId, holdScope: 'FLIGHT', statusBeforeHold: { in: ['LANDED', 'CLEARED'] } },
+        data: { status: 'CLEARED', holdScope: null, statusBeforeHold: null },
+      });
+      await writeBoxEvents(heldOther, flightId, { from: 'CUSTOMS_HOLD', to: 'CLEARED', type: 'CLEARED' }, 'SYSTEM', actorUserId, null, tx);
+    }
+    // Boxes never held: LANDED → CLEARED.
+    const landed = await boxRepository.findIdsByFlightAndStatus(flightId, ['LANDED'], tx);
+    if (landed.length) {
+      await boxRepository.transitionFlightBoxes(flightId, ['LANDED'], { status: 'CLEARED' }, tx);
+      await writeBoxEvents(landed, flightId, { from: 'LANDED', to: 'CLEARED', type: 'CLEARED' }, 'SYSTEM', actorUserId, null, tx);
+    }
+
+    const open = await exceptionRepository.findOpen({ flightId, type: 'CUSTOMS_HOLD', boxId: null }, tx);
+    if (open) {
+      await exceptionRepository.updateException(open.id, {
+        status: 'RESOLVED', resolution: 'RELEASED', resolvedByUserId: actorUserId, resolvedAt: new Date(),
+      }, tx);
+    }
+    await flightRepository.updateFlight(flightId, { clearedAt: new Date() }, tx);
+    await recomputeFlightStatus(flightId, tx);
+  }, TRANSACTION_OPTIONS);
+
+  await audit(actorUserId, 'AIR_FREIGHT_FLIGHT_CLEARED', { flightId });
+  return await flightRepository.getFlightById(flightId);
+};
+
 // ─── Reads ──────────────────────────────────────────────────────────────────────
 
 const shapeCounts = (grouped) => {
@@ -495,6 +638,10 @@ module.exports = {
   updateFlight,
   dispatchFlight,
   cancelFlight,
+  markLanded,
+  customsHoldFlight,
+  customsClearedFlight,
+  writeBoxEvents,
   getFlight,
   listFlights,
   summariseFlights,

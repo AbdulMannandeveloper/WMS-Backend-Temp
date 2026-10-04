@@ -13,10 +13,16 @@
  *     internal notes, who-did-what and billing never leave the building.
  */
 
+const crypto = require('crypto');
 const settingsLogic = require('../logic/air_freight_settings.logic');
 const flightLogic = require('../logic/air_freight_flight.logic');
 const manifestLogic = require('../logic/air_freight_manifest.logic');
 const boxLogic = require('../logic/air_freight_box.logic');
+const receivingLogic = require('../logic/air_freight_receiving.logic');
+const handoverLogic = require('../logic/air_freight_handover.logic');
+const handoverRepository = require('../repositories/air_freight_handover.repository');
+const { uploadBuffer } = require('../lib/objectStorage');
+const { renderHandoverManifestPdf } = require('../utils/handoverManifestPdf');
 const { pick } = require('../utils/pick');
 const { paginatedResponse, parsePagination } = require('../utils/pagination');
 const { listByFlight: listEventsByFlight } = require('../repositories/air_freight_event.repository');
@@ -328,9 +334,84 @@ const bulkSearchBoxes = async (req, res) => {
   }
 };
 
+// ─── Phase 3: landing & customs ─────────────────────────────────────────────────
+
+const storePhoto = async (file, prefix) => {
+  if (!file || !file.buffer) return null;
+  const ext = (file.originalname || '').match(/\.[a-z0-9]+$/i)?.[0] || '.jpg';
+  const key = `${prefix}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext.toLowerCase()}`;
+  await uploadBuffer(key, file.buffer, file.mimetype || 'application/octet-stream');
+  return key;
+};
+
+const markLanded = async (req, res) => { try { send(req, res, 200, await flightLogic.markLanded(req.params.id, { landedAt: req.body?.landedAt }, actor(req))); } catch (e) { fail(res, e); } };
+const customsHold = async (req, res) => { try { send(req, res, 200, await flightLogic.customsHoldFlight(req.params.id, { note: req.body?.note }, actor(req))); } catch (e) { fail(res, e); } };
+const customsCleared = async (req, res) => { try { send(req, res, 200, await flightLogic.customsClearedFlight(req.params.id, actor(req))); } catch (e) { fail(res, e); } };
+const holdBox = async (req, res) => { try { send(req, res, 200, await receivingLogic.holdBox(req.params.id, { note: req.body?.note }, actor(req))); } catch (e) { fail(res, e); } };
+const releaseBox = async (req, res) => { try { send(req, res, 200, await receivingLogic.releaseBox(req.params.id, actor(req))); } catch (e) { fail(res, e); } };
+
+// ─── Phase 4: receiving bench ───────────────────────────────────────────────────
+
+const receiveScan = async (req, res) => { try { res.status(200).json(await receivingLogic.receiveScan(req.params.id, req.body?.code, actor(req))); } catch (e) { fail(res, e); } };
+const closeReceipt = async (req, res) => { try { send(req, res, 200, await receivingLogic.closeReceipt(req.params.id, actor(req))); } catch (e) { fail(res, e); } };
+const reopenReceipt = async (req, res) => { try { send(req, res, 200, await receivingLogic.reopenReceipt(req.params.id, { reason: req.body?.reason }, actor(req))); } catch (e) { fail(res, e); } };
+const sortSummary = async (req, res) => { try { res.status(200).json(await receivingLogic.sortSummary(req.params.id)); } catch (e) { fail(res, e); } };
+const receiveManual = async (req, res) => { try { send(req, res, 200, await receivingLogic.receiveManually(req.params.id, actor(req))); } catch (e) { fail(res, e); } };
+const recordMeasurements = async (req, res) => { try { send(req, res, 200, await receivingLogic.recordMeasurements(req.params.id, pick(req.body, ['weightKg', 'lengthCm', 'widthCm', 'heightCm']), actor(req))); } catch (e) { fail(res, e); } };
+const raiseDamage = async (req, res) => { try { const photoKey = await storePhoto(req.file, 'afphoto'); send(req, res, 201, await receivingLogic.raiseDamage(req.params.id, { note: req.body?.note, photoKey }, actor(req))); } catch (e) { fail(res, e); } };
+const raiseLabelIssue = async (req, res) => { try { const photoKey = await storePhoto(req.file, 'afphoto'); send(req, res, 201, await receivingLogic.raiseLabelIssue(req.params.id, { note: req.body?.note, photoKey }, actor(req))); } catch (e) { fail(res, e); } };
+
+// ─── Phase 5: handover bench ────────────────────────────────────────────────────
+
+const readyForHandover = async (req, res) => { try { res.status(200).json(await handoverLogic.readyForHandoverSummary()); } catch (e) { fail(res, e); } };
+const listHandovers = async (req, res) => {
+  try {
+    const { items, total } = await handoverLogic.listHandovers(req.query);
+    return res.status(200).json({ data: items, pagination: paginatedResponse(items, total, parsePagination(req.query)).pagination });
+  } catch (e) { return listError(res, e, 'listHandovers'); }
+};
+const openHandover = async (req, res) => { try { res.status(201).json(await handoverLogic.openHandover(pick(req.body, ['courierId', 'depotId', 'depotName', 'vehicleReg', 'driverName']), actor(req))); } catch (e) { fail(res, e); } };
+const getHandover = async (req, res) => { try { res.status(200).json(await handoverLogic.getHandover(req.params.id)); } catch (e) { fail(res, e); } };
+const scanHandover = async (req, res) => { try { res.status(200).json(await handoverLogic.scanHandover(req.params.id, req.body?.code, actor(req))); } catch (e) { fail(res, e); } };
+const removeHandoverBox = async (req, res) => { try { res.status(200).json(await handoverLogic.removeBox(req.params.id, req.params.boxId, actor(req))); } catch (e) { fail(res, e); } };
+const refuseHandoverBox = async (req, res) => { try { res.status(200).json(await handoverLogic.refuseBox(req.params.id, req.params.boxId, { reason: req.body?.reason }, actor(req))); } catch (e) { fail(res, e); } };
+const closeHandover = async (req, res) => {
+  try {
+    const proofPhotoKey = await storePhoto(req.file, 'afproof');
+    res.status(200).json(await handoverLogic.closeHandover(req.params.id, { confirmedCount: req.body?.confirmedCount, depotStaffName: req.body?.depotStaffName, note: req.body?.note, proofPhotoKey }, actor(req)));
+  } catch (e) { fail(res, e); }
+};
+const cancelHandover = async (req, res) => { try { res.status(200).json(await handoverLogic.cancelHandover(req.params.id, actor(req))); } catch (e) { fail(res, e); } };
+const handoverManifestPdf = async (req, res) => {
+  try {
+    const handover = await handoverLogic.getHandover(req.params.id);
+    const rows = handover.boxSnapshot && handover.boxSnapshot.length
+      ? handover.boxSnapshot
+      : handover.boxes.filter((b) => b.status === 'ON_HANDOVER' || b.status === 'REFUSED_AT_DEPOT').map((b) => ({ trackingNumber: b.trackingNumber, flightReference: b.flight?.reference, clientReference: b.clientReference, weightKg: Number(b.measuredWeightKg ?? b.declaredWeightKg), outcome: b.status === 'REFUSED_AT_DEPOT' ? 'REFUSED' : 'HANDED' }));
+    const buffer = renderHandoverManifestPdf(handover, rows);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="handover-${handover.reference}.pdf"`);
+    return res.status(200).send(buffer);
+  } catch (e) { fail(res, e); }
+};
+const handoverProof = async (req, res) => {
+  try {
+    const handover = await handoverRepository.getHandoverById(req.params.id);
+    if (!handover || !handover.proofPhotoKey) return res.status(404).json({ error: 'No proof photo.' });
+    const { getObjectStream } = require('../lib/objectStorage');
+    const { stream, contentType } = await getObjectStream(handover.proofPhotoKey);
+    res.setHeader('Content-Type', contentType || 'image/jpeg');
+    stream.on('error', () => res.destroy());
+    return stream.pipe(res);
+  } catch (e) { if (e.code === 'ENOENT') return res.status(404).json({ error: 'File not found.' }); fail(res, e); }
+};
+
 module.exports = {
   getClientSettings,
   updateClientSettings,
+  markLanded, customsHold, customsCleared, holdBox, releaseBox,
+  receiveScan, closeReceipt, reopenReceipt, sortSummary, receiveManual, recordMeasurements, raiseDamage, raiseLabelIssue,
+  readyForHandover, listHandovers, openHandover, getHandover, scanHandover, removeHandoverBox, refuseHandoverBox, closeHandover, cancelHandover, handoverManifestPdf, handoverProof,
   listFlights,
   summariseFlights,
   createFlight,

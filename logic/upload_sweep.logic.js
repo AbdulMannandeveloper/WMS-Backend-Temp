@@ -50,6 +50,29 @@ const KINDS = [
       return new Set(rows.map((row) => row.storageKey));
     },
   },
+  {
+    // Damage / label-issue photos: on the exception that raised them, and on the
+    // box event that recorded them. Kept while either still points at the key.
+    prefix: 'afphoto-',
+    referenced: async (keys) => {
+      const [excs, events] = await Promise.all([
+        prisma.airFreightException.findMany({ where: { photoKey: { in: keys } }, select: { photoKey: true } }),
+        prisma.airFreightBoxEvent.findMany({ where: { photoKey: { in: keys } }, select: { photoKey: true } }),
+      ]);
+      return new Set([...excs, ...events].map((r) => r.photoKey));
+    },
+  },
+  {
+    // Handover proof-of-delivery photos.
+    prefix: 'afproof-',
+    referenced: async (keys) => {
+      const rows = await prisma.airFreightHandover.findMany({
+        where: { proofPhotoKey: { in: keys } },
+        select: { proofPhotoKey: true },
+      });
+      return new Set(rows.map((row) => row.proofPhotoKey));
+    },
+  },
 ];
 
 /**

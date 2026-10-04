@@ -59,6 +59,18 @@ const findActiveByTracking = async (trackingNumber, tx) =>
     include: includeRelations,
   });
 
+/** Any box with this tracking (incl. terminal), newest first — for the scan miss path. */
+const findAnyByTracking = async (trackingNumber, tx) =>
+  await db(tx).airFreightBox.findFirst({
+    where: { trackingNumber },
+    include: includeRelations,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  });
+
+/** Count of boxes physically at the hub (have a receivedAt), for counters. */
+const countReceived = async (flightId, tx) =>
+  await db(tx).airFreightBox.count({ where: { flightId, receivedAt: { not: null } } });
+
 /**
  * Which of a list of tracking numbers are already live, as a Set.
  *
@@ -158,6 +170,8 @@ module.exports = {
   deleteByFlight,
   countByFlight,
   findActiveByTracking,
+  findAnyByTracking,
+  countReceived,
   existingTrackingNumbers,
   transitionIfStatus,
   transitionFlightBoxes,
