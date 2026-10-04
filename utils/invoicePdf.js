@@ -47,6 +47,7 @@ const ITEM_TYPE_LABELS = {
   MANUAL_CHARGE: 'Manual',
   RECURRING_SERVICE: 'Monthly',
   FBA_CHARGE: 'Bulk Shipment',
+  AIR_FREIGHT_CHARGE: 'Air Freight',
 };
 
 const money = (value) => Number(value ?? 0).toFixed(2);

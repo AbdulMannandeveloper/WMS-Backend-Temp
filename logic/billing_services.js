@@ -45,6 +45,24 @@ const RETURN_SERVICE_CODE = 'ITEM_RETURN';
 // disposal. Same rule as the rest: no agreed rate, no charge.
 const RESTOCK_SERVICE_CODE = 'RETURN_RESTOCK';
 
+// Air freight flight charges, each priced per client through the rate card like
+// everything else. The module never invents a price: a charge a client has no
+// agreed rate for is simply not raised. The unit is informational — the air
+// freight billing calculates the quantity and the line total itself.
+const AIRFREIGHT_PER_KG_CODE = 'AIRFREIGHT_PER_KG';
+const AIRFREIGHT_PER_BOX_CODE = 'AIRFREIGHT_PER_BOX';
+const AIRFREIGHT_STORAGE_CODE = 'AIRFREIGHT_STORAGE';
+const AIRFREIGHT_DAMAGE_CODE = 'AIRFREIGHT_DAMAGE';
+const AIRFREIGHT_RELABEL_CODE = 'AIRFREIGHT_RELABEL';
+
+const AIRFREIGHT_SERVICES = [
+  { code: AIRFREIGHT_PER_KG_CODE, description: 'Air freight (per chargeable kg)', unit: 'kg' },
+  { code: AIRFREIGHT_PER_BOX_CODE, description: 'Air freight handling (per box)', unit: 'box' },
+  { code: AIRFREIGHT_STORAGE_CODE, description: 'Air freight storage (per box per day)', unit: 'box-day' },
+  { code: AIRFREIGHT_DAMAGE_CODE, description: 'Damaged box handling (per box)', unit: 'box' },
+  { code: AIRFREIGHT_RELABEL_CODE, description: 'Box relabelling (per box)', unit: 'box' },
+];
+
 /**
  * The shipment-dispatch service row, created on first use.
  *
@@ -146,6 +164,36 @@ const ensureRestockService = async (tx) => {
       unit: 'item',
     },
   });
+};
+
+/**
+ * The five air freight charge services, created on first use.
+ *
+ * Seeded lazily like the rest: a fresh database, a test database and an existing
+ * one all arrive in the same place without a data migration guessing at prices.
+ * An existing row is never overwritten — a client's agreed rate lives on the
+ * ClientService, not here.
+ */
+const ensureAirFreightServices = async (tx) => {
+  const created = [];
+  for (const spec of AIRFREIGHT_SERVICES) {
+    const existing = await db(tx).service.findUnique({ where: { code: spec.code } });
+    if (existing) {
+      created.push(existing);
+      continue;
+    }
+    created.push(
+      await db(tx).service.create({
+        data: {
+          code: spec.code,
+          description: spec.description,
+          ideaPrice: '0.00',
+          unit: spec.unit,
+        },
+      }),
+    );
+  }
+  return created;
 };
 
 /** The FBA charge service row, created on first use. Mirrors the dispatch one. */
@@ -282,10 +330,17 @@ module.exports = {
   FBA_SERVICE_CODE,
   RETURN_SERVICE_CODE,
   RESTOCK_SERVICE_CODE,
+  AIRFREIGHT_PER_KG_CODE,
+  AIRFREIGHT_PER_BOX_CODE,
+  AIRFREIGHT_STORAGE_CODE,
+  AIRFREIGHT_DAMAGE_CODE,
+  AIRFREIGHT_RELABEL_CODE,
+  AIRFREIGHT_SERVICES,
   ensureShipmentService,
   ensureFbaService,
   ensureReturnService,
   ensureRestockService,
+  ensureAirFreightServices,
   countShippedItems,
   getRateForClient,
   getShipmentRateForClient,

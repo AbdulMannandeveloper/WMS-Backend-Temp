@@ -7,7 +7,6 @@
  *   - a manual CHECKOUT naming the shipment it went out on
  *   - the ledger's reference filter
  *   - a return matched to the shipment by its courier tracking number
- *   - a freight parcel looked up by a code read off a scuffed label
  *
  * Unique system codes are looked up exactly first and only then ignoring case,
  * so dispatch and the scanner keep their indexed lookup.
@@ -21,7 +20,6 @@ import {
   makeWarehouseScenario,
   makeShipment,
   makeLedgerEntry,
-  makeFreightShipment,
   makeAdmin,
   makeClient,
   makeProduct,
@@ -149,34 +147,5 @@ describe('a return matched by tracking number', () => {
 
     expect(res.status).toBe(200);
     expect(JSON.stringify(res.body)).toContain(created.body.id);
-  });
-});
-
-describe('a freight parcel looked up by hand', () => {
-  const lookup = (actor, code) =>
-    as(actor).get(`/api/freight-shipments/lookup/barcode/${encodeURIComponent(code)}`);
-
-  it('finds the barcode keyed in lower case', async () => {
-    const admin = await makeAdmin();
-    const shipment = await makeFreightShipment({ status: 'DISPATCHED' });
-
-    const res = await lookup(admin, shipment.barcode.toLowerCase());
-
-    expect(res.status).toBe(200);
-    expect(res.body.matchedOn).toBe('barcode');
-    expect(res.body.shipment.id).toBe(shipment.id);
-  });
-
-  it('finds a hand-written code in its original case', async () => {
-    const admin = await makeAdmin();
-    const shipment = await makeFreightShipment({
-      reference: 'frt-handwritten-3',
-      barcode: 'frt-handwritten-3',
-    });
-
-    const res = await lookup(admin, 'FRT-HANDWRITTEN-3');
-
-    expect(res.status).toBe(200);
-    expect(res.body.shipment.id).toBe(shipment.id);
   });
 });

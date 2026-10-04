@@ -20,7 +20,9 @@ const {
   ensureFbaService,
   ensureReturnService,
   ensureRestockService,
+  ensureAirFreightServices,
 } = require("./logic/billing_services");
+const { ensureDefaultCouriers } = require("./logic/courier.logic");
 const { scheduleUploadSweep } = require("./logic/upload_sweep.logic");
 
 const PORT = process.env.PORT || 5000;
@@ -77,6 +79,8 @@ const startServer = async () => {
     await ensureFbaService();
     await ensureReturnService();
     await ensureRestockService();
+    await ensureAirFreightServices();
+    await ensureDefaultCouriers();
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

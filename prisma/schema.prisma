@@ -62,21 +62,23 @@ model User {
 }
 
 model Client {
-  id                 String           @id @default(uuid()) @db.Uuid
-  userId             String           @unique @map("user_id") @db.Uuid
-  clientUniqueNumber String           @unique @default(dbgenerated()) @map("client_unique_number") @db.VarChar(30)
-  companyName        String           @map("company_name") @db.VarChar(200)
-  contactName        String           @map("contact_name") @db.VarChar(120)
-  email              String           @db.VarChar(255)
-  mobile             String?          @db.VarChar(25)
+  id                 String                    @id @default(uuid()) @db.Uuid
+  userId             String                    @unique @map("user_id") @db.Uuid
+  clientUniqueNumber String                    @unique @default(dbgenerated()) @map("client_unique_number") @db.VarChar(30)
+  companyName        String                    @map("company_name") @db.VarChar(200)
+  contactName        String                    @map("contact_name") @db.VarChar(120)
+  email              String                    @db.VarChar(255)
+  mobile             String?                   @db.VarChar(25)
   address            String?
-  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   shipments          Shipment[]
   clientServices     ClientService[]
   fbaShipments       FbaShipment[]
   products           Product[]
   monthlyInvoices    MonthlyInvoice[]
   productReturns     ProductReturn[]
+  airFreightFlights  AirFreightFlight[]
+  airFreightSettings AirFreightClientSettings?
 
   @@map("clients")
 }
@@ -572,17 +574,24 @@ model InvoiceLineItem {
   // by following this, not by matching RET-… in the description.
   returnId String? @map("return_id") @db.Uuid
 
+  // The air freight flight this charge belongs to. Set when the flight's billing
+  // is posted, so unposting can find and reverse exactly these lines by id
+  // rather than matching AF-… in the description.
+  airFreightFlightId String? @map("air_freight_flight_id") @db.Uuid
+
   // Relations
-  invoice       MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  clientService ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
-  shipment      Shipment?      @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
-  fbaShipment   FbaShipment?   @relation(fields: [fbaShipmentId], references: [id], onDelete: SetNull)
-  productReturn ProductReturn? @relation(fields: [returnId], references: [id], onDelete: SetNull)
+  invoice          MonthlyInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  clientService    ClientService?    @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+  shipment         Shipment?         @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  fbaShipment      FbaShipment?      @relation(fields: [fbaShipmentId], references: [id], onDelete: SetNull)
+  productReturn    ProductReturn?    @relation(fields: [returnId], references: [id], onDelete: SetNull)
+  airFreightFlight AirFreightFlight? @relation(fields: [airFreightFlightId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId, dateOfService], map: "idx_line_items_invoice_date")
   @@index([shipmentId], map: "idx_line_items_shipment_id")
   @@index([fbaShipmentId], map: "idx_line_items_fba_shipment_id")
   @@index([returnId], map: "idx_line_items_return_id")
+  @@index([airFreightFlightId], map: "idx_line_items_air_freight_flight_id")
   @@map("invoice_line_items")
 }
 
@@ -692,54 +701,54 @@ model FbaCategory {
 }
 
 model FbaShipment {
-  id                 String            @id @default(uuid()) @db.Uuid
+  id                  String            @id @default(uuid()) @db.Uuid
   // The bulk-shipment number the system issues, e.g. BULK-2026-000123. Unique
   // and generated the same way as the outbound Shipment.reference.
-  reference          String            @unique(map: "uq_fba_shipments_reference") @db.VarChar(64)
-  categoryId         String            @map("category_id") @db.Uuid
-  clientId           String            @map("client_id") @db.Uuid
+  reference           String            @unique(map: "uq_fba_shipments_reference") @db.VarChar(64)
+  categoryId          String            @map("category_id") @db.Uuid
+  clientId            String            @map("client_id") @db.Uuid
   // Legacy single-consignment fields from the old record-arrival flow. Nullable
   // now — the multi-product flow carries goods as FbaShipmentItem rows instead.
-  barcode            String?           @db.VarChar(64)
-  size               String?           @db.VarChar(60)
-  count              Int?
+  barcode             String?           @db.VarChar(64)
+  size                String?           @db.VarChar(60)
+  count               Int?
   // Where the bulk shipment is going (e.g. "Amazon Global"), the delivery note,
   // and the courier's tracking number.
-  destination  String?           @db.VarChar(160)
+  destination         String?           @db.VarChar(160)
   // Instructions printed on the delivery note. Legacy rows used this for the
   // floor too, which is why the pick screen still shows it.
-  deliveryNote String?           @map("delivery_note") @db.Text
-  trackingId   String?           @map("tracking_id") @db.VarChar(64)
+  deliveryNote        String?           @map("delivery_note") @db.Text
+  trackingId          String?           @map("tracking_id") @db.VarChar(64)
   // Mode of dispatch — carrier and service, e.g. "EVRI NEXT DAY". Printed as the
   // carrier on the delivery note.
-  dispatchMode        String?    @map("dispatch_mode") @db.VarChar(80)
+  dispatchMode        String?           @map("dispatch_mode") @db.VarChar(80)
   // For the people picking it. Never printed.
-  staffNote           String?    @map("staff_note") @db.Text
+  staffNote           String?           @map("staff_note") @db.Text
   // The rest of the delivery note: the client's order reference, the full
   // deliver-to block (destination above is its name), and the collection.
-  orderReference      String?    @map("order_reference") @db.VarChar(64)
-  deliveryAddress     String?    @map("delivery_address") @db.Text
-  deliveryPostcode    String?    @map("delivery_postcode") @db.VarChar(20)
-  deliveryContact     String?    @map("delivery_contact") @db.VarChar(120)
-  vehicleRegistration String?    @map("vehicle_registration") @db.VarChar(20)
-  palletCount         Int?       @map("pallet_count")
-  status       FbaShipmentStatus @default(DRAFT)
+  orderReference      String?           @map("order_reference") @db.VarChar(64)
+  deliveryAddress     String?           @map("delivery_address") @db.Text
+  deliveryPostcode    String?           @map("delivery_postcode") @db.VarChar(20)
+  deliveryContact     String?           @map("delivery_contact") @db.VarChar(120)
+  vehicleRegistration String?           @map("vehicle_registration") @db.VarChar(20)
+  palletCount         Int?              @map("pallet_count")
+  status              FbaShipmentStatus @default(DRAFT)
   // Who carried out each of the three steps. Plain ids rather than relations:
   // this is an audit breadcrumb, and the three steps may all be one person.
-  createdByUserId    String?           @map("created_by_user_id") @db.Uuid
-  preparedByUserId   String?           @map("prepared_by_user_id") @db.Uuid
-  dispatchedByUserId String?           @map("dispatched_by_user_id") @db.Uuid
-  receivedAt         DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
-  dispatchedAt       DateTime?         @map("dispatched_at") @db.Timestamptz(6)
-  notes              String?           @db.Text
+  createdByUserId     String?           @map("created_by_user_id") @db.Uuid
+  preparedByUserId    String?           @map("prepared_by_user_id") @db.Uuid
+  dispatchedByUserId  String?           @map("dispatched_by_user_id") @db.Uuid
+  receivedAt          DateTime          @default(now()) @map("received_at") @db.Timestamptz(6)
+  dispatchedAt        DateTime?         @map("dispatched_at") @db.Timestamptz(6)
+  notes               String?           @db.Text
 
-  category FbaCategory          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  client   Client               @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  items    FbaShipmentItem[]
-  services FbaShipmentService[]
+  category       FbaCategory          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  client         Client               @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items          FbaShipmentItem[]
+  services       FbaShipmentService[]
   // The charges its dispatch raised, so deleting it can take exactly those off
   // the invoice.
-  invoiceLines InvoiceLineItem[]
+  invoiceLines   InvoiceLineItem[]
   productReturns ProductReturn[]
 
   @@index([clientId, status], map: "idx_fba_shipments_client_status")
@@ -792,13 +801,11 @@ model FbaShipmentItem {
 
 /**
  * Goods coming back to the warehouse, booked at the returns bench.
- *
  * Two steps. Recording it (tracking number + product scan) issues the RET-…
  * number and charges the client's ITEM_RETURN rate. Then someone decides what
  * happens to the goods: disposed of, which costs nothing further, or inspected
  * and put back on a shelf, which is a RETURN stock movement and a second charge
  * at the client's RETURN_RESTOCK rate.
- *
  * When the tracking number matches a dispatched shipment carrying this product,
  * the return is linked to that line and moves its returnedQuantity at the moment
  * it is recorded — the goods have come back whatever is decided for them. That
@@ -810,9 +817,9 @@ model FbaShipmentItem {
 // palletising...). Charged automatically on dispatch, beside the per-unit Bulk
 // Shipment rate, at the client's rate on the day it is dispatched.
 model FbaShipmentService {
-  id               String  @id @default(uuid()) @db.Uuid
-  fbaShipmentId    String  @map("fba_shipment_id") @db.Uuid
-  serviceId        String  @map("service_id") @db.Uuid
+  id               String   @id @default(uuid()) @db.Uuid
+  fbaShipmentId    String   @map("fba_shipment_id") @db.Uuid
+  serviceId        String   @map("service_id") @db.Uuid
   // The rate it was checked against when attached, then the one it was charged
   // at. Nullable so the row survives the rate being removed.
   clientServiceId  String?  @map("client_service_id") @db.Uuid
@@ -838,35 +845,35 @@ enum ReturnStatus {
 }
 
 model ProductReturn {
-  id               String       @id @default(uuid()) @db.Uuid
+  id                String       @id @default(uuid()) @db.Uuid
   // RET-<year>-<sequence>, issued the same way as Shipment.reference.
-  reference        String       @unique(map: "uq_product_returns_reference") @db.VarChar(64)
+  reference         String       @unique(map: "uq_product_returns_reference") @db.VarChar(64)
   // The courier number on the parcel that came back, as scanned. Null when
   // booked from a shipment line (the line is the link) and the shipment had none.
-  trackingNumber   String?      @map("tracking_number") @db.VarChar(64)
+  trackingNumber    String?      @map("tracking_number") @db.VarChar(64)
   // Whose goods these are. Taken from the product, never from the request.
-  clientId         String       @map("client_id") @db.Uuid
-  productId        String       @map("product_id") @db.Uuid
-  quantity         Int
-  status           ReturnStatus @default(RECORDED)
+  clientId          String       @map("client_id") @db.Uuid
+  productId         String       @map("product_id") @db.Uuid
+  quantity          Int
+  status            ReturnStatus @default(RECORDED)
   // The dispatched shipment the tracking number matched, and the line on it
   // carrying this product. Both optional: plenty of returns arrive under a
   // label this system never issued.
-  shipmentId       String?      @map("shipment_id") @db.Uuid
-  shipmentItemId   String?      @map("shipment_item_id") @db.Uuid
+  shipmentId        String?      @map("shipment_id") @db.Uuid
+  shipmentItemId    String?      @map("shipment_item_id") @db.Uuid
   // The same for a bulk shipment, when booked from its line's Return button.
   // A return names one or the other, never both.
-  fbaShipmentId     String?     @map("fba_shipment_id") @db.Uuid
-  fbaShipmentItemId String?     @map("fba_shipment_item_id") @db.Uuid
+  fbaShipmentId     String?      @map("fba_shipment_id") @db.Uuid
+  fbaShipmentItemId String?      @map("fba_shipment_item_id") @db.Uuid
   // Where it went back on the shelf. Set only when RESTOCKED.
-  restockLocationId String?     @map("restock_location_id") @db.Uuid
-  notes            String?      @db.Text
-  dispositionNotes String?      @map("disposition_notes") @db.Text
+  restockLocationId String?      @map("restock_location_id") @db.Uuid
+  notes             String?      @db.Text
+  dispositionNotes  String?      @map("disposition_notes") @db.Text
   // Plain ids, as on FbaShipment: an audit breadcrumb, not a relation to walk.
-  recordedByUserId String?      @map("recorded_by_user_id") @db.Uuid
-  resolvedByUserId String?      @map("resolved_by_user_id") @db.Uuid
-  recordedAt       DateTime     @default(now()) @map("recorded_at") @db.Timestamptz(6)
-  resolvedAt       DateTime?    @map("resolved_at") @db.Timestamptz(6)
+  recordedByUserId  String?      @map("recorded_by_user_id") @db.Uuid
+  resolvedByUserId  String?      @map("resolved_by_user_id") @db.Uuid
+  recordedAt        DateTime     @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  resolvedAt        DateTime?    @map("resolved_at") @db.Timestamptz(6)
 
   client          Client             @relation(fields: [clientId], references: [id], onDelete: Restrict)
   product         Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -894,6 +901,7 @@ enum LineItemType {
   SHIPMENT_CHARGE // Billing for shipment dispatch, per item shipped
   RECURRING_SERVICE // A standing monthly charge, raised whether or not anything shipped
   FBA_CHARGE // An FBA consignment leaving, billed per item
+  AIR_FREIGHT_CHARGE // Air freight flight charges (freight, handling, storage, add-ons)
 }
 
 model FineRule {
@@ -957,144 +965,421 @@ model AuditLog {
 }
 
 /**
- * ── Freight: Pakistan → UK ───────────────────────────────────────────────────
- * A separate leg from everything above it. `Shipment` is stock leaving this
- * warehouse for a client's customer and `FbaShipment` is a consignment going to
- * Amazon; a freight shipment is a parcel booked in Pakistan by a private sender
- * and received at the UK bench weeks later.
- * It deliberately touches neither Client nor Product. The sender is a person who
- * walked into a shop, not a WMS tenant, and the contents are a line of prose on
- * a booking slip, not a SKU with a stock level. Forcing either would have meant
- * inventing placeholder client and product rows for every parcel.
+ * -- Air Freight cross-dock: a client's flight -> a UK hub -> couriers ---------
+ * A client consolidates many boxes, each already wearing a UK courier label,
+ * onto one air waybill (MAWB). The flight lands; the hub receives every box by
+ * scan, sorts by courier, and hands them to courier depots. Our responsibility
+ * ends at the handover. Replaces the old parcel Freight module.
+ * Actor columns are plain uuids without relations (the FbaShipment precedent):
+ * breadcrumbs resolved in one batch read, not relations to walk.
  */
 
-enum FreightShipmentStatus {
-  // Created, not yet handed to the airline.
-  BOOKED
-  // Left Pakistan, expected at the UK warehouse.
+enum AirFreightFlightStatus {
+  DRAFT
   DISPATCHED
-  // Matched against its barcode at the UK bench.
+  LANDED
+  CUSTOMS_HOLD
+  CLEARED
+  RECEIVING
   RECEIVED
-  // The soft delete. Following the doctrine the outbound shipments set: a
-  // cancelled record stays readable, because somebody asked what happened to it.
+  RECEIVED_PARTIAL
+  IN_DELIVERY
+  COMPLETED
   CANCELLED
 }
 
-enum FreightWeightUnit {
-  KG
-  LB
+enum AirFreightBoxStatus {
+  MANIFESTED
+  DISPATCHED
+  LANDED
+  CUSTOMS_HOLD
+  CLEARED
+  RECEIVED
+  ON_HOLD
+  ON_HANDOVER
+  HANDED_TO_COURIER
+  SHORT
+  REFUSED_AT_DEPOT
+  RETURNED_TO_CLIENT
+  WRITTEN_OFF
+  CANCELLED
 }
 
-model FreightShipment {
-  id String @id @default(uuid()) @db.Uuid
-
-  // The number this system issues, e.g. FRT-2026-000123. Not SHP-: that prefix
-  // already belongs to shipments.reference, and two tables answering to one
-  // prefix is a search box that returns the wrong parcel.
-  reference String @unique(map: "uq_freight_shipments_reference") @db.VarChar(64)
-
-  // What is printed on the label and scanned at the UK bench. Carries the same
-  // value as `reference` today, and is still its own column: the spec asks for
-  // barcode uniqueness as a guarantee in its own right, and a parcel relabelled
-  // in transit needs somewhere to put the new code without rewriting its
-  // identity. The lookup rides this unique index.
-  barcode String @unique(map: "uq_freight_shipments_barcode") @db.VarChar(64)
-
-  // Who sent it, as free text. This is the answer the whole module exists to
-  // give: scan the parcel, read the sender.
-  senderName    String @map("sender_name") @db.VarChar(160)
-  senderContact String @map("sender_contact") @db.VarChar(40)
-  senderAddress String @map("sender_address") @db.Text
-
-  receiverName    String @map("receiver_name") @db.VarChar(160)
-  receiverContact String @map("receiver_contact") @db.VarChar(40)
-  receiverAddress String @map("receiver_address") @db.Text
-
-  destinationCountry String @map("destination_country") @db.VarChar(80)
-
-  // What is in the parcel, in the sender's words.
-  description String            @db.Text
-  quantity    Int
-  // Three decimal places: parcels are weighed to the gram on the shop scale.
-  weight      Decimal           @db.Decimal(10, 3)
-  // Stored rather than normalised to kilograms, because the booking slip the
-  // sender holds says one or the other and a receipt that disagreed with it
-  // would be argued about at the counter.
-  weightUnit  FreightWeightUnit @default(KG) @map("weight_unit")
-  remarks     String?           @db.Text
-
-  status FreightShipmentStatus @default(BOOKED)
-
-  // Who carried out each step. Plain ids with no relations, as FbaShipment does:
-  // these are audit breadcrumbs, and one person often books, dispatches and
-  // cancels. The names are resolved in one batch read when a record is served.
-  createdByUserId    String? @map("created_by_user_id") @db.Uuid
-  updatedByUserId    String? @map("updated_by_user_id") @db.Uuid
-  dispatchedByUserId String? @map("dispatched_by_user_id") @db.Uuid
-  cancelledByUserId  String? @map("cancelled_by_user_id") @db.Uuid
-
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  dispatchedAt DateTime? @map("dispatched_at") @db.Timestamptz(6)
-  cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(6)
-
-  documents FreightShipmentDocument[]
-  receiving FreightReceivingRecord?
-
-  @@index([createdAt(sort: Desc), id], map: "idx_freight_shipments_created_at")
-  @@index([status, createdAt(sort: Desc)], map: "idx_freight_shipments_status_created_at")
-  @@index([senderName], map: "idx_freight_shipments_sender_name")
-  @@index([receiverName], map: "idx_freight_shipments_receiver_name")
-  @@map("freight_shipments")
+enum AirFreightEventSource {
+  CSV
+  SCAN
+  MANUAL
+  SYSTEM
 }
 
-model FreightShipmentDocument {
-  id                String @id @default(uuid()) @db.Uuid
-  freightShipmentId String @map("freight_shipment_id") @db.Uuid
-
-  // The name the sender's file had on the uploader's machine, kept so the
-  // booking slip is recognisable in a list; `storageKey` is what objectStorage
-  // actually holds, which is generated and says nothing about the file.
-  fileName   String @map("file_name") @db.VarChar(255)
-  storageKey String @map("storage_key") @db.VarChar(255)
-  fileType   String @map("file_type") @db.VarChar(120)
-
-  uploadedByUserId String?  @map("uploaded_by_user_id") @db.Uuid
-  uploadedAt       DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
-
-  freightShipment FreightShipment @relation(fields: [freightShipmentId], references: [id], onDelete: Cascade)
-
-  @@index([freightShipmentId, uploadedAt(sort: Desc)], map: "idx_freight_shipment_documents_shipment")
-  @@map("freight_shipment_documents")
+enum AirFreightUploadStatus {
+  PREVIEW
+  COMMITTED
+  DISCARDED
 }
 
-model FreightReceivingRecord {
-  id String @id @default(uuid()) @db.Uuid
+enum AirFreightUploadMode {
+  REPLACE
+  APPEND
+}
 
-  // Unique, and that constraint is the rule rather than a decoration: "an
-  // already-received shipment cannot accidentally be received again" is enforced
-  // by the database. The check in the logic exists to say who received it and
-  // when; this stops a second row being written at all when two benches scan the
-  // same parcel at the same moment.
-  freightShipmentId String @unique(map: "uq_freight_receiving_records_shipment") @map("freight_shipment_id") @db.Uuid
+enum AirFreightHandoverStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
 
-  // The code actually scanned, verbatim. Normally the shipment's own barcode,
-  // but kept separately because what the gun read is evidence and the shipment's
-  // column may be corrected later.
-  barcode String @db.VarChar(64)
+enum AirFreightExceptionType {
+  SHORT
+  OVER
+  DAMAGED
+  LABEL_UNREADABLE
+  WRONG_COURIER
+  CUSTOMS_HOLD
+  REFUSED_AT_DEPOT
+}
 
-  receivedByUserId String?  @map("received_by_user_id") @db.Uuid
-  receivedAt       DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+enum AirFreightExceptionStatus {
+  OPEN
+  AWAITING_CLIENT
+  RESOLVED
+}
 
-  // What the UK scale said, which is frequently not what the Pakistan slip said.
-  // Optional: a bench without a scale still records the arrival.
-  actualWeight     Decimal?           @map("actual_weight") @db.Decimal(10, 3)
-  actualWeightUnit FreightWeightUnit? @map("actual_weight_unit")
-  remarks          String?            @db.Text
+enum AirFreightResolution {
+  FOUND
+  WRITTEN_OFF
+  ADDED_TO_MANIFEST
+  RETURNED_TO_CLIENT
+  SHIPPED_AS_IS
+  RELABELLED
+  RELEASED
+  REPACKED
+}
 
-  freightShipment FreightShipment @relation(fields: [freightShipmentId], references: [id], onDelete: Cascade)
+enum AirFreightClientDecision {
+  SHIP_AS_IS
+  HOLD
+  RETURN
+  NEW_LABEL
+}
 
-  @@index([receivedAt(sort: Desc), id], map: "idx_freight_receiving_records_received_at")
-  @@index([barcode], map: "idx_freight_receiving_records_barcode")
-  @@map("freight_receiving_records")
+enum AirFreightBillingStatus {
+  NOT_READY
+  READY
+  POSTED
+}
+
+enum ChargeableWeightMethod {
+  PER_BOX
+  FLIGHT_TOTAL
+}
+
+model Courier {
+  id                  String   @id @default(uuid()) @db.Uuid
+  code                String   @unique(map: "uq_couriers_code") @db.VarChar(30)
+  name                String   @db.VarChar(80)
+  // Optional. If set, every manifest tracking number for this courier is checked
+  // against it. Left null until real labels prove the pattern, so a wrong regex
+  // cannot reject valid boxes.
+  trackingRegex       String?  @map("tracking_regex") @db.VarChar(255)
+  // Contains the {tracking} placeholder; without it the UI copies the number and
+  // opens the search page, as src/lib/couriers.ts does today.
+  trackingUrlTemplate String?  @map("tracking_url_template") @db.VarChar(255)
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  depots    CourierDepot[]
+  boxes     AirFreightBox[]
+  handovers AirFreightHandover[]
+
+  @@index([isActive], map: "idx_couriers_active")
+  @@map("couriers")
+}
+
+model CourierDepot {
+  id        String   @id @default(uuid()) @db.Uuid
+  courierId String   @map("courier_id") @db.Uuid
+  name      String   @db.VarChar(120)
+  address   String?  @db.Text
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  courier   Courier              @relation(fields: [courierId], references: [id], onDelete: Cascade)
+  handovers AirFreightHandover[]
+
+  @@unique([courierId, name], map: "uq_courier_depots_courier_name")
+  @@index([courierId], map: "idx_courier_depots_courier")
+  @@map("courier_depots")
+}
+
+model AirFreightClientSettings {
+  id                     String                 @id @default(uuid()) @db.Uuid
+  clientId               String                 @unique(map: "uq_af_client_settings_client") @map("client_id") @db.Uuid
+  chargeableWeightMethod ChargeableWeightMethod @default(PER_BOX) @map("chargeable_weight_method")
+  volumetricDivisor      Int                    @default(6000) @map("volumetric_divisor")
+  roundingIncrementKg    Decimal                @default(0.50) @map("rounding_increment_kg") @db.Decimal(4, 2)
+  freeStorageHours       Int                    @default(48) @map("free_storage_hours")
+  emailNotifications     Boolean                @default(false) @map("email_notifications")
+  notificationEmail      String?                @map("notification_email") @db.VarChar(255)
+  updatedByUserId        String?                @map("updated_by_user_id") @db.Uuid
+  updatedAt              DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("air_freight_client_settings")
+}
+
+model AirFreightFlight {
+  id        String @id @default(uuid()) @db.Uuid
+  // AF-<year>-<sequence>, issued the same way as the other module references.
+  reference String @unique(map: "uq_air_freight_flights_reference") @db.VarChar(64)
+  clientId  String @map("client_id") @db.Uuid
+
+  // The master air waybill. Required at dispatch, normalised to NNN-NNNNNNNN.
+  mawbNumber   String? @map("mawb_number") @db.VarChar(20)
+  airline      String? @db.VarChar(80)
+  flightNumber String? @map("flight_number") @db.VarChar(20)
+
+  // Free text, by decision: no airport dataset. Destination is where the hub is.
+  originLocation      String @map("origin_location") @db.VarChar(120)
+  destinationLocation String @map("destination_location") @db.VarChar(120)
+
+  etd              DateTime? @db.Timestamptz(6)
+  eta              DateTime? @db.Timestamptz(6)
+  declaredPieces   Int?      @map("declared_pieces")
+  declaredWeightKg Decimal?  @map("declared_weight_kg") @db.Decimal(10, 3)
+  notes            String?   @db.Text
+
+  status AirFreightFlightStatus @default(DRAFT)
+
+  // Milestone timestamps. The flight status is recomputed from its boxes; these
+  // record when each milestone action happened.
+  dispatchedAt    DateTime? @map("dispatched_at") @db.Timestamptz(6)
+  landedAt        DateTime? @map("landed_at") @db.Timestamptz(6)
+  customsHoldAt   DateTime? @map("customs_hold_at") @db.Timestamptz(6)
+  clearedAt       DateTime? @map("cleared_at") @db.Timestamptz(6)
+  receiptClosedAt DateTime? @map("receipt_closed_at") @db.Timestamptz(6)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz(6)
+  cancelledAt     DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason    String?   @map("cancel_reason") @db.Text
+
+  createdByUserId       String? @map("created_by_user_id") @db.Uuid
+  dispatchedByUserId    String? @map("dispatched_by_user_id") @db.Uuid
+  landedByUserId        String? @map("landed_by_user_id") @db.Uuid
+  clearedByUserId       String? @map("cleared_by_user_id") @db.Uuid
+  receiptClosedByUserId String? @map("receipt_closed_by_user_id") @db.Uuid
+  cancelledByUserId     String? @map("cancelled_by_user_id") @db.Uuid
+
+  // Milestones already emailed, so a resend never doubles up.
+  notifiedMilestones String[] @default([]) @map("notified_milestones")
+
+  billingStatus         AirFreightBillingStatus @default(NOT_READY) @map("billing_status")
+  billingPostedAt       DateTime?               @map("billing_posted_at") @db.Timestamptz(6)
+  billingPostedByUserId String?                 @map("billing_posted_by_user_id") @db.Uuid
+  billingPostReason     String?                 @map("billing_post_reason") @db.Text
+  // What was actually charged, frozen at post time. Read instead of recomputing
+  // once POSTED.
+  billingSnapshot       Json?                   @map("billing_snapshot")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  client       Client                @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  boxes        AirFreightBox[]
+  uploads      AirFreightUpload[]
+  exceptions   AirFreightException[]
+  boxEvents    AirFreightBoxEvent[]
+  invoiceLines InvoiceLineItem[]
+
+  @@index([clientId, createdAt(sort: Desc)], map: "idx_af_flights_client_created_at")
+  @@index([status, createdAt(sort: Desc)], map: "idx_af_flights_status_created_at")
+  @@index([mawbNumber], map: "idx_af_flights_mawb")
+  @@index([createdAt(sort: Desc), id], map: "idx_af_flights_created_at")
+  @@map("air_freight_flights")
+}
+
+model AirFreightUpload {
+  id         String                 @id @default(uuid()) @db.Uuid
+  flightId   String                 @map("flight_id") @db.Uuid
+  fileName   String                 @map("file_name") @db.VarChar(255)
+  storageKey String                 @map("storage_key") @db.VarChar(255)
+  fileType   String                 @map("file_type") @db.VarChar(120)
+  mode       AirFreightUploadMode
+  status     AirFreightUploadStatus @default(PREVIEW)
+  rowsTotal  Int                    @map("rows_total")
+  rowsOk     Int                    @map("rows_ok")
+  rowsError  Int                    @map("rows_error")
+  // Arrays of { row, column, message }. Capped by the application at 2,000.
+  errors     Json
+  warnings   Json
+  version    Int?
+
+  uploadedByUserId String?   @map("uploaded_by_user_id") @db.Uuid
+  uploadedAt       DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  committedAt      DateTime? @map("committed_at") @db.Timestamptz(6)
+
+  flight AirFreightFlight @relation(fields: [flightId], references: [id], onDelete: Cascade)
+
+  @@index([flightId, uploadedAt(sort: Desc)], map: "idx_af_uploads_flight_uploaded_at")
+  @@map("air_freight_uploads")
+}
+
+model AirFreightBox {
+  id        String @id @default(uuid()) @db.Uuid
+  flightId  String @map("flight_id") @db.Uuid
+  courierId String @map("courier_id") @db.Uuid
+
+  // Normalised (trim, strip spaces, uppercase). Unique across active boxes only,
+  // via a partial index in the migration -- Prisma cannot express it, so there
+  // is NO @unique here. Never run `prisma migrate dev`: it would drop that index
+  // as drift. (Same approach as uq_products_barcode_ci.)
+  trackingNumber          String   @map("tracking_number") @db.VarChar(64)
+  previousTrackingNumbers String[] @default([]) @map("previous_tracking_numbers")
+
+  clientReference String? @map("client_reference") @db.VarChar(80)
+  reference       String? @db.VarChar(80)
+
+  declaredWeightKg Decimal @map("declared_weight_kg") @db.Decimal(10, 3)
+  lengthCm         Decimal @map("length_cm") @db.Decimal(8, 1)
+  widthCm          Decimal @map("width_cm") @db.Decimal(8, 1)
+  heightCm         Decimal @map("height_cm") @db.Decimal(8, 1)
+
+  // Optional correction at receipt. Billing uses these when present.
+  measuredWeightKg Decimal?  @map("measured_weight_kg") @db.Decimal(10, 3)
+  measuredLengthCm Decimal?  @map("measured_length_cm") @db.Decimal(8, 1)
+  measuredWidthCm  Decimal?  @map("measured_width_cm") @db.Decimal(8, 1)
+  measuredHeightCm Decimal?  @map("measured_height_cm") @db.Decimal(8, 1)
+  measuredByUserId String?   @map("measured_by_user_id") @db.Uuid
+  measuredAt       DateTime? @map("measured_at") @db.Timestamptz(6)
+
+  contentsDescription String  @map("contents_description") @db.VarChar(255)
+  hsCode              String? @map("hs_code") @db.VarChar(10)
+  declaredValue       Decimal @map("declared_value") @db.Decimal(14, 2)
+  currency            String  @db.VarChar(3)
+  consigneeName       String  @map("consignee_name") @db.VarChar(160)
+  consigneePostcode   String  @map("consignee_postcode") @db.VarChar(20)
+
+  status           AirFreightBoxStatus  @default(MANIFESTED)
+  // The status to restore when a customs hold is released.
+  statusBeforeHold AirFreightBoxStatus? @map("status_before_hold")
+  // FLIGHT or BOX -- which hold put it on hold, so a flight-wide clear only lifts
+  // flight-wide holds and leaves a box held on its own alone.
+  holdScope        String?              @map("hold_scope") @db.VarChar(10)
+  currentLocation  String?              @map("current_location") @db.VarChar(120)
+
+  receivedAt       DateTime? @map("received_at") @db.Timestamptz(6)
+  receivedByUserId String?   @map("received_by_user_id") @db.Uuid
+  handoverId       String?   @map("handover_id") @db.Uuid
+  handedOverAt     DateTime? @map("handed_over_at") @db.Timestamptz(6)
+  returnedAt       DateTime? @map("returned_at") @db.Timestamptz(6)
+  writtenOffAt     DateTime? @map("written_off_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  flight   AirFreightFlight     @relation(fields: [flightId], references: [id], onDelete: Cascade)
+  courier  Courier              @relation(fields: [courierId], references: [id], onDelete: Restrict)
+  handover AirFreightHandover?  @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  events   AirFreightBoxEvent[]
+
+  @@index([flightId, status], map: "idx_af_boxes_flight_status")
+  @@index([courierId, status], map: "idx_af_boxes_courier_status")
+  @@index([handoverId], map: "idx_af_boxes_handover")
+  @@index([clientReference], map: "idx_af_boxes_client_reference")
+  @@index([reference], map: "idx_af_boxes_reference")
+  @@map("air_freight_boxes")
+}
+
+model AirFreightBoxEvent {
+  id         String                @id @default(uuid()) @db.Uuid
+  boxId      String                @map("box_id") @db.Uuid
+  flightId   String                @map("flight_id") @db.Uuid
+  fromStatus AirFreightBoxStatus?  @map("from_status")
+  toStatus   AirFreightBoxStatus?  @map("to_status")
+  eventType  String                @map("event_type") @db.VarChar(40)
+  source     AirFreightEventSource
+  userId     String?               @map("user_id") @db.Uuid
+  location   String?               @db.VarChar(120)
+  note       String?               @db.Text
+  photoKey   String?               @map("photo_key") @db.VarChar(255)
+  createdAt  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  box    AirFreightBox    @relation(fields: [boxId], references: [id], onDelete: Cascade)
+  flight AirFreightFlight @relation(fields: [flightId], references: [id], onDelete: Cascade)
+
+  @@index([boxId, createdAt], map: "idx_af_box_events_box_created_at")
+  @@index([flightId, createdAt], map: "idx_af_box_events_flight_created_at")
+  @@map("air_freight_box_events")
+}
+
+model AirFreightHandover {
+  id         String                   @id @default(uuid()) @db.Uuid
+  reference  String                   @unique(map: "uq_af_handovers_reference") @db.VarChar(64)
+  courierId  String                   @map("courier_id") @db.Uuid
+  depotId    String?                  @map("depot_id") @db.Uuid
+  depotName  String                   @map("depot_name") @db.VarChar(120)
+  vehicleReg String?                  @map("vehicle_reg") @db.VarChar(20)
+  driverName String?                  @map("driver_name") @db.VarChar(120)
+  status     AirFreightHandoverStatus @default(OPEN)
+
+  confirmedCount Int?    @map("confirmed_count")
+  depotStaffName String? @map("depot_staff_name") @db.VarChar(120)
+  closeNote      String? @map("close_note") @db.Text
+  proofPhotoKey  String? @map("proof_photo_key") @db.VarChar(255)
+  // Written on close: the box list with its outcome. Read by the closed record
+  // and the manifest PDF, because a repacked box's live handoverId later moves.
+  boxSnapshot    Json?   @map("box_snapshot")
+
+  openedByUserId String?   @map("opened_by_user_id") @db.Uuid
+  openedAt       DateTime  @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedByUserId String?   @map("closed_by_user_id") @db.Uuid
+  closedAt       DateTime? @map("closed_at") @db.Timestamptz(6)
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(6)
+
+  courier Courier         @relation(fields: [courierId], references: [id], onDelete: Restrict)
+  depot   CourierDepot?   @relation(fields: [depotId], references: [id], onDelete: SetNull)
+  boxes   AirFreightBox[]
+
+  @@index([status, openedAt(sort: Desc)], map: "idx_af_handovers_status_opened_at")
+  @@index([courierId, openedAt(sort: Desc)], map: "idx_af_handovers_courier_opened_at")
+  @@map("air_freight_handovers")
+}
+
+model AirFreightException {
+  id          String                    @id @default(uuid()) @db.Uuid
+  flightId    String                    @map("flight_id") @db.Uuid
+  boxId       String?                   @map("box_id") @db.Uuid
+  type        AirFreightExceptionType
+  status      AirFreightExceptionStatus @default(OPEN)
+  // For OVER: the code that was scanned but matched no manifest.
+  scannedCode String?                   @map("scanned_code") @db.VarChar(64)
+  ownerRole   String                    @map("owner_role") @db.VarChar(20)
+
+  raisedByUserId String?  @map("raised_by_user_id") @db.Uuid
+  raisedAt       DateTime @default(now()) @map("raised_at") @db.Timestamptz(6)
+
+  internalNote String? @map("internal_note") @db.Text
+  clientNote   String? @map("client_note") @db.Text
+  photoKey     String? @map("photo_key") @db.VarChar(255)
+
+  clientDecision     AirFreightClientDecision? @map("client_decision")
+  clientDecisionNote String?                   @map("client_decision_note") @db.Text
+  clientDecidedAt    DateTime?                 @map("client_decided_at") @db.Timestamptz(6)
+  clientLabelKey     String?                   @map("client_label_key") @db.VarChar(255)
+
+  resolution       AirFreightResolution? @map("resolution")
+  resolvedByUserId String?               @map("resolved_by_user_id") @db.Uuid
+  resolvedAt       DateTime?             @map("resolved_at") @db.Timestamptz(6)
+
+  chargeable Boolean @default(false)
+
+  flight AirFreightFlight @relation(fields: [flightId], references: [id], onDelete: Cascade)
+
+  @@index([status, raisedAt], map: "idx_af_exceptions_status_raised_at")
+  @@index([flightId, status], map: "idx_af_exceptions_flight_status")
+  @@index([type, status], map: "idx_af_exceptions_type_status")
+  @@index([boxId], map: "idx_af_exceptions_box")
+  @@map("air_freight_exceptions")
 }

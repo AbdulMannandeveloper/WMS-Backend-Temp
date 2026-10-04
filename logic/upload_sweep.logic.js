@@ -7,10 +7,10 @@ const { listObjects, removeStoredFile } = require('../lib/objectStorage');
  * Stored files that no record points at.
  *
  * A receipt is uploaded the moment it is picked, before the expense it belongs
- * to is saved, so a form closed without saving leaves its file behind. A
- * freight document is stored before its row is written, so a row that fails to
- * write does the same. Deletes already remove the files they let go of; these
- * were never let go of, because nothing ever held them.
+ * to is saved, so a form closed without saving leaves its file behind. An
+ * air-freight manifest or photo is stored before its row is written, so a row
+ * that fails to write does the same. Deletes already remove the files they let
+ * go of; these were never let go of, because nothing ever held them.
  *
  * Only files at least a day old are touched. One uploaded a minute ago may
  * belong to a form that is still open.
@@ -39,9 +39,11 @@ const KINDS = [
     },
   },
   {
-    prefix: 'freight-',
+    // An air-freight manifest is stored before its upload row is written, so a
+    // failed preview leaves the file behind. The storage key is held verbatim.
+    prefix: 'afmanifest-',
     referenced: async (keys) => {
-      const rows = await prisma.freightShipmentDocument.findMany({
+      const rows = await prisma.airFreightUpload.findMany({
         where: { storageKey: { in: keys } },
         select: { storageKey: true },
       });

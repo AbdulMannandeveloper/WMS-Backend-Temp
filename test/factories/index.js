@@ -377,7 +377,7 @@ export const makeShipmentServiceMapping = (shipmentId, serviceId, overrides = {}
   });
 
 /** Every permission, for a fixture that stands for a working warehouse. */
-const ALL_TEST_PERMISSIONS = ['shipments', 'fba', 'inventory', 'returns'].flatMap((module) =>
+const ALL_TEST_PERMISSIONS = ['shipments', 'fba', 'inventory', 'returns', 'airfreight'].flatMap((module) =>
   ['create', 'read', 'update', 'delete'].map((action) => `${module}:${action}`),
 );
 
@@ -456,32 +456,63 @@ export const seedSeries = async (
   return rows;
 };
 
-/**
- * A freight shipment row written directly, for tests about states other than the
- * BOOKED one creation produces — and for seeding a list without fourteen POSTs.
- *
- * `reference` and `barcode` are both unique and both generated, because two
- * factory calls in one test would otherwise collide on the index. They carry the
- * same value, as the application makes them.
- */
-export const makeFreightShipment = (overrides = {}) => {
-  const reference = uniq('FRT').toUpperCase();
-  return prisma.freightShipment.create({
+// ─── Air freight ──────────────────────────────────────────────────────────────
+
+/** A courier, with a unique code. */
+export const makeCourier = (overrides = {}) =>
+  prisma.courier.create({
     data: {
-      reference,
-      barcode: reference,
-      senderName: 'Ali Khan',
-      senderContact: '+92 300 1234567',
-      senderAddress: '12 Mall Road, Lahore',
-      receiverName: 'XYZ Trading',
-      receiverContact: '+44 7700 900123',
-      receiverAddress: '4 Dock Street, London',
-      destinationCountry: 'United Kingdom',
-      description: 'Two boxes of textiles',
-      quantity: 2,
-      weight: '8.500',
-      weightUnit: 'KG',
-      status: 'BOOKED',
+      code: uniq('CUR').toUpperCase().replace(/-/g, ''),
+      name: 'Test Courier',
+      ...overrides,
+    },
+  });
+
+/** A courier depot. Pass a courierId or one is made. */
+export const makeDepot = async (courierId, overrides = {}) => {
+  const cid = courierId ?? (await makeCourier()).id;
+  return prisma.courierDepot.create({
+    data: { courierId: cid, name: uniq('Depot'), ...overrides },
+  });
+};
+
+/**
+ * An air freight flight written directly. Pass a clientId or one is made.
+ * `reference` is unique, so it is generated rather than fixed.
+ */
+export const makeAirFreightFlight = async (clientId, overrides = {}) => {
+  const cid = clientId ?? (await makeClient()).client.id;
+  return prisma.airFreightFlight.create({
+    data: {
+      reference: uniq('AF').toUpperCase(),
+      clientId: cid,
+      originLocation: 'Lahore (LHE)',
+      destinationLocation: 'London Heathrow (LHR)',
+      status: 'DRAFT',
+      ...overrides,
+    },
+  });
+};
+
+/** A box on a flight. Pass flightId and courierId, or they are made. */
+export const makeAirFreightBox = async (flightId, courierId, overrides = {}) => {
+  const fid = flightId ?? (await makeAirFreightFlight()).id;
+  const curId = courierId ?? (await makeCourier()).id;
+  return prisma.airFreightBox.create({
+    data: {
+      flightId: fid,
+      courierId: curId,
+      trackingNumber: uniq('TRK').toUpperCase(),
+      declaredWeightKg: '4.200',
+      lengthCm: '40.0',
+      widthCm: '30.0',
+      heightCm: '20.0',
+      contentsDescription: 'Cotton bathrobes',
+      declaredValue: '35.00',
+      currency: 'GBP',
+      consigneeName: 'J Smith',
+      consigneePostcode: 'M1 1AA',
+      status: 'MANIFESTED',
       ...overrides,
     },
   });

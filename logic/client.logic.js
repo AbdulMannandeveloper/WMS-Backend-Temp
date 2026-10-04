@@ -259,16 +259,27 @@ const getClientDependents = async (clientId, tx) => {
     throw err;
   }
 
-  const [products, shipments, fbaShipments, invoices, returns, ledgerRows, clientServices] =
-    await Promise.all([
-      db.product.count({ where: { clientId } }),
-      db.shipment.count({ where: { clientId } }),
-      db.fbaShipment.count({ where: { clientId } }),
-      db.monthlyInvoice.count({ where: { clientId } }),
-      db.productReturn.count({ where: { clientId } }),
-      db.inventoryLedger.count({ where: { userId: client.userId } }),
-      db.clientService.count({ where: { clientId } }),
-    ]);
+  const [
+    products,
+    shipments,
+    fbaShipments,
+    invoices,
+    returns,
+    airFreightFlights,
+    ledgerRows,
+    clientServices,
+    airFreightSettings,
+  ] = await Promise.all([
+    db.product.count({ where: { clientId } }),
+    db.shipment.count({ where: { clientId } }),
+    db.fbaShipment.count({ where: { clientId } }),
+    db.monthlyInvoice.count({ where: { clientId } }),
+    db.productReturn.count({ where: { clientId } }),
+    db.airFreightFlight.count({ where: { clientId } }),
+    db.inventoryLedger.count({ where: { userId: client.userId } }),
+    db.clientService.count({ where: { clientId } }),
+    db.airFreightClientSettings.count({ where: { clientId } }),
+  ]);
 
   return {
     client,
@@ -280,6 +291,12 @@ const getClientDependents = async (clientId, tx) => {
         { key: 'invoices', label: 'Invoices', count: invoices, where: '/invoices' },
         { key: 'returns', label: 'Returns', count: returns, where: '/returns' },
         {
+          key: 'airFreightFlights',
+          label: 'Air freight flights',
+          count: airFreightFlights,
+          where: '/air-freight',
+        },
+        {
           key: 'ledger',
           label: 'Stock movements recorded by this login',
           count: ledgerRows,
@@ -288,6 +305,11 @@ const getClientDependents = async (clientId, tx) => {
       ],
       removedWith: [
         { key: 'clientServices', label: 'Agreed service rates', count: clientServices },
+        {
+          key: 'airFreightSettings',
+          label: 'Air freight billing settings',
+          count: airFreightSettings,
+        },
       ],
     }),
   };

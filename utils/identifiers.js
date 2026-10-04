@@ -87,7 +87,7 @@ const fieldMatch = (field, value, caseless) =>
 /**
  * Looks a unique code up exactly, and only on a miss ignoring case.
  *
- * For system references (SHP-, BULK-, RET-, FRT-) and freight barcodes. Every
+ * For system references (SHP-, BULK-, RET-, AF-, HO-). Every
  * internal caller passes the code as stored, so it gets the indexed equality
  * lookup it always had; the ILIKE scan is paid only by a code keyed in another
  * case. The fallback cannot be replaced by uppercasing the input: references

@@ -159,6 +159,7 @@ describe('invoice PDF', () => {
       'MANUAL_CHARGE',
       'RECURRING_SERVICE',
       'FBA_CHARGE',
+      'AIR_FREIGHT_CHARGE',
     ];
 
     for (const type of ALL_TYPES) {
