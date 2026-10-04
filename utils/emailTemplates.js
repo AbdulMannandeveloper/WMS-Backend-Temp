@@ -119,10 +119,56 @@ const invoiceUpdatedEmailTemplate = ({ companyName, billingMonth, totalAmount, p
   return { subject, text, html };
 };
 
+const MILESTONE_COPY = {
+  DISPATCHED: 'has been dispatched',
+  LANDED: 'has landed',
+  CUSTOMS_HOLD: 'is being held by customs',
+  CLEARED: 'has cleared customs',
+  RECEIPT_CLOSED: 'has been received at our hub',
+  COMPLETED: 'has been fully handed over to the couriers',
+};
+
+/** A milestone update for a client who opted into air freight notifications. */
+const airFreightMilestoneEmailTemplate = ({ companyName, flight, milestone, shortCount = 0, portalUrl = '' }) => {
+  const what = MILESTONE_COPY[milestone] || `was updated (${milestone})`;
+  const route = `${flight.originLocation} → ${flight.destinationLocation}`;
+  const shortLine = milestone === 'RECEIPT_CLOSED' && shortCount > 0
+    ? ` ${shortCount} box(es) did not arrive and are shown as short in the portal.`
+    : '';
+  const subject = `Air freight ${flight.reference}: ${what}`;
+  const text = `Hello ${companyName},\n\nYour air freight flight ${flight.reference} (${route}) ${what}.${shortLine}\n\n${portalUrl ? `Track it: ${portalUrl}/client/air-freight/${flight.id}\n\n` : ''}Pro Packers`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #111827;">
+      <p>Hello ${companyName},</p>
+      <p>Your air freight flight <strong>${flight.reference}</strong> (${route}) ${what}.${shortLine}</p>
+      ${portalUrl ? `<p><a href="${portalUrl}/client/air-freight/${flight.id}">View it in your portal</a></p>` : ''}
+      <p style="color:#6b7280;">Pro Packers</p>
+    </div>`;
+  return { subject, text, html };
+};
+
+/** Tells a client an exception on their flight needs their decision. */
+const airFreightExceptionEmailTemplate = ({ companyName, flight, exceptionType, clientNote, portalUrl = '' }) => {
+  const label = String(exceptionType || 'issue').replace(/_/g, ' ').toLowerCase();
+  const subject = `Air freight ${flight.reference}: your decision needed`;
+  const text = `Hello ${companyName},\n\nA box on flight ${flight.reference} has a ${label} and needs your decision (ship as-is, hold, return, or send a new label).${clientNote ? `\n\nNote: ${clientNote}` : ''}\n\n${portalUrl ? `Decide in your portal: ${portalUrl}/client/air-freight/${flight.id}\n\n` : ''}Pro Packers`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #111827;">
+      <p>Hello ${companyName},</p>
+      <p>A box on flight <strong>${flight.reference}</strong> has a <strong>${label}</strong> and needs your decision — ship as-is, hold, return, or send a new label.</p>
+      ${clientNote ? `<p style="color:#6b7280;">Note: ${clientNote}</p>` : ''}
+      ${portalUrl ? `<p><a href="${portalUrl}/client/air-freight/${flight.id}">Decide in your portal</a></p>` : ''}
+      <p style="color:#6b7280;">Pro Packers</p>
+    </div>`;
+  return { subject, text, html };
+};
+
 module.exports = {
   otpEmailTemplate,
   inviteEmailTemplate,
   resetPasswordEmailTemplate,
   invoiceApprovedEmailTemplate,
   invoiceUpdatedEmailTemplate,
+  airFreightMilestoneEmailTemplate,
+  airFreightExceptionEmailTemplate,
 };

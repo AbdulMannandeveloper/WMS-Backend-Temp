@@ -73,6 +73,17 @@ const KINDS = [
       return new Set(rows.map((row) => row.proofPhotoKey));
     },
   },
+  {
+    // Client replacement-label files, on the exception the client uploaded them to.
+    prefix: 'aflabel-',
+    referenced: async (keys) => {
+      const rows = await prisma.airFreightException.findMany({
+        where: { clientLabelKey: { in: keys } },
+        select: { clientLabelKey: true },
+      });
+      return new Set(rows.map((row) => row.clientLabelKey));
+    },
+  },
 ];
 
 /**

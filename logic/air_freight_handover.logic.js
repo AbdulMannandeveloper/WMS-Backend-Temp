@@ -21,6 +21,7 @@ const eventRepository = require('../repositories/air_freight_event.repository');
 const exceptionRepository = require('../repositories/air_freight_exception.repository');
 const auditLogLogic = require('./audit_log.logic');
 const { recomputeFlightStatus } = require('./air_freight_status');
+const { notifyMilestone } = require('./air_freight_notifications');
 const { normaliseTracking } = require('../utils/airFreightTracking');
 const { parseUuid, buildListQuery, parseEnum, withScope } = require('../utils/queryFilters');
 
@@ -170,7 +171,7 @@ const closeHandover = async (handoverIdRaw, { confirmedCount, depotStaffName, no
   if (!handoverId) throw withStatus('Handover not found.', 404);
   if (!proofPhotoKey) throw new Error('A photo of the signed manifest is required to close a handover.');
 
-  await prisma.$transaction(async (tx) => {
+  const affectedFlightIds = await prisma.$transaction(async (tx) => {
     const status = await lockHandover(handoverId, tx);
     if (status !== 'OPEN') throw withStatus('This handover is already closed.', 409);
     const handover = await handoverRepository.getHandoverById(handoverId, tx);
@@ -203,9 +204,15 @@ const closeHandover = async (handoverIdRaw, { confirmedCount, depotStaffName, no
     }, tx);
 
     for (const fid of flightIds) await recomputeFlightStatus(fid, tx);
+    return [...flightIds];
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'AIR_FREIGHT_HANDOVER_CLOSED', { handoverId });
+  // A flight that completed on this close notifies the client (deduplicated).
+  for (const fid of affectedFlightIds || []) {
+    const f = await prisma.airFreightFlight.findUnique({ where: { id: fid }, select: { status: true } });
+    if (f?.status === 'COMPLETED') await notifyMilestone(fid, 'COMPLETED');
+  }
   return await handoverRepository.getHandoverById(handoverId);
 };
 

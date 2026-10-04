@@ -99,4 +99,24 @@ router.post('/handovers/:id/boxes/:boxId/refuse', staffWith('update'), airFreigh
 router.post('/handovers/:id/close', staffWith('update'), photo('photo'), airFreightController.closeHandover);
 router.post('/handovers/:id/cancel', staffWith('update'), airFreightController.cancelHandover);
 
+// ─── Phase 6: exceptions (staff + client, scoped; literal before :id) ──────────
+router.get('/exceptions/summary', staffOrClient('read'), airFreightController.exceptionsSummary);
+router.get('/exceptions/export.csv', staffOrClient('read'), airFreightController.exportExceptionsCsv);
+router.get('/exceptions', staffOrClient('read'), airFreightController.listExceptions);
+router.get('/exceptions/:id', staffOrClient('read'), airFreightController.getException);
+router.get('/exceptions/:id/photo', staffOrClient('read'), airFreightController.exceptionPhoto);
+router.post('/exceptions/:id/resolve', staffWith('update'), airFreightController.resolveException);
+// Client decision: admin or client only (not employees), client scoped.
+router.post('/exceptions/:id/client-decision', authorizeRoles('admin', 'client'), photo('photo'), airFreightController.clientDecision);
+
+// ─── Phase 8: reports (staff) ─────────────────────────────────────────────────
+router.get('/reports/overview', staffWith('read'), airFreightController.reportsOverview);
+
+// ─── Phase 7: billing (admin) ─────────────────────────────────────────────────
+router.get('/flights/:id/billing', adminOnly, airFreightController.getBilling);
+router.post('/flights/:id/billing/post', adminOnly, airFreightController.postBilling);
+router.post('/flights/:id/billing/unpost', adminOnly, airFreightController.unpostBilling);
+router.get('/flights/:id/billing.csv', adminOnly, airFreightController.billingCsv);
+router.get('/flights/:id/billing.pdf', adminOnly, airFreightController.billingPdf);
+
 module.exports = router;

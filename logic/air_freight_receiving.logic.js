@@ -19,6 +19,7 @@ const eventRepository = require('../repositories/air_freight_event.repository');
 const exceptionRepository = require('../repositories/air_freight_exception.repository');
 const auditLogLogic = require('./audit_log.logic');
 const { recomputeFlightStatus, RECEIVABLE_BOX_STATUSES } = require('./air_freight_status');
+const { notifyMilestone, notifyExceptionAwaitingClient } = require('./air_freight_notifications');
 const { normaliseTracking } = require('../utils/airFreightTracking');
 const { parseUuid } = require('../utils/queryFilters');
 
@@ -214,6 +215,7 @@ const raiseHoldException = async (boxIdRaw, type, { note, photoKey } = {}, actor
     return exc;
   }, TRANSACTION_OPTIONS);
   await audit(actorUserId, 'AIR_FREIGHT_EXCEPTION_RAISED', { boxId: box.id, type });
+  await notifyExceptionAwaitingClient(result.id);
   return result;
 };
 
@@ -277,6 +279,7 @@ const closeReceipt = async (flightIdRaw, actorUserId) => {
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'AIR_FREIGHT_FLIGHT_RECEIPT_CLOSED', { flightId, short: result.short });
+  await notifyMilestone(flightId, 'RECEIPT_CLOSED', { shortCount: result.short });
   return await flightRepository.getFlightById(flightId);
 };
 

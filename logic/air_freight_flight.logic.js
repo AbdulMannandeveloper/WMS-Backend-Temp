@@ -22,6 +22,7 @@ const eventRepository = require('../repositories/air_freight_event.repository');
 const exceptionRepository = require('../repositories/air_freight_exception.repository');
 const auditLogLogic = require('./audit_log.logic');
 const { recomputeFlightStatus, TERMINAL_BOX_STATUSES } = require('./air_freight_status');
+const { notifyMilestone } = require('./air_freight_notifications');
 const { normaliseMawb } = require('../utils/airFreightTracking');
 const {
   buildListQuery,
@@ -294,6 +295,7 @@ const dispatchFlight = async (id, actorUserId) => {
     reference: result.updated.reference,
     boxes: result.dispatched,
   });
+  await notifyMilestone(flightId, 'DISPATCHED');
   return result.updated;
 };
 
@@ -403,6 +405,7 @@ const markLanded = async (id, { landedAt } = {}, actorUserId) => {
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'AIR_FREIGHT_FLIGHT_LANDED', { flightId });
+  await notifyMilestone(flightId, 'LANDED');
   return await flightRepository.getFlightById(flightId);
 };
 
@@ -446,6 +449,7 @@ const customsHoldFlight = async (id, { note } = {}, actorUserId) => {
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'AIR_FREIGHT_FLIGHT_CUSTOMS_HOLD', { flightId });
+  await notifyMilestone(flightId, 'CUSTOMS_HOLD');
   return await flightRepository.getFlightById(flightId);
 };
 
@@ -502,6 +506,7 @@ const customsClearedFlight = async (id, actorUserId) => {
   }, TRANSACTION_OPTIONS);
 
   await audit(actorUserId, 'AIR_FREIGHT_FLIGHT_CLEARED', { flightId });
+  await notifyMilestone(flightId, 'CLEARED');
   return await flightRepository.getFlightById(flightId);
 };
 

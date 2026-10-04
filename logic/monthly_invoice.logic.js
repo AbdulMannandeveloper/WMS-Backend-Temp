@@ -528,11 +528,12 @@ const applyInvoiceEdits = async (
  * A return's charge can also name its shipment; it counts once, as a return.
  */
 const reportForLines = (lines) => {
-  const count = { returns: 0, bulkShipments: 0, shipments: 0, other: 0 };
+  const count = { returns: 0, bulkShipments: 0, shipments: 0, airFreight: 0, other: 0 };
   for (const line of lines) {
     if (line.returnId) count.returns += 1;
     else if (line.fbaShipmentId) count.bulkShipments += 1;
     else if (line.shipmentId) count.shipments += 1;
+    else if (line.airFreightFlightId) count.airFreight += 1;
     else count.other += 1;
   }
   const remedy = (what) =>
@@ -561,6 +562,13 @@ const reportForLines = (lines) => {
         where: "/returns",
         note: remedy("return"),
       },
+      {
+        key: "airFreightCharges",
+        label: "Air freight charges",
+        count: count.airFreight,
+        where: "/air-freight",
+        note: "Unpost them from the flight's Billing tab first.",
+      },
     ],
     removedWith: [{ key: "otherCharges", label: "Other charges", count: count.other }],
   });
@@ -572,7 +580,7 @@ const getInvoiceDependents = async (id, tx) => {
     where: { id },
     include: {
       client: { select: { companyName: true } },
-      lineItems: { select: { shipmentId: true, fbaShipmentId: true, returnId: true } },
+      lineItems: { select: { shipmentId: true, fbaShipmentId: true, returnId: true, airFreightFlightId: true } },
     },
   });
   if (!invoice) {

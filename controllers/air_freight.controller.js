@@ -20,6 +20,10 @@ const manifestLogic = require('../logic/air_freight_manifest.logic');
 const boxLogic = require('../logic/air_freight_box.logic');
 const receivingLogic = require('../logic/air_freight_receiving.logic');
 const handoverLogic = require('../logic/air_freight_handover.logic');
+const exceptionLogic = require('../logic/air_freight_exception.logic');
+const billingLogic = require('../logic/air_freight_billing.logic');
+const reportsLogic = require('../logic/air_freight_reports.logic');
+const exceptionRepository = require('../repositories/air_freight_exception.repository');
 const handoverRepository = require('../repositories/air_freight_handover.repository');
 const { uploadBuffer } = require('../lib/objectStorage');
 const { renderHandoverManifestPdf } = require('../utils/handoverManifestPdf');
@@ -406,10 +410,85 @@ const handoverProof = async (req, res) => {
   } catch (e) { if (e.code === 'ENOENT') return res.status(404).json({ error: 'File not found.' }); fail(res, e); }
 };
 
+// ─── Phase 6: exceptions & client decisions ───────────────────────────────────
+
+const listExceptions = async (req, res) => {
+  try {
+    const scopeClientId = await scope(req);
+    const { items, total } = await exceptionLogic.listExceptions(req.query, scopeClientId);
+    const data = isClient(req) ? redactForClient(items) : items;
+    return res.status(200).json({ data, pagination: paginatedResponse(items, total, parsePagination(req.query)).pagination });
+  } catch (e) { return listError(res, e, 'listExceptions'); }
+};
+const exceptionsSummary = async (req, res) => { try { res.status(200).json(await exceptionLogic.summary(await scope(req))); } catch (e) { fail(res, e); } };
+const getException = async (req, res) => { try { send(req, res, 200, await exceptionLogic.getException(req.params.id, await scope(req))); } catch (e) { fail(res, e); } };
+const resolveException = async (req, res) => {
+  try {
+    const data = pick(req.body, ['resolution', 'internalNote', 'clientNote', 'chargeable', 'newTrackingNumber', 'newCourierId', 'boxData']);
+    res.status(200).json(await exceptionLogic.resolve(req.params.id, data, actor(req), req.user?.role));
+  } catch (e) { fail(res, e); }
+};
+const clientDecision = async (req, res) => {
+  try {
+    const labelKey = await storePhoto(req.file, 'aflabel');
+    const scopeClientId = await scope(req);
+    send(req, res, 200, await exceptionLogic.recordClientDecision(req.params.id, { decision: req.body?.decision, note: req.body?.note, labelKey }, scopeClientId, actor(req)));
+  } catch (e) { fail(res, e); }
+};
+const exportExceptionsCsv = async (req, res) => {
+  try {
+    const csv = await exceptionLogic.exportCsv(req.query, await scope(req));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="air-freight-exceptions.csv"');
+    return res.status(200).send(csv);
+  } catch (e) { fail(res, e); }
+};
+const exceptionPhoto = async (req, res) => {
+  try {
+    const exc = await exceptionRepository.getExceptionById(req.params.id);
+    if (!exc || !exc.photoKey) return res.status(404).json({ error: 'No photo.' });
+    const scopeClientId = await scope(req);
+    if (scopeClientId && exc.flight.clientId !== scopeClientId) return res.status(404).json({ error: 'Not found.' });
+    const { getObjectStream } = require('../lib/objectStorage');
+    const { stream, contentType } = await getObjectStream(exc.photoKey);
+    res.setHeader('Content-Type', contentType || 'image/jpeg');
+    stream.on('error', () => res.destroy());
+    return stream.pipe(res);
+  } catch (e) { if (e.code === 'ENOENT') return res.status(404).json({ error: 'File not found.' }); fail(res, e); }
+};
+
+// ─── Phase 7: billing (admin) ─────────────────────────────────────────────────
+
+const getBilling = async (req, res) => { try { res.status(200).json(await billingLogic.getStatement(req.params.id)); } catch (e) { fail(res, e); } };
+const postBilling = async (req, res) => { try { res.status(200).json(await billingLogic.postCharges(req.params.id, actor(req), { reason: req.body?.reason })); } catch (e) { fail(res, e); } };
+const unpostBilling = async (req, res) => { try { res.status(200).json(await billingLogic.unpostCharges(req.params.id, actor(req))); } catch (e) { fail(res, e); } };
+const billingCsv = async (req, res) => {
+  try {
+    const { csv, reference } = await billingLogic.breakdownCsv(req.params.id);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="billing-${reference}.csv"`);
+    return res.status(200).send(csv);
+  } catch (e) { fail(res, e); }
+};
+const billingPdf = async (req, res) => {
+  try {
+    const { buffer, reference } = await billingLogic.breakdownPdf(req.params.id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="billing-${reference}.pdf"`);
+    return res.status(200).send(buffer);
+  } catch (e) { fail(res, e); }
+};
+
+// ─── Phase 8: reports (staff) ─────────────────────────────────────────────────
+const reportsOverview = async (_req, res) => { try { res.status(200).json(await reportsLogic.overview()); } catch (e) { fail(res, e); } };
+
 module.exports = {
   getClientSettings,
   updateClientSettings,
   markLanded, customsHold, customsCleared, holdBox, releaseBox,
+  listExceptions, exceptionsSummary, getException, resolveException, clientDecision, exportExceptionsCsv, exceptionPhoto,
+  getBilling, postBilling, unpostBilling, billingCsv, billingPdf,
+  reportsOverview,
   receiveScan, closeReceipt, reopenReceipt, sortSummary, receiveManual, recordMeasurements, raiseDamage, raiseLabelIssue,
   readyForHandover, listHandovers, openHandover, getHandover, scanHandover, removeHandoverBox, refuseHandoverBox, closeHandover, cancelHandover, handoverManifestPdf, handoverProof,
   listFlights,
