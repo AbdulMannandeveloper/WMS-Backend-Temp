@@ -52,7 +52,7 @@ const {
 const { renderDeliveryNotePdf } = require('../utils/deliveryNotePdf');
 const { prisma } = require('../lib/prisma');
 const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
-const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require('./reversal');
+const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines, syncInvoicePdfs } = require('./reversal');
 
 // Prisma's interactive-transaction default is 5s. Preparing a shipment does
 // several round trips per line (find stock, reserve, insert) against a remote
@@ -1314,7 +1314,7 @@ const getBulkLineReturnDependents = async (id, tx) => {
  */
 const undoBulkLineReturns = async (id, actorUserId) => {
   if (!actorUserId) throw new Error('An authenticated user is required to undo returns.');
-  const { shipment, undone } = await prisma.$transaction(async (tx) => {
+  const { shipment, undone, invoiceIds } = await prisma.$transaction(async (tx) => {
     await lockShipment(id, tx);
     const { shipment, lines, charges, report } = await getBulkLineReturnDependents(id, tx);
     if (lines.length === 0) {
@@ -1343,15 +1343,18 @@ const undoBulkLineReturns = async (id, actorUserId) => {
       );
     }
 
-    await removeChargeLines(charges, tx);
+    const invoiceIds = await removeChargeLines(charges, tx);
     return {
       shipment,
       undone: {
         lines: lines.map((line) => ({ fbaShipmentItemId: line.id, quantity: line.quantity })),
         chargesRemoved: charges.length,
       },
+      invoiceIds,
     };
   }, TRANSACTION_OPTIONS);
+
+  await syncInvoicePdfs(invoiceIds, actorUserId);
 
   await audit(actorUserId, 'FBA_SHIPMENT_LINE_RETURNS_UNDONE', {
     fbaShipmentId: id,
@@ -1383,12 +1386,13 @@ const undoBulkLineReturns = async (id, actorUserId) => {
 const remove = async (id, actorUserId) => {
   // Checked under the lock, so the shipment is deleted as it stands — a pick or
   // dispatch saved since the warning waits, or is what gets counted.
-  const { shipment, reversal } = await prisma.$transaction(async (tx) => {
+  const { shipment, reversal, invoiceIds } = await prisma.$transaction(async (tx) => {
     await lockShipment(id, tx);
     const { shipment, report } = await getBulkShipmentDependents(id, tx);
     assertDeletable(`Bulk shipment ${shipment.reference}`, report);
     const restored = [];
     let chargesRemoved = 0;
+    const invoiceIds = new Set();
 
     if (shipment.status === 'DISPATCHED') {
       // The charges first, so a paid invoice refuses before any stock moves.
@@ -1421,7 +1425,7 @@ const remove = async (id, actorUserId) => {
         restored.push({ productId: item.productId, quantity: outstanding });
       }
 
-      const invoiceIds = new Set(chargeLines.map((line) => line.invoiceId));
+      for (const line of chargeLines) invoiceIds.add(line.invoiceId);
       for (const line of chargeLines) {
         await invoiceLineItemRepository.deleteInvoiceLineItem(line.id, tx);
         chargesRemoved += Number(line.totalPrice);
@@ -1447,8 +1451,11 @@ const remove = async (id, actorUserId) => {
     }
 
     await fbaRepository.deleteShipment(id, tx);
-    return { shipment, reversal: { restored, chargesRemoved } };
+    return { shipment, reversal: { restored, chargesRemoved }, invoiceIds: [...invoiceIds] };
   }, TRANSACTION_OPTIONS);
+
+  // The charges came off invoices that may be APPROVED; their PDFs must follow.
+  await syncInvoicePdfs(invoiceIds, actorUserId);
 
   await audit(actorUserId, 'FBA_SHIPMENT_DELETED', {
     fbaShipmentId: id,

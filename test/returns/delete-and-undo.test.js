@@ -112,6 +112,35 @@ describe('deleting a return', () => {
     expect(Number(invoice.totalAmount)).toBe(Number(_sum.totalPrice ?? 0));
   });
 
+  it("re-renders an approved invoice's stored PDF so it stops billing the deleted return", async () => {
+    const s = await makeWarehouseScenario({ quantity: 10 });
+    await giveRates(s.client.id, { handling: '1.00' });
+    await dispatched(s);
+    const ret = await restockedReturn(s);
+    const { invoiceId } = await prisma.invoiceLineItem.findFirst({ where: { returnId: ret.id } });
+
+    const approved = await as(s.admin).post(`/api/monthly-invoices/${invoiceId}/approve`);
+    expect(approved.status).toBe(200);
+
+    const download = async () => {
+      const res = await as(s.admin)
+        .get(`/api/monthly-invoices/${invoiceId}/pdf`)
+        .buffer()
+        .parse((r, cb) => {
+          const chunks = [];
+          r.on('data', (c) => chunks.push(c));
+          r.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+      expect(res.status).toBe(200);
+      return res.body.toString('latin1');
+    };
+    expect(await download()).toContain(ret.reference);
+
+    expect((await as(s.admin).delete(`/api/returns/${ret.id}`)).status).toBe(200);
+
+    expect(await download()).not.toContain(ret.reference);
+  });
+
   it('touches no stock for a disposed return', async () => {
     const s = await makeWarehouseScenario({ quantity: 10 });
     await dispatched(s);

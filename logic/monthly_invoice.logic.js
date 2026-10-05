@@ -284,9 +284,9 @@ const setInvoiceTax = async (id, applied, actorUserId) => {
     })
     .catch((err) => console.error("Audit log error:", err.message));
 
-  await syncApprovedInvoicePdf(id);
+  const pdfSync = await syncApprovedInvoicePdf(id, actorUserId);
 
-  return updated;
+  return pdfSync === "failed" ? { ...updated, pdfSyncFailed: true } : updated;
 };
 
 const approveMonthlyInvoice = async (id, actorUserId) => {
@@ -360,14 +360,18 @@ const approveMonthlyInvoice = async (id, actorUserId) => {
  * after every line-item or tax edit so an APPROVED invoice's stored PDF never
  * disagrees with what is on screen.
  *
- * Failures here are logged rather than thrown: the edit that triggered this
- * already succeeded and committed, and a stale PDF is recoverable the same way
- * a missing one is in ensureInvoicePdf — by re-rendering.
+ * Failures here are not thrown: the edit that triggered this already succeeded
+ * and committed. They are not silent either — the outcome is returned so the
+ * caller can tell the admin, and the failure is written to the audit log (when
+ * an actor is known) because the stored PDF is now stale and nothing else will
+ * re-render it until the invoice is next edited.
+ *
+ * @returns {Promise<"synced" | "skipped" | "failed">}
  */
-const syncApprovedInvoicePdf = async (id) => {
+const syncApprovedInvoicePdf = async (id, actorUserId) => {
   const invoice = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
   if (!invoice || invoice.status !== "APPROVED") {
-    return;
+    return "skipped";
   }
 
   try {
@@ -378,7 +382,11 @@ const syncApprovedInvoicePdf = async (id) => {
     }
   } catch (pdfError) {
     console.error("Invoice PDF regeneration failed:", pdfError.message);
-    return;
+    await audit(actorUserId, "INVOICE_PDF_SYNC_FAILED", {
+      invoiceId: id,
+      error: pdfError.message,
+    });
+    return "failed";
   }
 
   try {
@@ -405,6 +413,33 @@ const syncApprovedInvoicePdf = async (id) => {
   } catch (emailError) {
     console.error("Invoice update email failed to queue:", emailError.message);
   }
+
+  return "synced";
+};
+
+/**
+ * Syncs the PDF of every invoice a reversal (deleting a shipment, bulk shipment
+ * or return, or undoing line returns) took a charge off. Those flows may land on
+ * an APPROVED invoice, whose stored PDF would otherwise keep billing the charge.
+ *
+ * Never throws: it runs after the reversal committed, and a failure here must
+ * not turn a deletion that happened into an error response.
+ *
+ * @returns {Promise<string[]>} ids of the invoices whose PDF could not be synced
+ */
+const syncApprovedInvoicePdfs = async (invoiceIds, actorUserId) => {
+  const failed = [];
+  for (const id of new Set(invoiceIds)) {
+    try {
+      if ((await syncApprovedInvoicePdf(id, actorUserId)) === "failed") {
+        failed.push(id);
+      }
+    } catch (err) {
+      console.error("Invoice PDF sync after reversal failed:", err.message);
+      failed.push(id);
+    }
+  }
+  return failed;
 };
 
 /**
@@ -504,9 +539,10 @@ const applyInvoiceEdits = async (
     taxChanged: changesTax,
   });
 
-  await syncApprovedInvoicePdf(id);
+  const pdfSync = await syncApprovedInvoicePdf(id, actorUserId);
 
-  return await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+  const fresh = await monthlyInvoiceRepository.getMonthlyInvoiceById(id);
+  return pdfSync === "failed" ? { ...fresh, pdfSyncFailed: true } : fresh;
 };
 
 /**
@@ -690,6 +726,7 @@ module.exports = {
   getInvoiceDependents,
   deleteMonthlyInvoice,
   syncApprovedInvoicePdf,
+  syncApprovedInvoicePdfs,
   // Shared with the line-item logic, which enforces the same editability rule.
   INVOICE_TRANSITIONS,
   isEditable,
