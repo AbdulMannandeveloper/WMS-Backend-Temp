@@ -1,5 +1,5 @@
 /**
- * Deleting a draft invoice.
+ * Deleting an invoice.
  *
  * What must hold:
  *   - A draft carrying a charge for a shipment, bulk shipment or return is not
@@ -7,7 +7,11 @@
  *     kind before anything is pressed, and the delete answers 409 with it.
  *   - Once those lines are gone, the draft can be deleted, and any other lines
  *     (manual charges) go with it — the warning says so beforehand.
- *   - Approved and paid invoices stay undeletable, as before.
+ *   - Approved and paid invoices stay undeletable, as before — except in
+ *     testing mode, where an approved one is held back by its charges like a
+ *     draft, and a paid one's charges go with it: its lines are frozen and its
+ *     shipments cannot be deleted while it stands, so nothing else could clear
+ *     them. The warning says so first.
  *   - Admin-only, like the delete.
  */
 
@@ -15,6 +19,9 @@ import { describe, it, expect } from 'vitest';
 
 import { prisma } from '../helpers/db.js';
 import { as } from '../helpers/auth.js';
+// TESTING-ONLY start
+import { enableTestingDeletes } from '../helpers/testingMode.js';
+// TESTING-ONLY end
 import {
   makeAdmin,
   makeClient,
@@ -79,6 +86,42 @@ describe('a draft carrying a shipment charge', () => {
     expect(await prisma.invoiceLineItem.count({ where: { invoiceId: invoice.id } })).toBe(0);
   });
 });
+
+// TESTING-ONLY start
+describe('in testing mode, an approved invoice carrying a shipment charge', () => {
+  it('is held back like a draft', async () => {
+    await enableTestingDeletes();
+    const { admin, invoice } = await arrange();
+    await prisma.monthlyInvoice.update({ where: { id: invoice.id }, data: { status: 'APPROVED' } });
+
+    const res = await as(admin).delete(`/api/monthly-invoices/${invoice.id}`);
+
+    expect(res.status).toBe(409);
+    expect(await invoiceExists(invoice.id)).toBe(true);
+  });
+});
+
+describe('in testing mode, a paid invoice carrying a shipment charge', () => {
+  it('warns that the charge goes with it, then deletes both', async () => {
+    await enableTestingDeletes();
+    const { admin, invoice, shipment } = await arrange();
+    await prisma.monthlyInvoice.update({ where: { id: invoice.id }, data: { status: 'PAID' } });
+
+    const report = await as(admin).get(`/api/monthly-invoices/${invoice.id}/dependents`);
+    expect(report.body.canDelete).toBe(true);
+    expect(report.body.removedWith).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'shipmentCharges', count: 1 }),
+        expect.objectContaining({ key: 'otherCharges', count: 1 }),
+      ]),
+    );
+
+    expect((await as(admin).delete(`/api/monthly-invoices/${invoice.id}`)).status).toBe(200);
+    expect(await invoiceExists(invoice.id)).toBe(false);
+    expect(await prisma.invoiceLineItem.count({ where: { shipmentId: shipment.id } })).toBe(0);
+  });
+});
+// TESTING-ONLY end
 
 describe('return and bulk shipment charges', () => {
   it('block the delete too, each counted once', async () => {

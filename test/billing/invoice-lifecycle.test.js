@@ -15,6 +15,9 @@ import { describe, it, expect } from 'vitest';
 
 import { prisma } from '../helpers/db.js';
 import { as } from '../helpers/auth.js';
+// TESTING-ONLY start
+import { enableTestingDeletes } from '../helpers/testingMode.js';
+// TESTING-ONLY end
 import {
   makeShipmentRate,
   makeAdmin,
@@ -125,6 +128,22 @@ describe('invoice lifecycle', () => {
           prisma.monthlyInvoice.count({ where: { id: invoice.id } })
         ).resolves.toBe(1);
       });
+
+      // TESTING-ONLY start
+      it(`an ${status} invoice can be deleted by an admin in testing mode, and that is marked`, async () => {
+        await enableTestingDeletes();
+        const { admin, invoice } = await arrange(status);
+
+        const res = await as(admin).delete(`/api/monthly-invoices/${invoice.id}`);
+
+        expect(res.status).toBe(200);
+        await expect(
+          prisma.monthlyInvoice.count({ where: { id: invoice.id } })
+        ).resolves.toBe(0);
+        const entry = await prisma.auditLog.findFirst({ where: { action: 'INVOICE_DELETED' } });
+        expect(JSON.parse(entry.details)).toMatchObject({ invoiceId: invoice.id, status, testingMode: true });
+      });
+      // TESTING-ONLY end
     }
 
     it('a draft can still be deleted', async () => {

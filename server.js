@@ -24,6 +24,9 @@ const {
 } = require("./logic/billing_services");
 const { ensureDefaultCouriers } = require("./logic/courier.logic");
 const { scheduleUploadSweep } = require("./logic/upload_sweep.logic");
+// TESTING-ONLY start
+const { logTestingModeAtStartup } = require("./logic/testing_mode.logic");
+// TESTING-ONLY end
 
 const PORT = process.env.PORT || 5000;
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 15_000);
@@ -81,6 +84,9 @@ const startServer = async () => {
     await ensureRestockService();
     await ensureAirFreightServices();
     await ensureDefaultCouriers();
+    // TESTING-ONLY start: says so in the log while testing deletes are on.
+    await logTestingModeAtStartup();
+    // TESTING-ONLY end
     server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

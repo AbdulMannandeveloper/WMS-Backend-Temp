@@ -177,6 +177,39 @@ describe('once the invoice has been paid', () => {
   });
 });
 
+describe('once the invoice has been approved', () => {
+  /** The invoice PDF a client would download, as text. */
+  const pdfText = async (invoiceId) => {
+    const res = await as(scenario.admin)
+      .get(`/api/monthly-invoices/${invoiceId}/pdf`)
+      .buffer()
+      .parse((r, cb) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+    expect(res.status).toBe(200);
+    return res.body.toString('latin1');
+  };
+
+  it('re-renders the stored PDF so it stops billing the deleted shipment', async () => {
+    const shipment = await dispatch(10, '2.00');
+    const { invoiceId } = await chargeLineFor(shipment.id);
+
+    const approved = await as(scenario.admin).post(`/api/monthly-invoices/${invoiceId}/approve`);
+    expect(approved.status).toBe(200);
+    // The PDF rendered at approval names the shipment it bills.
+    expect(await pdfText(invoiceId)).toContain(shipment.reference);
+
+    const res = await as(scenario.admin).delete(`/api/shipments/${shipment.id}`);
+    expect(res.status).toBe(200);
+
+    // The charge is gone from the invoice, and from the document the client
+    // downloads. Before the reversal synced the PDF, this still listed it.
+    expect(await pdfText(invoiceId)).not.toContain(shipment.reference);
+  });
+});
+
 describe('a shipment that was never billed', () => {
   it('still deletes and restores stock when the client had no rate', async () => {
     // No makeShipmentRate — dispatch raises no charge for a rate-less client.

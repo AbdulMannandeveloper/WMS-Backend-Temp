@@ -7,6 +7,9 @@ const inventoryLedgerLogic = require("./inventory_ledger.logic");
 const { assertAllowedField } = require("../utils/pick");
 const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
 const { normaliseCode } = require("../utils/identifiers");
+// TESTING-ONLY start
+const { testingDeletesEnabled } = require("./testing_mode.logic");
+// TESTING-ONLY end
 
 const PRODUCT_QUERY_FIELDS = [
   "id",
@@ -326,11 +329,18 @@ const getProductDependents = async (id, tx) => {
     0,
   );
 
+  let shippedBlocking = shipped;
+  // TESTING-ONLY start: in testing mode a product whose shipments and returns are
+  // gone can go too, dispatches included (see deleteProduct).
+  if (await testingDeletesEnabled({ tx })) shippedBlocking = 0;
+  // TESTING-ONLY end
+
   return {
     product,
     stockLevels,
     unitsRemoved,
     movementsRemoved,
+    shipped,
     report: buildReport({
       blocking: [
         { key: "shipments", label: "Shipments it is on", count: onShipments, where: "/shipments" },
@@ -339,7 +349,7 @@ const getProductDependents = async (id, tx) => {
         {
           key: "dispatched",
           label: "Dispatches and returns in its history",
-          count: shipped,
+          count: shippedBlocking,
           note: "It has left the building and been billed for. Deactivate it instead.",
         },
       ],
@@ -351,7 +361,7 @@ const getProductDependents = async (id, tx) => {
         },
         {
           key: "movements",
-          label: "Stock movements in its history (check-ins, moves, adjustments)",
+          label: "Stock movements in its history",
           count: movementsRemoved,
         },
       ],
@@ -373,7 +383,11 @@ const getProductDependents = async (id, tx) => {
  * - on a **shipment or bulk shipment**, or with a **return** on record —
  *   refused; those rows reference it and the FKs are Restrict
  * - a **CHECKOUT or RETURN** movement — refused; it has shipped at least once,
- *   even if the shipment row was later removed
+ *   even if the shipment row was later removed (lifted in testing mode: see
+ *   getProductDependents. Deleting a dispatched shipment writes reversing
+ *   movements rather than erasing the dispatch, so otherwise a test product
+ *   that ever shipped could never go, nor could its client. Every movement is
+ *   this product's alone, so no other product's count changes.)
  * - otherwise the product, its stock rows and its movement history go together,
  *   in one transaction, as though it had never been created
  *
@@ -398,7 +412,7 @@ const deleteProduct = async (id, actorUserId) => {
     if (!dependents) {
       return null;
     }
-    const { product, report, stockLevels, unitsRemoved, movementsRemoved } = dependents;
+    const { product, report, stockLevels, unitsRemoved, movementsRemoved, shipped } = dependents;
     assertDeletable(product.productName, report, { deactivatable: true });
 
     // Explicit, because InventoryLedger.product is Restrict — without this the
@@ -406,12 +420,12 @@ const deleteProduct = async (id, actorUserId) => {
     // StockLevel cascades and needs no help.
     await tx.inventoryLedger.deleteMany({ where: { productId: id } });
     const deletedProduct = await tx.product.delete({ where: { id } });
-    return { deletedProduct, stockLevels, unitsRemoved, movementsRemoved };
+    return { deletedProduct, stockLevels, unitsRemoved, movementsRemoved, shipped };
   });
   if (!deleted) {
     return null;
   }
-  const { deletedProduct, stockLevels, unitsRemoved, movementsRemoved } = deleted;
+  const { deletedProduct, stockLevels, unitsRemoved, movementsRemoved, shipped } = deleted;
 
   if (actorUserId) {
     await auditLogLogic.createAuditLog(actorUserId, "DELETE_PRODUCT", {
@@ -421,6 +435,9 @@ const deleteProduct = async (id, actorUserId) => {
       unitsRemoved,
       locationsCleared: stockLevels.length,
       movementsRemoved,
+      // TESTING-ONLY start: marks a delete only testing mode allowed
+      ...(shipped > 0 && { testingMode: true }),
+      // TESTING-ONLY end
     }).catch(err => console.error("Audit log error:", err.message));
   }
 

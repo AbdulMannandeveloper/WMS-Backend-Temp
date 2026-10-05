@@ -6,8 +6,11 @@
  * This layout was previously built in the browser (src/pages/client/index.tsx),
  * which meant there was no fixed record of what a client had been billed —
  * change a figure and the "old" invoice silently redrew with the new one. It is
- * now rendered once at approval and stored, so the document a client downloads
- * is the document they were sent.
+ * now rendered at approval and stored, and re-rendered whenever an APPROVED
+ * invoice's lines or tax are corrected (syncApprovedInvoicePdf), so the document
+ * a client downloads is the invoice as it currently stands. It is never
+ * re-rendered for any other reason: changing this layout, or the fixed company
+ * details in ./invoiceIdentity, does not touch PDFs already stored.
  *
  * The layout follows the supplied INV0716.pdf: a full-width coloured header band
  * with the logo left, contacts beside it and the address right; BILL TO and the
@@ -241,7 +244,7 @@ const renderInvoicePdf = (invoice) => {
     doc.setTextColor(22, 101, 52);
     const ref = invoice.paymentReference ? ` — ref ${invoice.paymentReference}` : '';
     const method = invoice.paymentMethod ? ` by ${invoice.paymentMethod}` : '';
-    doc.text(`PAID ${formatDate(invoice.paidAt)}${method}${ref}`, rightX, ty + 7, {
+    doc.text(`PAID on ${formatDate(invoice.paidAt)}${method}${ref}`, rightX, ty + 7, {
       align: 'right',
     });
   }
@@ -268,10 +271,10 @@ const renderInvoicePdf = (invoice) => {
   let fy = pageHeight - 26;
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14);
+  doc.setFontSize(16);
   doc.setTextColor(r, g, b);
   doc.text('Thank You For Your Business !', centreX, fy, { align: 'center' });
-  fy += 6;
+  fy += 8;
 
   // Registration numbers only where they belong. Pro Packers is not VAT
   // registered, and printing another entity's numbers under its name would be a

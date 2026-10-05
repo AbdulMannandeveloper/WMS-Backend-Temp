@@ -45,6 +45,9 @@ const auditLogRoutes = require("./routes/audit_log.routes");
 const payrollRoutes = require("./routes/payroll.routes");
 const expenseRoutes = require("./routes/expense.routes");
 const profitLossRoutes = require("./routes/profit_loss.routes");
+// TESTING-ONLY start
+const testingModeRoutes = require("./routes/testing_mode.routes");
+// TESTING-ONLY end
 
 const app = express();
 const BODY_LIMIT = process.env.JSON_BODY_LIMIT || "1mb";
@@ -187,6 +190,9 @@ app.use("/api/audit-logs", auditLogRoutes);
 app.use("/api/payroll", payrollRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/profit-loss", profitLossRoutes);
+// TESTING-ONLY start
+app.use("/api/testing-mode", testingModeRoutes);
+// TESTING-ONLY end
 
 app.use((req, res) => {
   res.status(404).json({
