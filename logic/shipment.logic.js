@@ -17,7 +17,7 @@ const {
 } = require("./billing_services");
 const { firstOfMonthUtc, addMonthsUtc } = require("../utils/dates");
 const { buildReport, assertDeletable, lockForDelete } = require("../utils/dependents");
-const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require("./reversal");
+const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines, syncInvoicePdfs } = require("./reversal");
 
 /**
  * The shipment lifecycle, enforced here rather than in the browser.
@@ -807,6 +807,11 @@ const deleteShipment = async (id, actorUserId) => {
     },
   );
 
+  // The dispatch charge came off an invoice that may be APPROVED; its PDF must
+  // follow. invoiceIds is split off so it does not leak into the audit details.
+  const { invoiceIds, ...reversalDetails } = reversal;
+  await syncInvoicePdfs(invoiceIds, actorUserId);
+
   await audit(
     actorUserId,
     shipment.status === "DISPATCHED" ? "SHIPMENT_DELETED_DISPATCHED" : "SHIPMENT_DELETED",
@@ -815,7 +820,7 @@ const deleteShipment = async (id, actorUserId) => {
       reference: shipment.reference,
       status: shipment.status,
       clientId: shipment.clientId,
-      ...(shipment.status === "DISPATCHED" ? reversal : {}),
+      ...(shipment.status === "DISPATCHED" ? reversalDetails : {}),
     },
   );
 
@@ -889,7 +894,11 @@ const reverseDispatchedShipment = async (shipment, shipmentItems, actorUserId, t
   // shipment it references still existed. Items cascade.
   await shipmentRepositry.deleteShipment(shipment.id, tx);
 
-  return { restored, chargeRemoved: chargeLines.length > 0 };
+  return {
+    restored,
+    chargeRemoved: chargeLines.length > 0,
+    invoiceIds: [...affectedInvoiceIds],
+  };
 };
 
 // ─── Undoing the returns booked on a shipment's lines ────────────────────────
@@ -1027,7 +1036,7 @@ const undoLineReturns = async (id, actorUserId) => {
   if (!actorUserId) {
     throw new Error("An authenticated user is required to undo returns.");
   }
-  const { shipment, undone } = await prisma.$transaction(
+  const { shipment, undone, invoiceIds } = await prisma.$transaction(
     async (tx) => {
       // Checked under the lock, as deleteShipment is.
       await lockForDelete(tx, "shipments", id);
@@ -1059,17 +1068,20 @@ const undoLineReturns = async (id, actorUserId) => {
         );
       }
 
-      await removeChargeLines(charges, tx);
+      const invoiceIds = await removeChargeLines(charges, tx);
       return {
         shipment,
         undone: {
           lines: lines.map((line) => ({ shipmentItemId: line.id, quantity: line.quantity })),
           chargesRemoved: charges.length,
         },
+        invoiceIds,
       };
     },
     { maxWait: 10_000, timeout: 30_000 },
   );
+
+  await syncInvoicePdfs(invoiceIds, actorUserId);
 
   await audit(actorUserId, "SHIPMENT_LINE_RETURNS_UNDONE", {
     shipmentId: shipment.id,

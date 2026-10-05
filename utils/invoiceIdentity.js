@@ -18,9 +18,9 @@
  */
 
 const SHARED_ADDRESS = {
-  lines: ['Greenfield Mill, Greenfield Road', 'Colne, England', 'BB89PW'],
+  lines: ['Greenfield Mill, Greenfield Road', 'Colne, BB8 9PW, Lanchashire', 'England'],
   /** One-line form, for the footer. */
-  oneLine: 'Greenfield Mill, Greenfield Road, Colne, England, BB89PW',
+  oneLine: 'Greenfield Mill, Greenfield Road, Colne, BB8 9PW, Lanchashire, England',
 };
 
 /**
@@ -31,15 +31,15 @@ const PRO_PACKERS = {
   key: 'PRO_PACKERS',
   companyName: 'Pro Packers UK',
   phone: '073 77283716',
-  email: 'support@propackers.uk',
-  website: 'www.propackers.uk',
+  email: 'accounts@propackers.co.uk',
+  website: 'www.propackers.co.uk',
   address: SHARED_ADDRESS,
   headerColor: [198, 40, 40],
   // Its own brand mark. A non-VAT invoice is a Pro Packers invoice, so it must
   // not carry the Nayoram logo. Filename resolved under assets/ by the renderer.
   logo: 'invoice-logo.png',
   bank: {
-    name: 'Pro Packers Uk',
+    name: 'Pro Packers UK Ltd',
     sortCode: '60-84-64',
     accountNumber: '21929729',
   },

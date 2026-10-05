@@ -17,6 +17,9 @@ import {
   makeFreightShipment,
   grantPermissions,
 } from '../factories/index.js';
+// TESTING-ONLY start
+import { enableTestingDeletes } from '../helpers/testingMode.js';
+// TESTING-ONLY end
 
 let admin;
 let staff;
@@ -303,6 +306,40 @@ describe('cancelling and deleting', () => {
       await prisma.freightShipment.findUnique({ where: { id: shipment.id } }),
     ).not.toBeNull();
   });
+
+  // TESTING-ONLY start
+  it('still refuses staff a received shipment in testing mode', async () => {
+    await enableTestingDeletes();
+    const shipment = await makeFreightShipment({ status: 'RECEIVED' });
+    await prisma.freightReceivingRecord.create({
+      data: { freightShipmentId: shipment.id, barcode: shipment.barcode },
+    });
+
+    expect((await as(staff).delete(`/api/freight-shipments/${shipment.id}`)).status).toBe(409);
+  });
+
+  it('in testing mode, lets an admin delete one that was received, its receiving record going with it', async () => {
+    await enableTestingDeletes();
+    const shipment = await makeFreightShipment({ status: 'RECEIVED' });
+    await prisma.freightReceivingRecord.create({
+      data: { freightShipmentId: shipment.id, barcode: shipment.barcode },
+    });
+
+    const warning = await as(admin).get(`/api/freight-shipments/${shipment.id}/dependents`);
+    expect(warning.body.canDelete).toBe(true);
+    expect(warning.body.removedWith.map((r) => r.key)).toEqual(['receiving']);
+
+    const res = await as(admin).delete(`/api/freight-shipments/${shipment.id}`);
+    expect(res.status).toBe(200);
+
+    expect(await prisma.freightShipment.findUnique({ where: { id: shipment.id } })).toBeNull();
+    expect(
+      await prisma.freightReceivingRecord.count({ where: { freightShipmentId: shipment.id } }),
+    ).toBe(0);
+    const entry = await prisma.auditLog.findFirst({ where: { action: 'FREIGHT_SHIPMENT_DELETED' } });
+    expect(JSON.parse(entry.details)).toMatchObject({ testingMode: true });
+  });
+  // TESTING-ONLY end
 });
 
 describe('the shipment list', () => {

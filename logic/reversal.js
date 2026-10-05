@@ -59,6 +59,9 @@ const paidAmong = (lines) => lines.filter((line) => line.invoice?.status === 'PA
  * Deletes charge lines and recomputes each invoice they were on. Lines are the
  * rows a caller found with `include: { invoice: { select: { status } } }`; it
  * has already refused anything paid.
+ *
+ * Returns the ids of the invoices touched. Any of them may be APPROVED, so the
+ * caller passes them to syncInvoicePdfs once its transaction has committed.
  */
 const removeChargeLines = async (lines, tx) => {
   const invoiceIds = new Set(lines.map((line) => line.invoiceId));
@@ -68,6 +71,21 @@ const removeChargeLines = async (lines, tx) => {
   for (const invoiceId of invoiceIds) {
     await monthlyInvoiceRepository.recalculateInvoiceTotal(invoiceId, tx);
   }
+  return [...invoiceIds];
 };
 
-module.exports = { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines };
+/**
+ * Re-renders the stored PDF of each invoice a reversal took a charge off, if it
+ * is APPROVED, and tells the client. Run after the reversal's transaction
+ * commits: rendering is I/O against committed data. Never throws.
+ *
+ * Required lazily because the invoice logic is a heavier module than this
+ * helper file should pull in at load time.
+ */
+const syncInvoicePdfs = async (invoiceIds, actorUserId) => {
+  if (!invoiceIds?.length) return [];
+  const { syncApprovedInvoicePdfs } = require('./monthly_invoice.logic');
+  return await syncApprovedInvoicePdfs(invoiceIds, actorUserId);
+};
+
+module.exports = { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines, syncInvoicePdfs };
