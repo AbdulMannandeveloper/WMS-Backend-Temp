@@ -155,6 +155,52 @@ describe('batched invoice edits', () => {
     expect(after.pdfLink).toBe(before.pdfLink);
   });
 
+  it('says so, and audits it, when an APPROVED invoice saves but its PDF cannot be rewritten', async () => {
+    const { admin, invoice } = await arrange('APPROVED');
+    const { pdfLink } = await reload(invoice.id);
+
+    // Make the stored file unwritable by putting a directory where it lives, the
+    // same way invoice-pdf.test.js simulates a lost object: the app holds its
+    // own reference to the storage module, so a mock would not reach it.
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const storageRoot = process.env.UPLOAD_DIR
+      ? path.default.resolve(process.cwd(), process.env.UPLOAD_DIR)
+      : path.default.join(process.cwd(), 'uploads');
+    const stored = path.default.join(storageRoot, pdfLink);
+    fs.default.unlinkSync(stored);
+    fs.default.mkdirSync(stored);
+
+    try {
+      const res = await as(admin)
+        .put(`/api/monthly-invoices/${invoice.id}/edit`)
+        .send({ addLineItems: [{ description: 'Late charge', quantity: 1, unitPrice: 5 }] });
+
+      // The edit stands — it committed before the PDF was attempted…
+      expect(res.status).toBe(200);
+      expect(Number((await reload(invoice.id)).totalAmount)).toBe(55);
+      // …but the caller is told the document did not follow.
+      expect(res.body.pdfSyncFailed).toBe(true);
+
+      const logs = await prisma.auditLog.findMany({ where: { action: 'INVOICE_PDF_SYNC_FAILED' } });
+      expect(logs).toHaveLength(1);
+      expect(JSON.parse(logs[0].details).invoiceId).toBe(invoice.id);
+    } finally {
+      fs.default.rmdirSync(stored);
+    }
+  });
+
+  it('does not flag a failure when the PDF is rewritten', async () => {
+    const { admin, invoice } = await arrange('APPROVED');
+
+    const res = await as(admin)
+      .put(`/api/monthly-invoices/${invoice.id}/edit`)
+      .send({ addLineItems: [{ description: 'Fine', quantity: 1, unitPrice: 5 }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.pdfSyncFailed).toBeUndefined();
+  });
+
   it('refuses to edit a PAID invoice', async () => {
     const { admin, invoice } = await arrange('PAID');
 

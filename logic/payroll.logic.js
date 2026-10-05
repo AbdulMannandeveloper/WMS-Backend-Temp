@@ -8,6 +8,9 @@ const expenseCategoryRepository = require('../repositories/expense_category.repo
 const expenseRepository = require('../repositories/expense.repository');
 const auditLogLogic = require('./audit_log.logic');
 const { buildReport } = require('../utils/dependents');
+// TESTING-ONLY start
+const { testingDeletesEnabled } = require('./testing_mode.logic');
+// TESTING-ONLY end
 const { firstOfMonthUtc, endOfMonthUtc, lastDayOfMonthUtc } = require('../utils/dates');
 
 // month_year is a @db.Date, so the boundary must be built in UTC — see utils/dates.js.
@@ -574,6 +577,129 @@ const reopenPayroll = async (rawMonth, adminUserId) => {
   return { message: `Payroll for ${label} reopened.` };
 };
 
+// TESTING-ONLY start: deleting one employee's finalised pay, in testing mode only.
+// ─── Deleting one employee's finalised pay ──────────────────────────────────────
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const money = (amount) => `£${Number(amount).toFixed(2)}`;
+
+/**
+ * What deleting one employee's pay record for a finalised month removes: that
+ * record, and its share of the month's Salaries expense — the whole expense
+ * when no one else's pay is finalised for the month. Nothing blocks it.
+ *
+ * Reopening the month removes everyone's; this removes one, so a test
+ * employee's pay can go without touching anyone else's. Only while testing
+ * deletes are on (logic/testing_mode.logic.js).
+ *
+ * @throws 409 when testing deletes are off
+ * @throws 404 when that employee's pay is not finalised for the month
+ */
+const getPayRecordDependents = async (rawMonth, userId) => {
+  if (!(await testingDeletesEnabled())) {
+    const error = new Error(
+      "Deleting one employee's pay is only available in testing mode. Reopen the month instead.",
+    );
+    error.status = 409;
+    throw error;
+  }
+  const month = parseMonth(rawMonth);
+  const label = monthLabelOf(month);
+  const record = UUID_RE.test(userId ?? '')
+    ? await payrollRepository.getPayrollRecordByUserAndMonth(userId, month)
+    : null;
+  if (!record) {
+    const error = new Error(`Pay for ${label} has not been finalised for this employee.`);
+    error.status = 404;
+    throw error;
+  }
+  const name = record.user ? `${record.user.firstName} ${record.user.lastName}` : 'this employee';
+  const salaries = await findSalariesExpense(month);
+  const others = await prisma.payrollRecord.findMany({
+    where: { monthYear: month, NOT: { id: record.id } },
+    select: { netPay: true },
+  });
+  const remaining = others.reduce((sum, r) => sum + Number(r.netPay), 0);
+
+  let salariesNote;
+  if (salaries) {
+    salariesNote =
+      others.length > 0
+        ? `Reduced from ${money(salaries.amount)} to ${money(remaining)}.`
+        : `${money(salaries.amount)} for the month. No one else's pay is finalised, so it goes.`;
+  }
+
+  return {
+    month,
+    label,
+    record,
+    name,
+    salaries,
+    report: buildReport({
+      removedWith: [
+        {
+          key: 'payrollRecord',
+          label: 'Finalised pay record',
+          count: 1,
+          note: `${money(record.netPay)} paid to ${name}. Their fines and bonuses for the month can be changed again.`,
+        },
+        {
+          key: 'salariesExpense',
+          label: 'Salaries expense',
+          count: salaries ? 1 : 0,
+          where: '/expenses',
+          note: salariesNote,
+        },
+      ],
+    }),
+  };
+};
+
+/**
+ * Deletes one employee's pay record for a finalised month, and takes it out
+ * of the month's Salaries expense. Lock & Post would write it again.
+ */
+const deletePayRecord = async (rawMonth, userId, adminUserId) => {
+  const { month, label, record, name, salaries } = await getPayRecordDependents(rawMonth, userId);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.payrollRecord.delete({ where: { id: record.id } });
+    if (!salaries) return;
+    // Worked out from the records left rather than subtracted, so the expense
+    // matches them even if it had drifted.
+    const others = await tx.payrollRecord.findMany({
+      where: { monthYear: month },
+      select: { netPay: true },
+    });
+    if (others.length === 0) {
+      await tx.expense.delete({ where: { id: salaries.id } });
+      return;
+    }
+    await tx.expense.update({
+      where: { id: salaries.id },
+      data: {
+        amount: others.reduce((sum, r) => sum + Number(r.netPay), 0),
+        description: `Finalized payroll for ${label} (${others.length} employees)`,
+      },
+    });
+  });
+
+  if (adminUserId) {
+    await auditLogLogic.createAuditLog(adminUserId, 'DELETE_PAYROLL_RECORD', {
+      month: label,
+      userId: record.userId,
+      employee: name,
+      netPay: Number(record.netPay),
+      salariesExpenseId: salaries?.id ?? null,
+      testingMode: true,
+    }).catch((err) => console.error('Audit log error:', err.message));
+  }
+
+  return { message: `${name}'s pay for ${label} deleted.` };
+};
+// TESTING-ONLY end
+
 module.exports = {
   assertMonthOpen,
   setBaseSalary,
@@ -592,4 +718,8 @@ module.exports = {
   finalizePayroll,
   getReopenDependents,
   reopenPayroll,
+  // TESTING-ONLY start
+  getPayRecordDependents,
+  deletePayRecord,
+  // TESTING-ONLY end
 };

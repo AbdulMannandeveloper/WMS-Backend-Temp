@@ -5,7 +5,7 @@
  * A product that was registered, filled and shuffled between bins is a mistake
  * made inside this building and can be taken back out. One that has been
  * dispatched is on a client's invoice, and its ledger rows are the only record
- * of what they were charged for.
+ * of what they were charged for. (In testing mode that last refusal is lifted.)
  *
  * Deleting takes the stock rows and the movement history with it, which is the
  * only place in the system where units leave the record without a movement of
@@ -28,6 +28,9 @@ import {
   makeShipmentItem,
   makeLedgerEntry,
 } from '../factories/index.js';
+// TESTING-ONLY start
+import { enableTestingDeletes } from '../helpers/testingMode.js';
+// TESTING-ONLY end
 
 describe('deleting a product', () => {
   it('deletes one that has never been used', async () => {
@@ -127,6 +130,58 @@ describe('deleting a product', () => {
 
     expect((await as(admin).delete(`/api/products/${product.id}`)).status).toBe(409);
   });
+
+  // TESTING-ONLY start
+  it('in testing mode, deletes one that was dispatched once its shipment is gone, history and all', async () => {
+    // A deleted dispatched shipment leaves its CHECKOUT and the RETURN that
+    // reversed it behind. Nothing names the product any more, so they go with it.
+    await enableTestingDeletes();
+    const admin = await makeAdmin();
+    const { client } = await makeClient();
+    const product = await makeProduct(client.id, { productName: 'Already Gone' });
+    const location = await makeLocation();
+    await makeLedgerEntry(product.id, admin.id, {
+      movementType: 'CHECKOUT',
+      quantity: 3,
+      fromLocationId: location.id,
+      referenceId: 'SHP-000123',
+    });
+    await makeLedgerEntry(product.id, admin.id, {
+      movementType: 'RETURN',
+      quantity: 3,
+      toLocationId: location.id,
+      referenceId: 'SHP-000123',
+    });
+
+    const before = await as(admin).get(`/api/products/${product.id}/dependents`);
+    expect(before.body.canDelete).toBe(true);
+    expect(before.body.removedWith).toEqual([expect.objectContaining({ key: 'movements', count: 2 })]);
+
+    const res = await as(admin).delete(`/api/products/${product.id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.movementsRemoved).toBe(2);
+    expect(await prisma.product.findUnique({ where: { id: product.id } })).toBeNull();
+    expect(await prisma.inventoryLedger.count({ where: { productId: product.id } })).toBe(0);
+    const entry = await prisma.auditLog.findFirst({ where: { action: 'DELETE_PRODUCT' } });
+    expect(JSON.parse(entry.details)).toMatchObject({ productId: product.id, testingMode: true });
+  });
+
+  it("in testing mode, leaves other products' movements alone", async () => {
+    await enableTestingDeletes();
+    const admin = await makeAdmin();
+    const { client } = await makeClient();
+    const product = await makeProduct(client.id, { productName: 'Test Stock' });
+    const other = await makeProduct(client.id, { productName: 'Real Stock' });
+    const location = await makeLocation();
+    await makeLedgerEntry(product.id, admin.id, { movementType: 'CHECKOUT', quantity: 1, fromLocationId: location.id });
+    await makeLedgerEntry(other.id, admin.id, { movementType: 'CHECKOUT', quantity: 1, fromLocationId: location.id });
+
+    expect((await as(admin).delete(`/api/products/${product.id}`)).status).toBe(200);
+
+    expect(await prisma.inventoryLedger.count({ where: { productId: other.id } })).toBe(1);
+  });
+  // TESTING-ONLY end
 
   it('refuses while the product sits on a shipment', async () => {
     const admin = await makeAdmin();

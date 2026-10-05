@@ -195,7 +195,11 @@ const cancelFreightShipment = async (req, res) => {
 // What a delete would refuse on and what goes with it, asked before pressing it.
 const getFreightShipmentDependents = async (req, res) => {
   try {
-    const { report } = await freightLogic.getFreightShipmentDependents(req.params.id);
+    const { report } = await freightLogic.getFreightShipmentDependents(req.params.id, undefined, {
+      // TESTING-ONLY start
+      isAdmin: req.user?.role === 'admin',
+      // TESTING-ONLY end
+    });
     return res.status(200).json(report);
   } catch (error) {
     return fail(res, error);
@@ -204,7 +208,11 @@ const getFreightShipmentDependents = async (req, res) => {
 
 const deleteFreightShipment = async (req, res) => {
   try {
-    const result = await freightLogic.deleteFreightShipment(req.params.id, actor(req));
+    const result = await freightLogic.deleteFreightShipment(req.params.id, actor(req), {
+      // TESTING-ONLY start
+      isAdmin: req.user?.role === 'admin',
+      // TESTING-ONLY end
+    });
     return res.status(200).json(result);
   } catch (error) {
     return fail(res, error);

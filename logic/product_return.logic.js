@@ -33,7 +33,7 @@ const auditLogLogic = require('./audit_log.logic');
 const { normaliseTrackingId } = require('./shipment.logic');
 const { parseUuid } = require('../utils/queryFilters');
 const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
-const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines } = require('./reversal');
+const { freeUnitsIn, takeOffShelf, paidAmong, removeChargeLines, syncInvoicePdfs } = require('./reversal');
 const {
   getReturnRateForClient,
   getRestockRateForClient,
@@ -1069,7 +1069,7 @@ const deleteReturn = async (id, actorUserId) => {
   if (!actorUserId) {
     throw new Error('An authenticated user is required to delete a return.');
   }
-  const { productReturn, restocked, removedCharges } = await prisma.$transaction(async (tx) => {
+  const { productReturn, restocked, removedCharges, invoiceIds } = await prisma.$transaction(async (tx) => {
     // Locked, then checked: a restock landing between a check and this would
     // leave its units on the shelf with no return to account for them.
     await lockForDelete(tx, 'product_returns', id);
@@ -1109,10 +1109,13 @@ const deleteReturn = async (id, actorUserId) => {
       );
     }
 
-    await removeChargeLines(charges, tx);
+    const invoiceIds = await removeChargeLines(charges, tx);
     await productReturnRepository.deleteReturn(productReturn.id, tx);
-    return { productReturn, restocked, removedCharges: charges.length };
+    return { productReturn, restocked, removedCharges: charges.length, invoiceIds };
   }, TRANSACTION_OPTIONS);
+
+  // An approved invoice that carried the return's charge must stop billing it.
+  await syncInvoicePdfs(invoiceIds, actorUserId);
 
   await audit(actorUserId, 'RETURN_DELETED', {
     returnId: productReturn.id,
