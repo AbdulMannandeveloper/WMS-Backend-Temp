@@ -36,4 +36,15 @@ router.post('/finalize', authorizeRoles('admin'), payrollController.finalizePayr
 router.get('/finalize/:monthYear/dependents', authorizeRoles('admin'), payrollController.getReopenDependents);
 router.delete('/finalize/:monthYear', authorizeRoles('admin'), payrollController.reopenPayroll);
 
+// TESTING-ONLY start
+// One employee's finalised pay, for the month: its warning, then the delete.
+// Refused unless testing deletes are on.
+router.get(
+  '/finalize/:monthYear/employees/:userId/dependents',
+  authorizeRoles('admin'),
+  payrollController.getPayRecordDependents,
+);
+router.delete('/finalize/:monthYear/employees/:userId', authorizeRoles('admin'), payrollController.deletePayRecord);
+// TESTING-ONLY end
+
 module.exports = router;

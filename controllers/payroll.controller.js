@@ -164,6 +164,27 @@ const reopenPayroll = async (req, res) => {
   }
 };
 
+// TESTING-ONLY start
+const getPayRecordDependents = async (req, res) => {
+  try {
+    const { report } = await payrollLogic.getPayRecordDependents(req.params.monthYear, req.params.userId);
+    res.status(200).json(report);
+  } catch (err) {
+    failWith(res, err);
+  }
+};
+
+const deletePayRecord = async (req, res) => {
+  try {
+    res
+      .status(200)
+      .json(await payrollLogic.deletePayRecord(req.params.monthYear, req.params.userId, getAdminUserId(req)));
+  } catch (err) {
+    failWith(res, err);
+  }
+};
+// TESTING-ONLY end
+
 module.exports = {
   setBaseSalary,
   createFineRule,
@@ -181,4 +202,8 @@ module.exports = {
   finalizePayroll,
   getReopenDependents,
   reopenPayroll,
+  // TESTING-ONLY start
+  getPayRecordDependents,
+  deletePayRecord,
+  // TESTING-ONLY end
 };

@@ -17,6 +17,9 @@ const invoiceLineItemRepository = require("../repositories/invoice_line_item.rep
 const clientLogic = require("./client.logic");
 const { firstOfMonthUtc } = require("../utils/dates");
 const { buildReport, assertDeletable } = require("../utils/dependents");
+// TESTING-ONLY start
+const { testingDeletesEnabled } = require("./testing_mode.logic");
+// TESTING-ONLY end
 const { enqueueMail } = require("../utils/mailQueue");
 const {
   invoiceApprovedEmailTemplate,
@@ -38,9 +41,9 @@ const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 30_000 };
  * The invoice lifecycle, stated in one place the way SHIPMENT_TRANSITIONS is in
  * shipment.logic.js.
  *
- * PAID is terminal. An APPROVED invoice has already been sent, so it is never
- * deleted outright — see isEditable — but an admin may still correct its line
- * items and tax; see isLineItemEditable and syncApprovedInvoicePdf.
+ * PAID is terminal. An APPROVED invoice has already been sent, but an admin may
+ * still correct its line items and tax (see isLineItemEditable and
+ * syncApprovedInvoicePdf). Only a draft can be deleted (see isDeletable).
  */
 const INVOICE_TRANSITIONS = {
   DRAFT: ["APPROVED"],
@@ -50,6 +53,17 @@ const INVOICE_TRANSITIONS = {
 
 /** Only a DRAFT invoice accepts deletion — an APPROVED one is credited instead. */
 const isEditable = (status) => status === "DRAFT";
+
+/** A draft can be deleted; an approved or paid invoice is credited instead. */
+const isDeletable = (status, { testing = false } = {}) => {
+  if (status === "DRAFT") return true;
+  // TESTING-ONLY start: in testing mode an admin may delete an approved or paid
+  // invoice too, for those raised testing on live data. An approved one is held
+  // back by its charges like a draft; a paid one's go with it (reportForLines).
+  if (testing && (status === "APPROVED" || status === "PAID")) return true;
+  // TESTING-ONLY end
+  return false;
+};
 
 /**
  * DRAFT or APPROVED accept line-item and tax changes; PAID is frozen — money
@@ -546,11 +560,6 @@ const applyInvoiceEdits = async (
 };
 
 /**
- * Deletes a draft invoice. Refused once approved — that document has been sent
- * to the client, and the line items reference real dispatched work. The same
- * reasoning as refusing to delete a dispatched shipment.
- */
-/**
  * What a draft invoice carries, and whether it can be deleted.
  *
  * Charges land on the client's open draft as the work happens: a shipment or
@@ -561,9 +570,11 @@ const applyInvoiceEdits = async (
  * shipment or return itself, which takes its charge with it. Other lines
  * (manual charges) go with the invoice.
  *
+ * chargesGoWith is testing-only: see the block below.
+ *
  * A return's charge can also name its shipment; it counts once, as a return.
  */
-const reportForLines = (lines) => {
+const reportForLines = (lines, { chargesGoWith = false } = {}) => {
   const count = { returns: 0, bulkShipments: 0, shipments: 0, other: 0 };
   for (const line of lines) {
     if (line.returnId) count.returns += 1;
@@ -573,6 +584,23 @@ const reportForLines = (lines) => {
   }
   const remedy = (what) =>
     `Nothing raises them again. Remove them with Edit on this invoice if they should not be billed, or delete the ${what}, which takes its charge with it.`;
+
+  // TESTING-ONLY start: a paid invoice's lines cannot be edited, and its shipments,
+  // bulk shipments and returns cannot be deleted while it stands, so nothing
+  // could ever clear them. In testing mode its charges go with it instead, and
+  // the warning says that work will not be billed again.
+  if (chargesGoWith) {
+    const unbilled = "That work will not be billed again.";
+    return buildReport({
+      removedWith: [
+        { key: "shipmentCharges", label: "Shipment charges", count: count.shipments, note: unbilled },
+        { key: "bulkShipmentCharges", label: "Bulk shipment charges", count: count.bulkShipments, note: unbilled },
+        { key: "returnCharges", label: "Return charges", count: count.returns, note: unbilled },
+        { key: "otherCharges", label: "Other charges", count: count.other },
+      ],
+    });
+  }
+  // TESTING-ONLY end
 
   return buildReport({
     blocking: [
@@ -602,7 +630,7 @@ const reportForLines = (lines) => {
   });
 };
 
-/** The draft-delete warning for an invoice, read through `tx` when given. */
+/** The delete warning for an invoice, read through `tx` when given. */
 const getInvoiceDependents = async (id, tx) => {
   const invoice = await (tx || prisma).monthlyInvoice.findUnique({
     where: { id },
@@ -614,11 +642,18 @@ const getInvoiceDependents = async (id, tx) => {
   if (!invoice) {
     throw new Error("Monthly invoice not found.");
   }
-  return { invoice, report: reportForLines(invoice.lineItems) };
+  return {
+    invoice,
+    report: reportForLines(invoice.lineItems, {
+      // TESTING-ONLY start
+      chargesGoWith: invoice.status === "PAID" && (await testingDeletesEnabled({ tx })),
+      // TESTING-ONLY end
+    }),
+  };
 };
 
-const assertDraft = (invoice) => {
-  if (!isEditable(invoice.status)) {
+const assertDeletableStatus = (invoice, options) => {
+  if (!isDeletable(invoice.status, options)) {
     throw new Error(
       `A ${invoice.status} invoice cannot be deleted. Raise a credit against it instead.`,
     );
@@ -627,7 +662,8 @@ const assertDraft = (invoice) => {
 
 /**
  * Deletes a draft invoice that carries no charge for a shipment, bulk shipment
- * or return.
+ * or return (and, in testing mode, an approved or paid one: see isDeletable).
+ * A stored PDF goes once the delete has committed.
  *
  * @throws {HasDependentsError} (409) while it carries one
  */
@@ -636,7 +672,11 @@ const deleteMonthlyInvoice = async (id, actorUserId) => {
   if (!existing) {
     throw new Error("Monthly invoice not found.");
   }
-  assertDraft(existing);
+  let deleteOptions = {};
+  // TESTING-ONLY start
+  deleteOptions = { testing: await testingDeletesEnabled() };
+  // TESTING-ONLY end
+  assertDeletableStatus(existing, deleteOptions);
 
   const deleted = await prisma.$transaction(async (tx) => {
     // Locked before the check: a dispatch charging this draft right now waits
@@ -644,15 +684,22 @@ const deleteMonthlyInvoice = async (id, actorUserId) => {
     // in first is counted below.
     await tx.$queryRaw`SELECT id FROM monthly_invoices WHERE id = ${id}::uuid FOR UPDATE`;
     const { invoice, report } = await getInvoiceDependents(id, tx);
-    assertDraft(invoice);
-    assertDeletable(`The draft invoice for ${invoice.client?.companyName ?? "this client"}`, report);
+    assertDeletableStatus(invoice, deleteOptions);
+    const which = invoice.status === "DRAFT" ? "draft invoice" : "invoice";
+    assertDeletable(`The ${which} for ${invoice.client?.companyName ?? "this client"}`, report);
     return await monthlyInvoiceRepository.deleteMonthlyInvoice(id, tx);
   }, TRANSACTION_OPTIONS);
+
+  if (existing.pdfLink) await objectStorage.removeStoredFile(existing.pdfLink);
 
   await audit(actorUserId, "INVOICE_DELETED", {
     invoiceId: id,
     clientId: existing.clientId,
+    status: existing.status,
     totalAmount: Number(existing.totalAmount),
+    // TESTING-ONLY start: marks a delete only testing mode allowed
+    ...(existing.status !== "DRAFT" && { testingMode: true }),
+    // TESTING-ONLY end
   });
 
   return deleted;
@@ -730,6 +777,7 @@ module.exports = {
   // Shared with the line-item logic, which enforces the same editability rule.
   INVOICE_TRANSITIONS,
   isEditable,
+  isDeletable,
   isLineItemEditable,
   assertTransition,
 };

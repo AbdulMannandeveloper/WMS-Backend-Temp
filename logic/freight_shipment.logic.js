@@ -6,6 +6,9 @@ const auditLogLogic = require('./audit_log.logic');
 const { buildReport, assertDeletable, lockForDelete } = require('../utils/dependents');
 const { removeStoredFile } = require('../lib/objectStorage');
 const { equalsIgnoringCase, findExactThenIgnoringCase } = require('../utils/identifiers');
+// TESTING-ONLY start
+const { testingDeletesEnabled } = require('./testing_mode.logic');
+// TESTING-ONLY end
 
 /**
  * Removes a document's stored file once no document row points at it. Called
@@ -755,41 +758,51 @@ const cancelFreightShipment = async (id, actorUserId) => {
  * Blocking: the receiving record. That arrival is a historical fact the
  * business answers questions about, and the row carrying it is the only place
  * it is written down — so a received shipment is kept for good. It cannot be
- * cancelled either: RECEIVED is final.
+ * cancelled either: RECEIVED is final. (In testing mode an admin may delete
+ * one; see the block below.)
  *
  * Removed with it: the documents attached to it.
+ *
+ * @param {{ isAdmin?: boolean }} [who]  whether an admin is asking (testing mode)
  */
-const getFreightShipmentDependents = async (id, tx) => {
+const getFreightShipmentDependents = async (id, tx, { isAdmin = false } = {}) => {
   const shipment = await requireShipment(id, tx);
   const received = shipment.status === 'RECEIVED' || Boolean(shipment.receiving);
+  const receiving = {
+    key: 'receiving',
+    label: 'Receiving record at the UK warehouse',
+    count: received ? 1 : 0,
+  };
+  let relaxed = false;
+  // TESTING-ONLY start: an admin may delete a received shipment in testing mode,
+  // its receiving record going with it. Nothing else names a freight shipment.
+  relaxed = isAdmin && (await testingDeletesEnabled({ tx }));
+  // TESTING-ONLY end
   return {
     shipment,
+    received,
     report: buildReport({
-      blocking: [
-        {
-          key: 'receiving',
-          label: 'Receiving record at the UK warehouse',
-          count: received ? 1 : 0,
-          note: 'Its arrival stays on record, so a received shipment is kept for good.',
-        },
-      ],
+      blocking: relaxed
+        ? []
+        : [{ ...receiving, note: 'Its arrival stays on record, so a received shipment is kept for good.' }],
       removedWith: [
+        ...(relaxed ? [{ ...receiving, note: 'Its arrival is no longer on record.' }] : []),
         { key: 'documents', label: 'Attached documents', count: (shipment.documents ?? []).length },
       ],
     }),
   };
 };
 
-/** Removes the record entirely, for a mis-key. */
-const deleteFreightShipment = async (id, actorUserId) => {
+/** Removes the record entirely, for a mis-key — or, in testing mode, one received. */
+const deleteFreightShipment = async (id, actorUserId, { isAdmin = false } = {}) => {
   // Read under the lock, so a document attached meanwhile is on the list
   // below rather than cascading away with its file left behind.
-  const shipment = await prisma.$transaction(async (tx) => {
+  const { shipment, received } = await prisma.$transaction(async (tx) => {
     await lockForDelete(tx, 'freight_shipments', id);
-    const { shipment, report } = await getFreightShipmentDependents(id, tx);
+    const { shipment, received, report } = await getFreightShipmentDependents(id, tx, { isAdmin });
     assertDeletable(`Freight shipment ${shipment.reference}`, report);
     await freightRepository.deleteFreightShipment(id, tx);
-    return shipment;
+    return { shipment, received };
   });
   // Its documents went with the row (cascade); their files go now.
   for (const document of shipment.documents ?? []) {
@@ -800,6 +813,9 @@ const deleteFreightShipment = async (id, actorUserId) => {
     freightShipmentId: id,
     reference: shipment.reference,
     status: shipment.status,
+    // TESTING-ONLY start: marks a delete only testing mode allowed
+    ...(received && { testingMode: true }),
+    // TESTING-ONLY end
   });
 
   return { message: 'Freight shipment deleted successfully.' };
