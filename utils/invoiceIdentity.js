@@ -39,7 +39,7 @@ const PRO_PACKERS = {
   // not carry the Nayoram logo. Filename resolved under assets/ by the renderer.
   logo: 'invoice-logo.png',
   bank: {
-    name: 'Pro Packers Uk',
+    name: 'Pro Packers UK Ltd',
     sortCode: '60-84-64',
     accountNumber: '21929729',
   },
