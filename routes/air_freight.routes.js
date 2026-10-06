@@ -81,6 +81,11 @@ router.get('/flights/:id/sort-summary', staffWith('read'), airFreightController.
 
 router.post('/boxes/:id/receive-manual', staffWith('update'), airFreightController.receiveManual);
 router.patch('/boxes/:id/measurements', staffWith('update'), airFreightController.recordMeasurements);
+// Box edit / soft-remove / admin override. Logic enforces the POSTED guard and
+// the DRAFT-free / after-dispatch-admin+reason rule; override is admin-only.
+router.patch('/boxes/:id', staffWith('update'), airFreightController.editBox);
+router.post('/boxes/:id/remove', staffWith('update'), airFreightController.removeBox);
+router.post('/boxes/:id/override-status', adminOnly, airFreightController.overrideBox);
 router.post('/boxes/:id/damage', staffWith('update'), photo('photo'), airFreightController.raiseDamage);
 router.post('/boxes/:id/label-issue', staffWith('update'), photo('photo'), airFreightController.raiseLabelIssue);
 router.post('/boxes/:id/customs-hold', staffWith('update'), airFreightController.holdBox);

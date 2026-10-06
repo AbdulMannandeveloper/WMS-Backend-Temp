@@ -85,4 +85,21 @@ describe('post / unpost', () => {
     const res = await as(admin).post(`/api/air-freight/flights/${flight.id}/billing/unpost`);
     expect(res.status).toBe(409);
   });
+
+  it('blocks removing a box while posted; after unpost + remove, the re-posted total drops', async () => {
+    const flight = await receivedFlight();
+    const boxes = await prisma.airFreightBox.findMany({ where: { flightId: flight.id } });
+
+    const posted = await as(admin).post(`/api/air-freight/flights/${flight.id}/billing/post`).send({ reason: 'x' });
+    const before = posted.body.totals.total;
+
+    // Removing a box is refused while the flight is POSTED.
+    expect((await as(admin).post(`/api/air-freight/boxes/${boxes[0].id}/remove`).send({ reason: 'damaged beyond use' })).status).toBe(409);
+
+    await as(admin).post(`/api/air-freight/flights/${flight.id}/billing/unpost`);
+    expect((await as(admin).post(`/api/air-freight/boxes/${boxes[0].id}/remove`).send({ reason: 'damaged beyond use' })).status).toBe(200);
+
+    const reposted = await as(admin).post(`/api/air-freight/flights/${flight.id}/billing/post`).send({ reason: 'x' });
+    expect(reposted.body.totals.total).toBeLessThan(before);
+  });
 });

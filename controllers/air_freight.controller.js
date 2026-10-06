@@ -338,6 +338,38 @@ const bulkSearchBoxes = async (req, res) => {
   }
 };
 
+const BOX_EDIT_FIELDS = [
+  'trackingNumber', 'courierId', 'clientReference', 'reference',
+  'declaredWeightKg', 'lengthCm', 'widthCm', 'heightCm',
+  'contentsDescription', 'hsCode', 'declaredValue', 'currency',
+  'consigneeName', 'consigneePostcode', 'reason',
+];
+
+const editBox = async (req, res) => {
+  try {
+    const data = pick(req.body, BOX_EDIT_FIELDS);
+    send(req, res, 200, await boxLogic.editBox(req.params.id, data, actor(req), req.user?.role));
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+const removeBox = async (req, res) => {
+  try {
+    send(req, res, 200, await boxLogic.removeBox(req.params.id, req.body?.reason, actor(req), req.user?.role));
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+const overrideBox = async (req, res) => {
+  try {
+    send(req, res, 200, await boxLogic.overrideStatus(req.params.id, { toStatus: req.body?.toStatus, reason: req.body?.reason }, actor(req)));
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
 // ─── Phase 3: landing & customs ─────────────────────────────────────────────────
 
 const storePhoto = async (file, prefix) => {
@@ -511,4 +543,5 @@ module.exports = {
   listBoxes,
   getBox,
   bulkSearchBoxes,
+  editBox, removeBox, overrideBox,
 };
